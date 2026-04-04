@@ -5,11 +5,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.domain.enums import OrderState, PaymentState, SettlementState
+from app.domain.enums import ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
 from app.domain.models import Machine, Order, Payment
 from app.domain.planning import summarize_plan_from_chat
-from app.domain.rules import has_sufficient_payment, is_dividend_eligible
-from app.schemas.order import OrderCreateRequest, OrderResponse, ResultConfirmResponse
+from app.domain.rules import has_sufficient_payment
+from app.schemas.order import OrderCreateRequest, OrderResponse, ResultConfirmResponse, ResultReadyResponse
 
 router = APIRouter()
 
@@ -69,17 +69,28 @@ def confirm_order_result(order_id: str, db: Session = Depends(get_db)) -> Result
             detail="Order cannot be confirmed before full payment",
         )
 
-    dividend_eligible = is_dividend_eligible(order.user_id, machine.owner_user_id)
+    if order.execution_state != ExecutionState.SUCCEEDED or order.preview_state != PreviewState.READY:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Order result is not ready for confirmation",
+        )
+
+    if (
+        order.settlement_beneficiary_user_id is None
+        or order.settlement_is_self_use is None
+        or order.settlement_is_dividend_eligible is None
+    ):
+        # Settlement policy must freeze at payment time, not at confirmation.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Settlement policy must be frozen after payment",
+        )
+
     confirmed_at = datetime.now(timezone.utc)
     order.state = OrderState.RESULT_CONFIRMED
     order.result_confirmed_at = confirmed_at
     order.settlement_state = SettlementState.READY
-    order.settlement_beneficiary_user_id = machine.owner_user_id
-    order.settlement_is_self_use = not dividend_eligible
-    order.settlement_is_dividend_eligible = dividend_eligible
-    machine.has_unsettled_revenue = True
     db.add(order)
-    db.add(machine)
     db.commit()
 
     return ResultConfirmResponse(
@@ -87,4 +98,25 @@ def confirm_order_result(order_id: str, db: Session = Depends(get_db)) -> Result
         state=order.state,
         settlement_state=order.settlement_state,
         result_confirmed_at=confirmed_at,
+    )
+
+
+@router.post("/{order_id}/mock-result-ready", response_model=ResultReadyResponse)
+def mock_mark_result_ready(order_id: str, db: Session = Depends(get_db)) -> ResultReadyResponse:
+    order = db.get(Order, order_id)
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    if order.state != OrderState.RESULT_CONFIRMED:
+        order.state = OrderState.RESULT_PENDING_CONFIRMATION
+    order.execution_state = ExecutionState.SUCCEEDED
+    order.preview_state = PreviewState.READY
+    db.add(order)
+    db.commit()
+
+    return ResultReadyResponse(
+        order_id=order.id,
+        state=order.state,
+        execution_state=order.execution_state,
+        preview_state=order.preview_state,
     )

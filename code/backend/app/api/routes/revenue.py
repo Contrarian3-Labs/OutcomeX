@@ -22,6 +22,18 @@ def _succeeded_payment_total_cents(order_id: str, db: Session) -> int:
     )
 
 
+def _has_other_unsettled_revenue(machine_id: str, current_order_id: str, db: Session) -> bool:
+    unsettled_count = db.scalar(
+        select(func.count(Order.id)).where(
+            Order.machine_id == machine_id,
+            Order.id != current_order_id,
+            Order.settlement_beneficiary_user_id.is_not(None),
+            Order.settlement_state != SettlementState.DISTRIBUTED,
+        )
+    )
+    return bool(unsettled_count)
+
+
 @router.post("/orders/{order_id}/distribute", response_model=RevenueDistributionResponse)
 def distribute_revenue(order_id: str, db: Session = Depends(get_db)) -> RevenueDistributionResponse:
     order = db.get(Order, order_id)
@@ -73,7 +85,7 @@ def distribute_revenue(order_id: str, db: Session = Depends(get_db)) -> RevenueD
     settlement.state = SettlementState.DISTRIBUTED
     settlement.distributed_at = now
     order.settlement_state = SettlementState.DISTRIBUTED
-    machine.has_unsettled_revenue = False
+    machine.has_unsettled_revenue = _has_other_unsettled_revenue(machine.id, order.id, db)
 
     db.add(entry)
     db.add(settlement)

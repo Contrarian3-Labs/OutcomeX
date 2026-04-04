@@ -10,7 +10,7 @@ class OrderCreateRequest(BaseModel):
     machine_id: str = Field(min_length=1, max_length=36)
     chat_session_id: str = Field(min_length=1, max_length=64)
     user_prompt: str = Field(min_length=1)
-    quoted_amount_cents: int = Field(ge=0, default=0)
+    quoted_amount_cents: int = Field(gt=0)
 
 
 class OrderResponse(BaseModel):
@@ -25,6 +25,9 @@ class OrderResponse(BaseModel):
     execution_state: ExecutionState
     preview_state: PreviewState
     settlement_state: SettlementState
+    settlement_beneficiary_user_id: str | None
+    settlement_is_self_use: bool | None
+    settlement_is_dividend_eligible: bool | None
     result_confirmed_at: datetime | None
     created_at: datetime
 
@@ -36,4 +39,11 @@ class ResultConfirmResponse(BaseModel):
     state: OrderState
     settlement_state: SettlementState
     result_confirmed_at: datetime
+
+
+class ResultReadyResponse(BaseModel):
+    order_id: str
+    state: OrderState
+    execution_state: ExecutionState
+    preview_state: PreviewState
 

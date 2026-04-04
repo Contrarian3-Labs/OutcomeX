@@ -6,7 +6,7 @@ from app.domain.enums import PaymentState
 
 
 class PaymentIntentRequest(BaseModel):
-    amount_cents: int = Field(ge=0)
+    amount_cents: int = Field(gt=0)
     currency: str = Field(default="USD", min_length=3, max_length=8)
 
 

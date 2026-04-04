@@ -60,6 +60,12 @@ def _create_and_confirm_payment(client: TestClient, order_id: str, amount_cents:
     return payment
 
 
+def _mark_result_ready(client: TestClient, order_id: str) -> dict:
+    response = client.post(f"/api/v1/orders/{order_id}/mock-result-ready")
+    assert response.status_code == 200
+    return response.json()
+
+
 def test_order_creation_rejects_unknown_machine(client: TestClient) -> None:
     response = client.post(
         "/api/v1/orders",
@@ -75,7 +81,7 @@ def test_order_creation_rejects_unknown_machine(client: TestClient) -> None:
     assert response.json()["detail"] == "Machine not found"
 
 
-def test_payment_is_required_for_confirm_settlement_and_distribution(client: TestClient) -> None:
+def test_payment_and_result_ready_are_required_for_confirm_settlement_and_distribution(client: TestClient) -> None:
     machine = _create_machine(client, owner_user_id="owner-1")
     order = _create_order(client, machine_id=machine["id"], user_id="user-1", quoted_amount_cents=1000)
 
@@ -87,6 +93,13 @@ def test_payment_is_required_for_confirm_settlement_and_distribution(client: Tes
     assert partial_confirm.status_code == 409
 
     _create_and_confirm_payment(client, order_id=order["id"], amount_cents=400)
+    before_ready_confirm = client.post(f"/api/v1/orders/{order['id']}/confirm-result")
+    assert before_ready_confirm.status_code == 409
+
+    ready = _mark_result_ready(client, order_id=order["id"])
+    assert ready["execution_state"] == "succeeded"
+    assert ready["preview_state"] == "ready"
+
     full_confirm = client.post(f"/api/v1/orders/{order['id']}/confirm-result")
     assert full_confirm.status_code == 200
     assert full_confirm.json()["settlement_state"] == "ready"
@@ -125,14 +138,15 @@ def test_machine_transfer_blocked_until_revenue_distributed(client: TestClient) 
     order = _create_order(client, machine_id=machine["id"], user_id="user-2", quoted_amount_cents=500)
     _create_and_confirm_payment(client, order_id=order["id"], amount_cents=500)
 
-    confirm_result = client.post(f"/api/v1/orders/{order['id']}/confirm-result")
-    assert confirm_result.status_code == 200
-
     blocked_transfer = client.post(
         f"/api/v1/machines/{machine['id']}/transfer",
         json={"new_owner_user_id": "owner-2", "keep_previous_setup": True},
     )
     assert blocked_transfer.status_code == 409
+
+    _mark_result_ready(client, order_id=order["id"])
+    confirm_result = client.post(f"/api/v1/orders/{order['id']}/confirm-result")
+    assert confirm_result.status_code == 200
 
     settlement_start = client.post(f"/api/v1/settlement/orders/{order['id']}/start")
     assert settlement_start.status_code == 200
@@ -146,3 +160,63 @@ def test_machine_transfer_blocked_until_revenue_distributed(client: TestClient) 
     )
     assert unblocked_transfer.status_code == 200
     assert unblocked_transfer.json()["new_owner_user_id"] == "owner-2"
+
+
+def test_order_creation_rejects_zero_value_orders(client: TestClient) -> None:
+    machine = _create_machine(client, owner_user_id="owner-1")
+
+    response = client.post(
+        "/api/v1/orders",
+        json={
+            "user_id": "user-1",
+            "machine_id": machine["id"],
+            "chat_session_id": "chat-1",
+            "user_prompt": "Need a recommendation",
+            "quoted_amount_cents": 0,
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_settlement_policy_is_frozen_when_payment_succeeds(client: TestClient) -> None:
+    machine = _create_machine(client, owner_user_id="owner-1")
+    order = _create_order(client, machine_id=machine["id"], user_id="user-2", quoted_amount_cents=500)
+
+    _create_and_confirm_payment(client, order_id=order["id"], amount_cents=500)
+    order_after_payment = client.get(f"/api/v1/orders/{order['id']}")
+    assert order_after_payment.status_code == 200
+    payload = order_after_payment.json()
+    assert payload["settlement_beneficiary_user_id"] == "owner-1"
+    assert payload["settlement_is_self_use"] is False
+    assert payload["settlement_is_dividend_eligible"] is True
+
+
+def test_transfer_remains_blocked_until_all_unsettled_orders_are_distributed(client: TestClient) -> None:
+    machine = _create_machine(client, owner_user_id="owner-1")
+    order_a = _create_order(client, machine_id=machine["id"], user_id="user-a", quoted_amount_cents=500)
+    order_b = _create_order(client, machine_id=machine["id"], user_id="user-b", quoted_amount_cents=700)
+
+    _create_and_confirm_payment(client, order_id=order_a["id"], amount_cents=500)
+    _create_and_confirm_payment(client, order_id=order_b["id"], amount_cents=700)
+    _mark_result_ready(client, order_id=order_a["id"])
+    _mark_result_ready(client, order_id=order_b["id"])
+    assert client.post(f"/api/v1/orders/{order_a['id']}/confirm-result").status_code == 200
+    assert client.post(f"/api/v1/orders/{order_b['id']}/confirm-result").status_code == 200
+    assert client.post(f"/api/v1/settlement/orders/{order_a['id']}/start").status_code == 200
+    assert client.post(f"/api/v1/settlement/orders/{order_b['id']}/start").status_code == 200
+
+    distribute_a = client.post(f"/api/v1/revenue/orders/{order_a['id']}/distribute")
+    assert distribute_a.status_code == 200
+    still_blocked_transfer = client.post(
+        f"/api/v1/machines/{machine['id']}/transfer",
+        json={"new_owner_user_id": "owner-2", "keep_previous_setup": True},
+    )
+    assert still_blocked_transfer.status_code == 409
+
+    distribute_b = client.post(f"/api/v1/revenue/orders/{order_b['id']}/distribute")
+    assert distribute_b.status_code == 200
+    unblocked_transfer = client.post(
+        f"/api/v1/machines/{machine['id']}/transfer",
+        json={"new_owner_user_id": "owner-2", "keep_previous_setup": True},
+    )
+    assert unblocked_transfer.status_code == 200
