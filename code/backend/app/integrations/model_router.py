@@ -48,17 +48,6 @@ class ModelRouter:
     """Select provider/model endpoint from capability + policy constraints."""
 
     def route(self, request: ModelRouteRequest) -> ModelRoute:
-        if request.output_type == MediaType.TEXT:
-            return ModelRoute(
-                status=ModelRouteStatus.MATCHED,
-                provider="builtin",
-                model_id=request.preferred_model_id or "builtin/text-fast",
-                action=request.action,
-                output_type=request.output_type,
-                model_family="text",
-                reasons=("builtin_inline_text",),
-            )
-
         candidates = [
             endpoint
             for endpoint in provider_registry.list_all()

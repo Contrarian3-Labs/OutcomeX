@@ -5,13 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from ..core.config import get_settings
 from ..integrations.model_router import ModelRouteRequest, ModelRouteStatus, ModelRouter
 from ..integrations.providers import (
-    AlibabaMuleRouterAdapter,
+    DashScopeProviderAdapter,
     GenerationRequest,
     GenerationResponse,
     MediaProviderAdapter,
-    ProviderTaskStatus,
 )
 from ..runtime.hardware_simulator import (
     AdmissionResult,
@@ -80,7 +80,7 @@ class ExecutionEngineService:
             )
         )
         self._preview_policy = preview_policy or PreviewPolicy()
-        self._provider_adapter = provider_adapter or AlibabaMuleRouterAdapter()
+        self._provider_adapter = provider_adapter or DashScopeProviderAdapter.from_settings(get_settings())
         self._wrapper = wrapper or AgentSkillOSWrapper()
         self._model_router = model_router or ModelRouter()
 
@@ -157,15 +157,6 @@ class ExecutionEngineService:
         )
 
     def _submit_provider_request(self, prompt: str, model_id: str, output_type: MediaType) -> GenerationResponse | None:
-        if output_type == MediaType.TEXT:
-            return GenerationResponse(
-                success=True,
-                provider="builtin",
-                status=ProviderTaskStatus.SUCCEEDED,
-                result_urls=(),
-                metadata={"mode": "inline_text"},
-            )
-
         request = GenerationRequest(
             prompt=prompt,
             output_type=output_type,

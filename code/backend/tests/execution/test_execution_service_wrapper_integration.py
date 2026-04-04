@@ -23,7 +23,7 @@ def _build_recipe(*, output_type: MediaType, model: str) -> ExecutionRecipe:
         steps=(
             ExecutionStep(
                 step_id="s1",
-                provider="alibaba-mulerouter" if output_type != MediaType.TEXT else "builtin",
+                provider="dashscope",
                 model=model,
                 action="generation",
                 output_type=output_type,
@@ -75,12 +75,12 @@ class _ProviderSpy:
 
 def test_execution_service_plan_uses_wrapper_output() -> None:
     wrapper_result = WrapperPlanResult(
-        recipe=_build_recipe(output_type=MediaType.IMAGE, model="alibaba/wan2.6-t2i"),
+        recipe=_build_recipe(output_type=MediaType.IMAGE, model="wan2.6-t2i"),
         match=SolutionMatchResult(
             status=MatchStatus.MATCHED,
             selected=CandidateMatch(
-                provider="alibaba-mulerouter",
-                model_id="alibaba/wan2.6-t2i",
+                provider="dashscope",
+                model_id="wan2.6-t2i",
                 action="generation",
                 score=1.0,
             ),
@@ -91,8 +91,8 @@ def test_execution_service_plan_uses_wrapper_output() -> None:
     router = _RouterSpy(
         ModelRoute(
             status=ModelRouteStatus.MATCHED,
-            provider="alibaba-mulerouter",
-            model_id="alibaba/wan2.6-t2i",
+            provider="dashscope",
+            model_id="wan2.6-t2i",
             action="generation",
             output_type=MediaType.IMAGE,
             model_family="wan2.6",
@@ -110,12 +110,12 @@ def test_execution_service_plan_uses_wrapper_output() -> None:
 
 def test_execution_service_dispatch_uses_model_router_selection() -> None:
     wrapper_result = WrapperPlanResult(
-        recipe=_build_recipe(output_type=MediaType.IMAGE, model="alibaba/legacy-image"),
+        recipe=_build_recipe(output_type=MediaType.IMAGE, model="legacy-image"),
         match=SolutionMatchResult(
             status=MatchStatus.FALLBACK,
             selected=CandidateMatch(
-                provider="alibaba-mulerouter",
-                model_id="alibaba/legacy-image",
+                provider="dashscope",
+                model_id="legacy-image",
                 action="generation",
                 score=0.5,
             ),
@@ -124,8 +124,8 @@ def test_execution_service_dispatch_uses_model_router_selection() -> None:
     wrapper = _WrapperSpy(wrapper_result)
     route = ModelRoute(
         status=ModelRouteStatus.FALLBACK,
-        provider="alibaba-mulerouter",
-        model_id="alibaba/wan2.6-t2i",
+        provider="dashscope",
+        model_id="wan2.6-t2i",
         action="generation",
         output_type=MediaType.IMAGE,
         model_family="wan2.6",
@@ -139,7 +139,7 @@ def test_execution_service_dispatch_uses_model_router_selection() -> None:
     assert result.accepted is True
     assert result.admission.status in {AdmissionStatus.RUNNING, AdmissionStatus.QUEUED}
     assert len(router.calls) == 1
-    assert provider.submitted[0].model_id == "alibaba/wan2.6-t2i"
+    assert provider.submitted[0].model_id == "wan2.6-t2i"
     assert result.details["model_router_status"] == ModelRouteStatus.FALLBACK.value
 
 

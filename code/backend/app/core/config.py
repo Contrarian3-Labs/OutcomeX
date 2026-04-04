@@ -15,6 +15,13 @@ class Settings(BaseSettings):
     auto_create_tables: bool = True
     hsp_base_url: str = "https://mock-hsp.local"
     hsp_api_key: str = "dev-key"
+    dashscope_api_key: str = ""
+    dashscope_base_url: str = "https://dashscope-intl.aliyuncs.com"
+    dashscope_compatible_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    dashscope_text_model: str = "qwen3.6-plus"
+    dashscope_image_model: str = "wan2.6-t2i"
+    dashscope_video_model: str = "wan2.2-t2v-plus"
+    dashscope_request_timeout_seconds: float = 120.0
 
     model_config = SettingsConfigDict(
         env_prefix="OUTCOMEX_",

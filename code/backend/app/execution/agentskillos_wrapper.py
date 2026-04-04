@@ -7,7 +7,6 @@ boundary where a richer orchestration engine can be integrated later.
 from __future__ import annotations
 
 from .contracts import (
-    CandidateMatch,
     IntentRequest,
     MatchStatus,
     MediaType,
@@ -41,18 +40,6 @@ class AgentSkillOSWrapper:
                 status=MatchStatus.NO_MATCH,
                 selected=None,
                 missing_requirements=(_MULTI_OUTPUT_NOT_SUPPORTED,),
-            )
-        elif recipe.steps and recipe.steps[0].output_type == MediaType.TEXT:
-            step = recipe.steps[0]
-            match = SolutionMatchResult(
-                status=MatchStatus.MATCHED,
-                selected=CandidateMatch(
-                    provider=step.provider,
-                    model_id=step.model,
-                    action=step.action,
-                    score=1.0,
-                    reasons=("builtin_text",),
-                ),
             )
         else:
             match = match_recipe_to_solution(recipe, intent.constraints)

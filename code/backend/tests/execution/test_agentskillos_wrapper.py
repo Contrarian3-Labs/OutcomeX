@@ -12,10 +12,26 @@ def test_wrapper_plan_maps_intent_to_recipe_and_metadata() -> None:
     assert result.recipe.recipe_id == "recipe-intent-text"
     assert result.match.status == MatchStatus.MATCHED
     assert result.match.selected is not None
-    assert result.match.selected.provider == "builtin"
+    assert result.match.selected.provider == "dashscope"
     assert result.execution_metadata["planner"] == "agentskillos_wrapper.v1"
     assert result.execution_metadata["primary_output"] == "text"
     assert result.preview_candidates == ("text_snippet",)
+
+
+def test_model_router_routes_text_requests_to_dashscope() -> None:
+    router = ModelRouter()
+
+    route = router.route(
+        ModelRouteRequest(
+            output_type=MediaType.TEXT,
+            preferred_model_id="qwen3.6-plus",
+        )
+    )
+
+    assert route.status == ModelRouteStatus.MATCHED
+    assert route.model_id == "qwen3.6-plus"
+    assert route.provider == "dashscope"
+    assert route.model_family == "qwen3.6"
 
 
 def test_wrapper_plan_marks_multi_output_as_unsupported() -> None:
@@ -39,14 +55,14 @@ def test_model_router_prefers_exact_model_with_allowed_family() -> None:
     route = router.route(
         ModelRouteRequest(
             output_type=MediaType.IMAGE,
-            preferred_model_id="alibaba/wan2.6-t2i",
+            preferred_model_id="wan2.6-t2i",
             allowed_model_families=("wan2.6",),
         )
     )
 
     assert route.status == ModelRouteStatus.MATCHED
-    assert route.model_id == "alibaba/wan2.6-t2i"
-    assert route.provider == "alibaba-mulerouter"
+    assert route.model_id == "wan2.6-t2i"
+    assert route.provider == "dashscope"
     assert route.model_family == "wan2.6"
 
 
@@ -56,7 +72,7 @@ def test_model_router_rejects_disallowed_model_families() -> None:
     route = router.route(
         ModelRouteRequest(
             output_type=MediaType.IMAGE,
-            preferred_model_id="alibaba/wan2.6-t2i",
+            preferred_model_id="wan2.6-t2i",
             allowed_model_families=("forbidden-family",),
         )
     )

@@ -48,7 +48,8 @@ def test_order_creation_persists_execution_metadata(client: TestClient) -> None:
     assert payload["execution_metadata"]["planner"] == "agentskillos_wrapper.v1"
     assert payload["execution_metadata"]["primary_output"] == "text"
     assert payload["execution_metadata"]["match_status"] == "matched"
-    assert payload["execution_metadata"]["selected_model"] == "builtin/text-fast"
+    assert payload["execution_metadata"]["selected_provider"] == "dashscope"
+    assert payload["execution_metadata"]["selected_model"] == "qwen3.6-plus"
 
     fetch_response = client.get(f"/api/v1/orders/{payload['id']}")
     assert fetch_response.status_code == 200
