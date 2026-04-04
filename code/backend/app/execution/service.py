@@ -20,7 +20,7 @@ from ..runtime.hardware_simulator import (
     WorkloadSpec,
 )
 from ..runtime.preview_policy import PreviewDecision, PreviewPolicy
-from .contracts import IntentRequest, MatchStatus, MediaType
+from .contracts import ExecutionRecipe, IntentRequest, MatchStatus, MediaType, SolutionMatchResult
 from .matcher import match_recipe_to_solution
 from .normalizer import normalize_intent_to_recipe
 
@@ -29,8 +29,8 @@ from .normalizer import normalize_intent_to_recipe
 class ExecutionPlan:
     """Planning output returned before dispatch."""
 
-    recipe: object
-    match: object
+    recipe: ExecutionRecipe
+    match: SolutionMatchResult
     preview: tuple[PreviewDecision, ...]
 
 
@@ -141,4 +141,3 @@ class ExecutionEngineService:
     def simulator(self) -> HardwareSimulator:
         """Expose simulator for policy checks and tests."""
         return self._simulator
-

@@ -6,7 +6,13 @@ registered endpoints and return a primary selection plus alternatives.
 
 from __future__ import annotations
 
-from .contracts import CandidateMatch, MatchStatus, SolutionMatchResult
+from .contracts import (
+    CandidateMatch,
+    ExecutionConstraints,
+    ExecutionRecipe,
+    MatchStatus,
+    SolutionMatchResult,
+)
 from ..integrations.providers.registry import ProviderEndpoint, provider_registry
 
 
@@ -33,13 +39,20 @@ def _score_candidate(step_model: str, endpoint: ProviderEndpoint, preferred_prov
     )
 
 
-def match_recipe_to_solution(recipe, constraints) -> SolutionMatchResult:
-    """Find the best provider/model candidate for the first recipe step."""
+def match_recipe_to_solution(recipe: ExecutionRecipe, constraints: ExecutionConstraints) -> SolutionMatchResult:
+    """Match a single-step recipe to the best provider/model candidate."""
     if not recipe.steps:
         return SolutionMatchResult(
             status=MatchStatus.NO_MATCH,
             selected=None,
             missing_requirements=("empty_recipe",),
+        )
+
+    if len(recipe.steps) > 1:
+        return SolutionMatchResult(
+            status=MatchStatus.NO_MATCH,
+            selected=None,
+            missing_requirements=("multi_step_recipe_not_supported",),
         )
 
     primary_step = recipe.steps[0]
@@ -76,4 +89,3 @@ def match_recipe_to_solution(recipe, constraints) -> SolutionMatchResult:
         selected=selected,
         alternatives=tuple(candidates[1:]),
     )
-

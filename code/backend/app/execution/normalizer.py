@@ -49,33 +49,29 @@ _BLUEPRINTS: dict[MediaType, _StepBlueprint] = {
 
 
 def normalize_intent_to_recipe(intent: IntentRequest) -> ExecutionRecipe:
-    """Build a deterministic execution recipe from a normalized intent."""
+    """Build a deterministic single-step execution recipe for MVP dispatch."""
     outputs = intent.desired_outputs or (MediaType.TEXT,)
-    steps: list[ExecutionStep] = []
-
-    for index, output in enumerate(outputs, start=1):
-        blueprint = _BLUEPRINTS[output]
-        steps.append(
-            ExecutionStep(
-                step_id=f"{intent.intent_id}-step-{index}",
-                provider=blueprint.provider,
-                model=blueprint.model,
-                action=blueprint.action,
-                output_type=output,
-                resources=blueprint.resources,
-                parameters={"prompt": intent.prompt},
-            )
-        )
+    selected_output = outputs[0]
+    blueprint = _BLUEPRINTS[selected_output]
+    step = ExecutionStep(
+        step_id=f"{intent.intent_id}-step-1",
+        provider=blueprint.provider,
+        model=blueprint.model,
+        action=blueprint.action,
+        output_type=selected_output,
+        resources=blueprint.resources,
+        parameters={"prompt": intent.prompt},
+    )
 
     metadata = {
         "normalizer": "execution.normalizer.v1",
-        "outputs": ",".join(output.value for output in outputs),
+        "outputs": selected_output.value,
+        "requested_outputs": ",".join(output.value for output in outputs),
     }
     return ExecutionRecipe(
         recipe_id=f"recipe-{intent.intent_id}",
         source_intent_id=intent.intent_id,
         prompt=intent.prompt,
-        steps=tuple(steps),
+        steps=(step,),
         metadata=metadata,
     )
-
