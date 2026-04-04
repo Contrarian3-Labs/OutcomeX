@@ -1,13 +1,23 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.domain.enums import SettlementState
-from app.domain.models import Order, SettlementRecord
-from app.domain.rules import calculate_revenue_split, can_start_settlement
+from app.domain.enums import PaymentState, SettlementState
+from app.domain.models import Machine, Order, Payment, SettlementRecord
+from app.domain.rules import calculate_revenue_split, can_start_settlement, has_sufficient_payment
 from app.schemas.settlement import SettlementPreviewResponse, SettlementStartResponse
 
 router = APIRouter()
+
+
+def _succeeded_payment_total_cents(order_id: str, db: Session) -> int:
+    return db.scalar(
+        select(func.coalesce(func.sum(Payment.amount_cents), 0)).where(
+            Payment.order_id == order_id,
+            Payment.state == PaymentState.SUCCEEDED,
+        )
+    )
 
 
 def _validated_order_for_settlement(order_id: str, db: Session) -> Order:
@@ -18,6 +28,21 @@ def _validated_order_for_settlement(order_id: str, db: Session) -> Order:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Settlement can only start after result confirmation",
+        )
+    paid_cents = _succeeded_payment_total_cents(order.id, db)
+    if not has_sufficient_payment(order.quoted_amount_cents, paid_cents):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Settlement requires full successful payment",
+        )
+    if (
+        order.settlement_beneficiary_user_id is None
+        or order.settlement_is_self_use is None
+        or order.settlement_is_dividend_eligible is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Settlement policy must be frozen before settlement",
         )
     return order
 
@@ -38,9 +63,16 @@ def preview_settlement(order_id: str, db: Session = Depends(get_db)) -> Settleme
 @router.post("/orders/{order_id}/start", response_model=SettlementStartResponse)
 def start_settlement(order_id: str, db: Session = Depends(get_db)) -> SettlementStartResponse:
     order = _validated_order_for_settlement(order_id, db)
+    machine = db.get(Machine, order.machine_id)
+    if machine is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
 
     existing = db.query(SettlementRecord).filter(SettlementRecord.order_id == order.id).first()
     if existing is not None:
+        if existing.state != SettlementState.DISTRIBUTED and not machine.has_unsettled_revenue:
+            machine.has_unsettled_revenue = True
+            db.add(machine)
+            db.commit()
         return SettlementStartResponse(
             settlement_id=existing.id,
             order_id=existing.order_id,
@@ -57,9 +89,11 @@ def start_settlement(order_id: str, db: Session = Depends(get_db)) -> Settlement
         state=SettlementState.LOCKED,
     )
     order.settlement_state = SettlementState.LOCKED
+    machine.has_unsettled_revenue = True
 
     db.add(settlement)
     db.add(order)
+    db.add(machine)
     db.commit()
     db.refresh(settlement)
     return SettlementStartResponse(
@@ -68,4 +102,3 @@ def start_settlement(order_id: str, db: Session = Depends(get_db)) -> Settlement
         state=settlement.state,
         created_at=settlement.created_at,
     )
-

@@ -1,11 +1,23 @@
 from app.domain.enums import OrderState
-from app.domain.rules import calculate_revenue_split, can_start_settlement, can_transfer_machine, is_dividend_eligible
+from app.domain.rules import (
+    calculate_revenue_split,
+    can_start_settlement,
+    can_transfer_machine,
+    has_sufficient_payment,
+    is_dividend_eligible,
+)
 
 
 def test_revenue_split_is_10_90() -> None:
     platform_fee, machine_share = calculate_revenue_split(1000)
     assert platform_fee == 100
     assert machine_share == 900
+
+
+def test_revenue_split_uses_deterministic_integer_math() -> None:
+    platform_fee, machine_share = calculate_revenue_split(101)
+    assert platform_fee == 10
+    assert machine_share == 91
 
 
 def test_settlement_needs_confirmation() -> None:
@@ -23,3 +35,8 @@ def test_transfer_blocked_when_tasks_or_unsettled_revenue() -> None:
     assert can_transfer_machine(has_active_tasks=False, has_unsettled_revenue=True) is False
     assert can_transfer_machine(has_active_tasks=False, has_unsettled_revenue=False) is True
 
+
+def test_payment_must_cover_order_amount() -> None:
+    assert has_sufficient_payment(required_amount_cents=1000, paid_amount_cents=1000) is True
+    assert has_sufficient_payment(required_amount_cents=1000, paid_amount_cents=1200) is True
+    assert has_sufficient_payment(required_amount_cents=1000, paid_amount_cents=999) is False

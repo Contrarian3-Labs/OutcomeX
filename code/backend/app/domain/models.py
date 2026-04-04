@@ -52,6 +52,9 @@ class Order(Base):
         Enum(SettlementState),
         default=SettlementState.NOT_READY,
     )
+    settlement_beneficiary_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    settlement_is_self_use: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    settlement_is_dividend_eligible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     result_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
@@ -123,4 +126,3 @@ class ChatPlan(Base):
     recommended_plan_summary: Mapped[str] = mapped_column(Text, nullable=False)
     preview_state: Mapped[PreviewState] = mapped_column(Enum(PreviewState), default=PreviewState.READY)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
-

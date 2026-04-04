@@ -1,6 +1,9 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+DEFAULT_SQLITE_DB_PATH = Path(__file__).resolve().parents[2] / "outcomex.db"
 
 
 class Settings(BaseSettings):
@@ -8,7 +11,7 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     env: str = "dev"
     api_prefix: str = "/api/v1"
-    database_url: str = "sqlite+pysqlite:///./outcomex.db"
+    database_url: str = f"sqlite+pysqlite:///{DEFAULT_SQLITE_DB_PATH.as_posix()}"
     auto_create_tables: bool = True
     hsp_base_url: str = "https://mock-hsp.local"
     hsp_api_key: str = "dev-key"
@@ -27,4 +30,3 @@ def get_settings() -> Settings:
 
 def reset_settings_cache() -> None:
     get_settings.cache_clear()
-
