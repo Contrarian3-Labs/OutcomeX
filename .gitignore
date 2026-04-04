@@ -1,0 +1,26 @@
+.worktrees/
+
+# Python
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Build
+dist/
+build/
+out/
+
+# Foundry
+lib/
+cache/
+broadcast/
+
+# OS
+.DS_Store
+Thumbs.db
