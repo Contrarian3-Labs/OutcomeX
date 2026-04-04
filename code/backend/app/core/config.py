@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     dashscope_image_model: str = "wan2.6-t2i"
     dashscope_video_model: str = "wan2.2-t2v-plus"
     dashscope_request_timeout_seconds: float = 120.0
+    agentskillos_root: str = ""
+    agentskillos_skill_group: str = "skill_seeds"
+    agentskillos_llm_model: str = ""
+    agentskillos_discovery_timeout_seconds: float = 30.0
 
     model_config = SettingsConfigDict(
         env_prefix="OUTCOMEX_",
