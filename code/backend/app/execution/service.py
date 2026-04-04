@@ -24,6 +24,8 @@ from .contracts import ExecutionRecipe, IntentRequest, MatchStatus, MediaType, S
 from .matcher import match_recipe_to_solution
 from .normalizer import normalize_intent_to_recipe
 
+_MULTI_OUTPUT_NOT_SUPPORTED = "multi_output_not_supported"
+
 
 @dataclass(frozen=True)
 class ExecutionPlan:
@@ -77,7 +79,14 @@ class ExecutionEngineService:
 
     def plan(self, intent: IntentRequest) -> ExecutionPlan:
         recipe = normalize_intent_to_recipe(intent)
-        match = match_recipe_to_solution(recipe, intent.constraints)
+        if len(intent.desired_outputs) > 1:
+            match = SolutionMatchResult(
+                status=MatchStatus.NO_MATCH,
+                selected=None,
+                missing_requirements=(_MULTI_OUTPUT_NOT_SUPPORTED,),
+            )
+        else:
+            match = match_recipe_to_solution(recipe, intent.constraints)
         preview = self._preview_policy.decide(recipe, self._simulator.snapshot())
         return ExecutionPlan(recipe=recipe, match=match, preview=preview)
 
@@ -85,15 +94,20 @@ class ExecutionEngineService:
         plan = self.plan(intent)
 
         if plan.match.status == MatchStatus.NO_MATCH or plan.match.selected is None:
+            rejection_reason = self._resolve_no_match_reason(plan.match)
             rejected = AdmissionResult(
                 status=AdmissionStatus.REJECTED,
                 snapshot=self._simulator.snapshot(),
-                reason="no_provider_match",
+                reason=rejection_reason,
             )
             return ExecutionDispatchResult(
                 accepted=False,
                 admission=rejected,
-                details={"reason": "no_provider_match"},
+                details={
+                    "reason": rejection_reason,
+                    "match_status": plan.match.status.value,
+                    "requested_outputs": plan.recipe.metadata.get("requested_outputs", ""),
+                },
             )
 
         workload = WorkloadSpec(
@@ -136,6 +150,14 @@ class ExecutionEngineService:
             action="generation",
         )
         return self._provider_adapter.submit_generation(request)
+
+    @staticmethod
+    def _resolve_no_match_reason(match: SolutionMatchResult) -> str:
+        if _MULTI_OUTPUT_NOT_SUPPORTED in match.missing_requirements:
+            return _MULTI_OUTPUT_NOT_SUPPORTED
+        if match.missing_requirements:
+            return match.missing_requirements[0]
+        return "no_provider_match"
 
     @property
     def simulator(self) -> HardwareSimulator:

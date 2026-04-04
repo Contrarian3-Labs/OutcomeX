@@ -52,6 +52,7 @@ def normalize_intent_to_recipe(intent: IntentRequest) -> ExecutionRecipe:
     """Build a deterministic single-step execution recipe for MVP dispatch."""
     outputs = intent.desired_outputs or (MediaType.TEXT,)
     selected_output = outputs[0]
+    requested_outputs = ",".join(output.value for output in outputs)
     blueprint = _BLUEPRINTS[selected_output]
     step = ExecutionStep(
         step_id=f"{intent.intent_id}-step-1",
@@ -65,8 +66,9 @@ def normalize_intent_to_recipe(intent: IntentRequest) -> ExecutionRecipe:
 
     metadata = {
         "normalizer": "execution.normalizer.v1",
-        "outputs": selected_output.value,
-        "requested_outputs": ",".join(output.value for output in outputs),
+        "outputs": requested_outputs,
+        "requested_outputs": requested_outputs,
+        "primary_output": selected_output.value,
     }
     return ExecutionRecipe(
         recipe_id=f"recipe-{intent.intent_id}",
