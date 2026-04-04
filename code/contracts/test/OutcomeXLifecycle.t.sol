@@ -50,7 +50,7 @@ contract OutcomeXLifecycleTest is TestBase {
         uint256 orderId = orderBook.createOrder(machineId, 1_000);
 
         vm.prank(PAYMENT_ADAPTER);
-        orderBook.markOrderPaid(orderId);
+        orderBook.markOrderPaid(orderId, true, false);
 
         vm.prank(MACHINE_OWNER);
         orderBook.markPreviewReady(orderId, true);
@@ -89,7 +89,7 @@ contract OutcomeXLifecycleTest is TestBase {
         uint256 orderId = orderBook.createOrder(machineId, 1_000);
 
         vm.prank(PAYMENT_ADAPTER);
-        orderBook.markOrderPaid(orderId);
+        orderBook.markOrderPaid(orderId, true, false);
 
         vm.prank(MACHINE_OWNER);
         orderBook.markPreviewReady(orderId, true);
@@ -118,7 +118,7 @@ contract OutcomeXLifecycleTest is TestBase {
         uint256 orderId = orderBook.createOrder(machineId, 500);
 
         vm.prank(PAYMENT_ADAPTER);
-        orderBook.markOrderPaid(orderId);
+        orderBook.markOrderPaid(orderId, true, true);
 
         vm.startPrank(MACHINE_OWNER);
         vm.expectRevert(abi.encodeWithSelector(TransferGuardBlocked.selector, machineId, orderBook.REASON_ACTIVE_TASK()));
@@ -143,26 +143,26 @@ contract OutcomeXLifecycleTest is TestBase {
         assertEq(machineAsset.ownerOf(machineId), RECEIVER, "transfer should be allowed after settlement");
     }
 
-    function testSelfUseIsNotDividendEligible() public {
-        vm.prank(MACHINE_OWNER);
+    function testSettlementClassificationControlsDividendEligibility() public {
+        vm.prank(BUYER);
         uint256 orderId = orderBook.createOrder(machineId, 1_000);
 
         vm.prank(PAYMENT_ADAPTER);
-        orderBook.markOrderPaid(orderId);
+        orderBook.markOrderPaid(orderId, false, false);
 
         vm.prank(MACHINE_OWNER);
         orderBook.markPreviewReady(orderId, true);
 
-        vm.prank(MACHINE_OWNER);
+        vm.prank(BUYER);
         orderBook.confirmResult(orderId);
 
         assertEq(settlement.platformAccruedUSDT(), 100, "platform should still receive 10%");
-        assertEq(revenueVault.unsettledRevenueByMachine(machineId), 0, "self-use should not accrue dividends");
-        assertEq(revenueVault.nonDividendRevenueByMachine(machineId), 900, "self-use should track non-dividend value");
+        assertEq(revenueVault.unsettledRevenueByMachine(machineId), 0, "non-eligible order should not accrue dividends");
+        assertEq(revenueVault.nonDividendRevenueByMachine(machineId), 900, "non-eligible order should track non-dividend value");
 
         vm.prank(MACHINE_OWNER);
         machineAsset.transferFrom(MACHINE_OWNER, RECEIVER, machineId);
-        assertEq(machineAsset.ownerOf(machineId), RECEIVER, "self-use should not block transfer");
+        assertEq(machineAsset.ownerOf(machineId), RECEIVER, "non-eligible order should not block transfer");
     }
 
     function testRefundAfterInvalidPreviewMarked() public {
@@ -170,7 +170,7 @@ contract OutcomeXLifecycleTest is TestBase {
         uint256 orderId = orderBook.createOrder(machineId, 600);
 
         vm.prank(PAYMENT_ADAPTER);
-        orderBook.markOrderPaid(orderId);
+        orderBook.markOrderPaid(orderId, true, false);
 
         vm.prank(MACHINE_OWNER);
         orderBook.markPreviewReady(orderId, false);
@@ -181,5 +181,57 @@ contract OutcomeXLifecycleTest is TestBase {
         assertEq(settlement.refundableUSDT(BUYER), 600, "full refund expected");
         assertEq(revenueVault.unsettledRevenueByMachine(machineId), 0, "no machine payout expected");
         assertEq(settlement.platformAccruedUSDT(), 0, "no platform fee expected");
+    }
+
+    function testRefundPaidOrderRequiresFailureBasis() public {
+        vm.prank(BUYER);
+        uint256 orderId = orderBook.createOrder(machineId, 400);
+
+        vm.prank(PAYMENT_ADAPTER);
+        orderBook.markOrderPaid(orderId, true, false);
+
+        vm.prank(BUYER);
+        vm.expectRevert("REFUND_NOT_AUTHORIZED");
+        orderBook.refundFailedOrNoValidPreview(orderId);
+    }
+
+    function testSettlementUsesSnapshotBeneficiaryAfterOwnershipTransfer() public {
+        vm.prank(BUYER);
+        uint256 orderId = orderBook.createOrder(machineId, 1_000);
+
+        vm.prank(MACHINE_OWNER);
+        machineAsset.transferFrom(MACHINE_OWNER, RECEIVER, machineId);
+        assertEq(machineAsset.ownerOf(machineId), RECEIVER, "ownership should move before payment");
+
+        vm.prank(PAYMENT_ADAPTER);
+        orderBook.markOrderPaid(orderId, true, false);
+
+        vm.prank(RECEIVER);
+        vm.expectRevert("NOT_MACHINE_OWNER");
+        orderBook.markPreviewReady(orderId, true);
+
+        vm.prank(MACHINE_OWNER);
+        orderBook.markPreviewReady(orderId, true);
+
+        vm.prank(BUYER);
+        orderBook.confirmResult(orderId);
+
+        assertEq(revenueVault.claimableByMachineOwner(machineId, MACHINE_OWNER), 900, "snapshot owner should accrue claim");
+        assertEq(revenueVault.claimableByMachineOwner(machineId, RECEIVER), 0, "new owner should not accrue old order");
+
+        vm.startPrank(RECEIVER);
+        vm.expectRevert(
+            abi.encodeWithSelector(TransferGuardBlocked.selector, machineId, orderBook.REASON_UNSETTLED_REVENUE())
+        );
+        machineAsset.transferFrom(RECEIVER, BUYER_TWO, machineId);
+        vm.stopPrank();
+
+        vm.prank(MACHINE_OWNER);
+        uint256 claimed = revenueVault.claim(machineId);
+        assertEq(claimed, 900, "snapshot owner claim mismatch");
+
+        vm.prank(RECEIVER);
+        machineAsset.transferFrom(RECEIVER, BUYER_TWO, machineId);
+        assertEq(machineAsset.ownerOf(machineId), BUYER_TWO, "transfer should unlock after claim");
     }
 }

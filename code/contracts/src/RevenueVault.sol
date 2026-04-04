@@ -72,19 +72,16 @@ contract RevenueVault is Ownable, IRevenueVault {
     }
 
     function claim(uint256 machineId) external returns (uint256 amount) {
-        address machineOwner = machineAsset.ownerOf(machineId);
-        require(msg.sender == machineOwner, "NOT_MACHINE_OWNER");
-
-        amount = claimableByMachineOwner[machineId][machineOwner];
+        amount = claimableByMachineOwner[machineId][msg.sender];
         require(amount > 0, "NOTHING_TO_CLAIM");
 
-        claimableByMachineOwner[machineId][machineOwner] = 0;
+        claimableByMachineOwner[machineId][msg.sender] = 0;
         unsettledRevenueByMachine[machineId] -= amount;
 
-        bool success = pwrToken.transfer(machineOwner, amount);
+        bool success = pwrToken.transfer(msg.sender, amount);
         require(success, "PWR_TRANSFER_FAILED");
 
-        emit RevenueClaimed(machineId, machineOwner, amount);
+        emit RevenueClaimed(machineId, msg.sender, amount);
     }
 
     function hasUnsettledRevenue(uint256 machineId) external view returns (bool) {

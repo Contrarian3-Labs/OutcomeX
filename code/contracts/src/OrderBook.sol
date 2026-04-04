@@ -25,6 +25,10 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
 
     mapping(uint256 => OrderRecord) private _orders;
     mapping(uint256 => uint256) public activeTaskCountByMachine;
+    mapping(uint256 => address) public settlementBeneficiaryByOrder;
+    mapping(uint256 => bool) public dividendEligibleByOrder;
+    mapping(uint256 => bool) public refundAuthorizedByOrder;
+    mapping(uint256 => bool) public settlementClassifiedByOrder;
 
     event PaymentAdapterSet(address indexed previousAdapter, address indexed newAdapter);
     event SettlementControllerSet(address indexed previousController, address indexed newController);
@@ -34,7 +38,10 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
         uint256 indexed machineId,
         address indexed buyer,
         uint256 grossAmount,
-        bool selfUse
+        address settlementBeneficiary
+    );
+    event OrderClassified(
+        uint256 indexed orderId, bool dividendEligible, bool refundFailedOrNoValidPreviewAuthorized
     );
     event OrderPaid(uint256 indexed orderId, uint256 indexed machineId, uint256 grossAmount);
     event PreviewReady(uint256 indexed orderId, uint256 indexed machineId, bool validPreview);
@@ -98,25 +105,34 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
             settledAt: 0
         });
 
-        emit OrderCreated(orderId, machineId, msg.sender, grossAmount, msg.sender == machineOwner);
+        settlementBeneficiaryByOrder[orderId] = machineOwner;
+
+        emit OrderCreated(orderId, machineId, msg.sender, grossAmount, machineOwner);
     }
 
-    function markOrderPaid(uint256 orderId) external onlyPaymentAdapter {
+    function markOrderPaid(uint256 orderId, bool dividendEligible, bool refundFailedOrNoValidPreviewAuthorized)
+        external
+        onlyPaymentAdapter
+    {
         OrderRecord storage order = _orders[orderId];
         require(order.status == OrderStatus.Created, "INVALID_STATUS");
 
         order.status = OrderStatus.Paid;
         order.paidAt = uint64(block.timestamp);
+        dividendEligibleByOrder[orderId] = dividendEligible;
+        refundAuthorizedByOrder[orderId] = refundFailedOrNoValidPreviewAuthorized;
+        settlementClassifiedByOrder[orderId] = true;
 
         activeTaskCountByMachine[order.machineId] += 1;
 
+        emit OrderClassified(orderId, dividendEligible, refundFailedOrNoValidPreviewAuthorized);
         emit OrderPaid(orderId, order.machineId, order.grossAmount);
     }
 
     function markPreviewReady(uint256 orderId, bool validPreview) external {
         OrderRecord storage order = _orders[orderId];
         require(order.status == OrderStatus.Paid, "INVALID_STATUS");
-        require(msg.sender == machineAsset.ownerOf(order.machineId), "NOT_MACHINE_OWNER");
+        require(msg.sender == settlementBeneficiaryByOrder[orderId], "NOT_MACHINE_OWNER");
 
         order.status = OrderStatus.PreviewReady;
         order.previewValid = validPreview;
@@ -146,10 +162,12 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
     function refundFailedOrNoValidPreview(uint256 orderId) external {
         OrderRecord storage order = _orders[orderId];
         require(order.status == OrderStatus.Paid || order.status == OrderStatus.PreviewReady, "INVALID_STATUS");
-        require(msg.sender == order.buyer || msg.sender == machineAsset.ownerOf(order.machineId), "NOT_ALLOWED");
+        require(msg.sender == order.buyer || msg.sender == settlementBeneficiaryByOrder[orderId], "NOT_ALLOWED");
 
         if (order.status == OrderStatus.PreviewReady) {
             require(!order.previewValid, "PREVIEW_VALID");
+        } else {
+            require(refundAuthorizedByOrder[orderId], "REFUND_NOT_AUTHORIZED");
         }
 
         _settleOrder(order, SettlementKind.FailedOrNoValidPreview);
@@ -180,17 +198,17 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
 
     function _settleOrder(OrderRecord storage order, SettlementKind kind) internal {
         require(address(settlementController) != address(0), "SETTLEMENT_NOT_SET");
+        require(settlementClassifiedByOrder[order.id], "SETTLEMENT_NOT_CLASSIFIED");
 
-        address machineOwner = machineAsset.ownerOf(order.machineId);
-        bool selfUse = order.buyer == machineOwner;
+        address settlementBeneficiary = settlementBeneficiaryByOrder[order.id];
 
         SettlementInput memory input = SettlementInput({
             orderId: order.id,
             machineId: order.machineId,
             buyer: order.buyer,
-            machineOwner: machineOwner,
+            settlementBeneficiary: settlementBeneficiary,
             grossAmount: order.grossAmount,
-            selfUse: selfUse
+            dividendEligible: dividendEligibleByOrder[order.id]
         });
 
         SettlementBreakdown memory breakdown = settlementController.settle(input, kind);

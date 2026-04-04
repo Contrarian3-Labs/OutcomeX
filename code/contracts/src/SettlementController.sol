@@ -27,7 +27,7 @@ contract SettlementController is Ownable {
         uint256 indexed machineId,
         SettlementKind kind,
         address buyer,
-        address machineOwner,
+        address settlementBeneficiary,
         uint256 grossAmount,
         uint256 refundToBuyer,
         uint256 platformShare,
@@ -68,7 +68,7 @@ contract SettlementController is Ownable {
         returns (SettlementBreakdown memory breakdown)
     {
         breakdown.kind = kind;
-        breakdown.dividendEligible = !input.selfUse;
+        breakdown.dividendEligible = input.dividendEligible;
 
         if (kind == SettlementKind.Confirmed) {
             breakdown.platformShare = (input.grossAmount * PLATFORM_FEE_BPS) / BPS_DENOMINATOR;
@@ -93,7 +93,7 @@ contract SettlementController is Ownable {
         if (breakdown.machineShare > 0) {
             revenueVault.accrueRevenue(
                 input.machineId,
-                input.machineOwner,
+                input.settlementBeneficiary,
                 input.orderId,
                 breakdown.machineShare,
                 breakdown.dividendEligible
@@ -105,7 +105,7 @@ contract SettlementController is Ownable {
             input.machineId,
             kind,
             input.buyer,
-            input.machineOwner,
+            input.settlementBeneficiary,
             input.grossAmount,
             breakdown.refundToBuyer,
             breakdown.platformShare,

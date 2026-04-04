@@ -34,9 +34,9 @@ struct SettlementInput {
     uint256 orderId;
     uint256 machineId;
     address buyer;
-    address machineOwner;
+    address settlementBeneficiary;
     uint256 grossAmount;
-    bool selfUse;
+    bool dividendEligible;
 }
 
 struct SettlementBreakdown {
