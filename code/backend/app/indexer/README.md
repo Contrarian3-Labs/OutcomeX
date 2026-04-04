@@ -22,7 +22,8 @@ This folder contains a first-pass skeleton for the on-chain indexing and project
 ## Assumptions
 
 - Smart contracts remain the source of truth. Indexer projections are query acceleration only.
-- Events are processed in log order from the adapter. Reorg handling is currently "skip removed logs" and should be expanded to compensate state later.
+- Events are canonicalized in chain/log order before projection apply so cross-subscription replay remains deterministic.
+- Reorg handling is intentionally conservative in this MVP: removed logs mark an unsafe block boundary, replay applies only blocks below that boundary, cursor advancement is capped to the last safe block, and the replay outcome flags a rewind requirement.
 - Event decoding strategy is intentionally pluggable (`EventDecoder` protocol) because ABI ownership and deploy topology are expected to evolve.
 - Confirmation depth defaults to `6` and should be tuned per chain/network stability policy.
 - This pass stores cursor/idempotency in memory only; persistent stores should back these interfaces in production.

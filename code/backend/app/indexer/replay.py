@@ -11,7 +11,7 @@ from app.indexer.cursor import (
 )
 from app.indexer.events import normalize_decoded_event
 from app.indexer.projections import ProjectionStore
-from app.onchain.adapter import ChainAdapter
+from app.onchain.adapter import ChainAdapter, DecodedChainEvent
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,8 @@ class ReplayOutcome:
     skipped_duplicates: int
     skipped_removed: int
     cursor_advanced_to: int | None
+    reorg_detected: bool
+    rewind_required_from_block: int | None
 
 
 class ReplayIndexer:
@@ -64,16 +66,22 @@ class ReplayIndexer:
                 skipped_duplicates=0,
                 skipped_removed=0,
                 cursor_advanced_to=cursor.last_indexed_block if cursor else None,
+                reorg_detected=False,
+                rewind_required_from_block=None,
             )
 
-        scanned_events = 0
+        decoded_events = sorted(
+            self._adapter.iter_events(from_block=from_block, to_block=bounded_to_block),
+            key=_event_sort_key,
+        )
+        scanned_events = len(decoded_events)
         applied_events = 0
         skipped_duplicates = 0
         skipped_removed = 0
         highest_seen_block = cursor.last_indexed_block if cursor else None
+        rewind_required_from_block: int | None = None
 
-        for decoded_event in self._adapter.iter_events(from_block=from_block, to_block=bounded_to_block):
-            scanned_events += 1
+        for decoded_event in decoded_events:
             highest_seen_block = (
                 decoded_event.block_number
                 if highest_seen_block is None
@@ -82,6 +90,22 @@ class ReplayIndexer:
 
             if decoded_event.removed:
                 skipped_removed += 1
+                rewind_required_from_block = (
+                    decoded_event.block_number
+                    if rewind_required_from_block is None
+                    else min(rewind_required_from_block, decoded_event.block_number)
+                )
+
+        safe_upper_block = (
+            rewind_required_from_block - 1
+            if rewind_required_from_block is not None
+            else None
+        )
+
+        for decoded_event in decoded_events:
+            if decoded_event.removed:
+                continue
+            if safe_upper_block is not None and decoded_event.block_number > safe_upper_block:
                 continue
 
             normalized_event = normalize_decoded_event(decoded_event)
@@ -93,8 +117,13 @@ class ReplayIndexer:
             self._processed_event_store.mark(normalized_event.event_id)
             applied_events += 1
 
-        if highest_seen_block is not None:
-            self._cursor_store.set(chain_id=chain_id, last_indexed_block=highest_seen_block)
+        next_cursor_block = highest_seen_block
+        if safe_upper_block is not None and next_cursor_block is not None:
+            next_cursor_block = min(next_cursor_block, safe_upper_block)
+        if cursor is not None and next_cursor_block is not None:
+            next_cursor_block = max(next_cursor_block, cursor.last_indexed_block)
+        if next_cursor_block is not None:
+            self._cursor_store.set(chain_id=chain_id, last_indexed_block=next_cursor_block)
 
         return ReplayOutcome(
             from_block=from_block,
@@ -103,7 +132,9 @@ class ReplayIndexer:
             applied_events=applied_events,
             skipped_duplicates=skipped_duplicates,
             skipped_removed=skipped_removed,
-            cursor_advanced_to=highest_seen_block,
+            cursor_advanced_to=next_cursor_block,
+            reorg_detected=rewind_required_from_block is not None,
+            rewind_required_from_block=rewind_required_from_block,
         )
 
     def _apply_confirmation_depth(self, *, from_block: int, to_block: int | None) -> int | None:
@@ -111,3 +142,13 @@ class ReplayIndexer:
             return None
         safe_upper_bound = to_block - max(0, self._config.confirmation_depth)
         return max(from_block - 1, safe_upper_bound)
+
+
+def _event_sort_key(event: DecodedChainEvent) -> tuple[int, int, str, str, str]:
+    return (
+        event.block_number,
+        event.log_index,
+        str(event.transaction_hash).lower(),
+        str(event.contract_address).lower(),
+        str(event.event_name),
+    )
