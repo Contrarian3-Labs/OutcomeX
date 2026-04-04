@@ -10,6 +10,7 @@ from .contracts import (
     MediaType,
     ResourceEstimate,
     SolutionMatchResult,
+    WrapperPlanResult,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "MediaType",
     "ResourceEstimate",
     "SolutionMatchResult",
+    "WrapperPlanResult",
 ]

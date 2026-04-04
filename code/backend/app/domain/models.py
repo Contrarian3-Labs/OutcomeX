@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.domain.enums import ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
@@ -55,6 +55,7 @@ class Order(Base):
     settlement_beneficiary_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     settlement_is_self_use: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     settlement_is_dividend_eligible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    execution_metadata: Mapped[dict[str, str] | None] = mapped_column(JSON, nullable=True)
     result_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 

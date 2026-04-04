@@ -23,6 +23,7 @@ _DEFAULT_ENDPOINTS = (
         output_type=MediaType.IMAGE,
         api_path="/vendors/alibaba/v1/wan2.6-t2i/generation",
         result_key="images",
+        model_family="wan2.6",
         tags=("preview", "image"),
     ),
     ProviderEndpoint(
@@ -32,6 +33,7 @@ _DEFAULT_ENDPOINTS = (
         output_type=MediaType.VIDEO,
         api_path="/vendors/alibaba/v1/wan2.6-t2v/generation",
         result_key="videos",
+        model_family="wan2.6",
         tags=("preview", "video"),
     ),
 )

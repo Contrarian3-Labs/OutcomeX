@@ -20,6 +20,7 @@ class ProviderEndpoint:
     output_type: MediaType
     api_path: str
     result_key: str
+    model_family: str
     tags: tuple[str, ...] = ()
 
 
@@ -38,6 +39,13 @@ class ProviderRegistry:
 
     def list_all(self) -> tuple[ProviderEndpoint, ...]:
         return tuple(self._endpoints.values())
+
+    def list_for(self, *, action: str, output_type: MediaType) -> tuple[ProviderEndpoint, ...]:
+        return tuple(
+            endpoint
+            for endpoint in self._endpoints.values()
+            if endpoint.action == action and endpoint.output_type == output_type
+        )
 
     @staticmethod
     def _key(model_id: str, action: str) -> str:

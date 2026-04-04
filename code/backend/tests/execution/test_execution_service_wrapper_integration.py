@@ -1,0 +1,162 @@
+from app.execution.contracts import (
+    CandidateMatch,
+    ExecutionRecipe,
+    ExecutionStep,
+    IntentRequest,
+    MatchStatus,
+    MediaType,
+    ResourceEstimate,
+    SolutionMatchResult,
+    WrapperPlanResult,
+)
+from app.execution.service import ExecutionEngineService
+from app.integrations.model_router import ModelRoute, ModelRouteRequest, ModelRouteStatus
+from app.integrations.providers.base import GenerationResponse, ProviderTaskStatus
+from app.runtime.hardware_simulator import AdmissionStatus
+
+
+def _build_recipe(*, output_type: MediaType, model: str) -> ExecutionRecipe:
+    return ExecutionRecipe(
+        recipe_id=f"recipe-{output_type.value}",
+        source_intent_id=f"intent-{output_type.value}",
+        prompt=f"Generate {output_type.value}",
+        steps=(
+            ExecutionStep(
+                step_id="s1",
+                provider="alibaba-mulerouter" if output_type != MediaType.TEXT else "builtin",
+                model=model,
+                action="generation",
+                output_type=output_type,
+                resources=ResourceEstimate(capacity_units=3, memory_mb=2_048, expected_duration_ticks=2),
+            ),
+        ),
+        metadata={"requested_outputs": output_type.value, "primary_output": output_type.value},
+    )
+
+
+class _WrapperSpy:
+    def __init__(self, result: WrapperPlanResult):
+        self.result = result
+        self.calls: list[IntentRequest] = []
+
+    def plan(self, intent: IntentRequest) -> WrapperPlanResult:
+        self.calls.append(intent)
+        return self.result
+
+
+class _RouterSpy:
+    def __init__(self, route_result: ModelRoute):
+        self.route_result = route_result
+        self.calls: list[ModelRouteRequest] = []
+
+    def route(self, request: ModelRouteRequest) -> ModelRoute:
+        self.calls.append(request)
+        return self.route_result
+
+
+class _ProviderSpy:
+    provider_name = "provider-spy"
+
+    def __init__(self):
+        self.submitted = []
+
+    def submit_generation(self, request):
+        self.submitted.append(request)
+        return GenerationResponse(
+            success=True,
+            provider=self.provider_name,
+            status=ProviderTaskStatus.QUEUED,
+            task_id="task-123",
+        )
+
+    def poll_generation(self, task_id: str, *, model_id: str, action: str):  # pragma: no cover
+        raise NotImplementedError
+
+
+def test_execution_service_plan_uses_wrapper_output() -> None:
+    wrapper_result = WrapperPlanResult(
+        recipe=_build_recipe(output_type=MediaType.IMAGE, model="alibaba/wan2.6-t2i"),
+        match=SolutionMatchResult(
+            status=MatchStatus.MATCHED,
+            selected=CandidateMatch(
+                provider="alibaba-mulerouter",
+                model_id="alibaba/wan2.6-t2i",
+                action="generation",
+                score=1.0,
+            ),
+        ),
+        execution_metadata={"planner": "wrapper-spy"},
+    )
+    wrapper = _WrapperSpy(wrapper_result)
+    router = _RouterSpy(
+        ModelRoute(
+            status=ModelRouteStatus.MATCHED,
+            provider="alibaba-mulerouter",
+            model_id="alibaba/wan2.6-t2i",
+            action="generation",
+            output_type=MediaType.IMAGE,
+            model_family="wan2.6",
+        )
+    )
+    service = ExecutionEngineService(wrapper=wrapper, model_router=router, provider_adapter=_ProviderSpy())
+
+    plan = service.plan(IntentRequest(intent_id="intent-plan", prompt="Generate image", desired_outputs=(MediaType.IMAGE,)))
+
+    assert len(wrapper.calls) == 1
+    assert plan.recipe == wrapper_result.recipe
+    assert plan.match == wrapper_result.match
+    assert plan.metadata["planner"] == "wrapper-spy"
+
+
+def test_execution_service_dispatch_uses_model_router_selection() -> None:
+    wrapper_result = WrapperPlanResult(
+        recipe=_build_recipe(output_type=MediaType.IMAGE, model="alibaba/legacy-image"),
+        match=SolutionMatchResult(
+            status=MatchStatus.FALLBACK,
+            selected=CandidateMatch(
+                provider="alibaba-mulerouter",
+                model_id="alibaba/legacy-image",
+                action="generation",
+                score=0.5,
+            ),
+        ),
+    )
+    wrapper = _WrapperSpy(wrapper_result)
+    route = ModelRoute(
+        status=ModelRouteStatus.FALLBACK,
+        provider="alibaba-mulerouter",
+        model_id="alibaba/wan2.6-t2i",
+        action="generation",
+        output_type=MediaType.IMAGE,
+        model_family="wan2.6",
+    )
+    router = _RouterSpy(route)
+    provider = _ProviderSpy()
+    service = ExecutionEngineService(wrapper=wrapper, model_router=router, provider_adapter=provider)
+
+    result = service.dispatch(IntentRequest(intent_id="intent-dispatch", prompt="Generate image", desired_outputs=(MediaType.IMAGE,)))
+
+    assert result.accepted is True
+    assert result.admission.status in {AdmissionStatus.RUNNING, AdmissionStatus.QUEUED}
+    assert len(router.calls) == 1
+    assert provider.submitted[0].model_id == "alibaba/wan2.6-t2i"
+    assert result.details["model_router_status"] == ModelRouteStatus.FALLBACK.value
+
+
+def test_execution_service_dispatch_rejects_multi_output_without_provider_call() -> None:
+    class _FailIfCalledProvider(_ProviderSpy):
+        def submit_generation(self, request):  # pragma: no cover - should not be called
+            raise AssertionError("provider adapter should not be called for unsupported multi-output intents")
+
+    service = ExecutionEngineService(provider_adapter=_FailIfCalledProvider())
+    result = service.dispatch(
+        IntentRequest(
+            intent_id="intent-multi",
+            prompt="Generate image and video",
+            desired_outputs=(MediaType.IMAGE, MediaType.VIDEO),
+        )
+    )
+
+    assert result.accepted is False
+    assert result.admission.status == AdmissionStatus.REJECTED
+    assert result.details["reason"] == "multi_output_not_supported"

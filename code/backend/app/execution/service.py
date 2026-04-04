@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from ..integrations.model_router import ModelRouteRequest, ModelRouteStatus, ModelRouter
 from ..integrations.providers import (
     AlibabaMuleRouterAdapter,
     GenerationRequest,
@@ -20,9 +21,8 @@ from ..runtime.hardware_simulator import (
     WorkloadSpec,
 )
 from ..runtime.preview_policy import PreviewDecision, PreviewPolicy
+from .agentskillos_wrapper import AgentSkillOSWrapper
 from .contracts import ExecutionRecipe, IntentRequest, MatchStatus, MediaType, SolutionMatchResult
-from .matcher import match_recipe_to_solution
-from .normalizer import normalize_intent_to_recipe
 
 _MULTI_OUTPUT_NOT_SUPPORTED = "multi_output_not_supported"
 
@@ -34,6 +34,9 @@ class ExecutionPlan:
     recipe: ExecutionRecipe
     match: SolutionMatchResult
     preview: tuple[PreviewDecision, ...]
+    candidate_artifacts: tuple[str, ...] = ()
+    preview_candidates: tuple[str, ...] = ()
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,8 @@ class ExecutionEngineService:
         hardware_simulator: HardwareSimulator | None = None,
         preview_policy: PreviewPolicy | None = None,
         provider_adapter: MediaProviderAdapter | None = None,
+        wrapper: AgentSkillOSWrapper | None = None,
+        model_router: ModelRouter | None = None,
     ):
         self._simulator = hardware_simulator or HardwareSimulator(
             HardwareProfile(
@@ -76,19 +81,20 @@ class ExecutionEngineService:
         )
         self._preview_policy = preview_policy or PreviewPolicy()
         self._provider_adapter = provider_adapter or AlibabaMuleRouterAdapter()
+        self._wrapper = wrapper or AgentSkillOSWrapper()
+        self._model_router = model_router or ModelRouter()
 
     def plan(self, intent: IntentRequest) -> ExecutionPlan:
-        recipe = normalize_intent_to_recipe(intent)
-        if len(intent.desired_outputs) > 1:
-            match = SolutionMatchResult(
-                status=MatchStatus.NO_MATCH,
-                selected=None,
-                missing_requirements=(_MULTI_OUTPUT_NOT_SUPPORTED,),
-            )
-        else:
-            match = match_recipe_to_solution(recipe, intent.constraints)
-        preview = self._preview_policy.decide(recipe, self._simulator.snapshot())
-        return ExecutionPlan(recipe=recipe, match=match, preview=preview)
+        wrapper_plan = self._wrapper.plan(intent)
+        preview = self._preview_policy.decide(wrapper_plan.recipe, self._simulator.snapshot())
+        return ExecutionPlan(
+            recipe=wrapper_plan.recipe,
+            match=wrapper_plan.match,
+            preview=preview,
+            candidate_artifacts=wrapper_plan.candidate_artifacts,
+            preview_candidates=wrapper_plan.preview_candidates,
+            metadata=wrapper_plan.execution_metadata,
+        )
 
     def dispatch(self, intent: IntentRequest) -> ExecutionDispatchResult:
         plan = self.plan(intent)
@@ -124,13 +130,30 @@ class ExecutionEngineService:
                 details={"reason": admission.reason},
             )
 
-        provider_response = self._submit_provider_request(plan.recipe.prompt, plan.match.selected.model_id, plan.recipe.steps[0].output_type)
+        route = self._model_router.route(
+            ModelRouteRequest(
+                output_type=plan.recipe.steps[0].output_type,
+                action=plan.recipe.steps[0].action,
+                preferred_model_id=plan.match.selected.model_id,
+                preferred_provider=intent.constraints.prefer_provider,
+            )
+        )
+        routed_model_id = (
+            route.model_id
+            if route.status != ModelRouteStatus.NO_ROUTE and route.model_id is not None
+            else plan.match.selected.model_id
+        )
+        provider_response = self._submit_provider_request(plan.recipe.prompt, routed_model_id, plan.recipe.steps[0].output_type)
         accepted = provider_response is None or provider_response.success
         return ExecutionDispatchResult(
             accepted=accepted,
             admission=admission,
             provider_response=provider_response,
-            details={"match_status": plan.match.status.value},
+            details={
+                "match_status": plan.match.status.value,
+                "model_router_status": route.status.value,
+                "model_family": route.model_family or "",
+            },
         )
 
     def _submit_provider_request(self, prompt: str, model_id: str, output_type: MediaType) -> GenerationResponse | None:

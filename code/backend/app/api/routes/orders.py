@@ -9,6 +9,8 @@ from app.domain.enums import ExecutionState, OrderState, PaymentState, PreviewSt
 from app.domain.models import Machine, Order, Payment
 from app.domain.planning import summarize_plan_from_chat
 from app.domain.rules import has_sufficient_payment
+from app.execution import IntentRequest
+from app.execution.service import ExecutionEngineService
 from app.schemas.order import OrderCreateRequest, OrderResponse, ResultConfirmResponse, ResultReadyResponse
 
 router = APIRouter()
@@ -21,6 +23,21 @@ def _succeeded_payment_total_cents(order_id: str, db: Session) -> int:
             Payment.state == PaymentState.SUCCEEDED,
         )
     )
+
+
+def _build_execution_metadata(*, intent_id: str, prompt: str) -> dict[str, str]:
+    plan = ExecutionEngineService().plan(IntentRequest(intent_id=intent_id, prompt=prompt))
+    metadata = dict(plan.metadata)
+    metadata.setdefault("requested_outputs", plan.recipe.metadata.get("requested_outputs", ""))
+    metadata.setdefault("primary_output", plan.recipe.metadata.get("primary_output", ""))
+    metadata.setdefault("match_status", plan.match.status.value)
+    if plan.match.selected is not None:
+        metadata.setdefault("selected_provider", plan.match.selected.provider)
+        metadata.setdefault("selected_model", plan.match.selected.model_id)
+    else:
+        metadata.setdefault("selected_provider", "")
+        metadata.setdefault("selected_model", "")
+    return metadata
 
 
 @router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
@@ -39,6 +56,11 @@ def create_order(payload: OrderCreateRequest, db: Session = Depends(get_db)) -> 
         state=OrderState.PLAN_RECOMMENDED,
     )
     db.add(order)
+    db.flush()
+    order.execution_metadata = _build_execution_metadata(
+        intent_id=f"order-{order.id}",
+        prompt=payload.user_prompt,
+    )
     db.commit()
     db.refresh(order)
     return order
