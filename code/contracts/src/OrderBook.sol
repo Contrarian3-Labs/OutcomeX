@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Ownable} from "./lib/Ownable.sol";
+import {Ownable} from "./common/Ownable.sol";
 import {MachineAssetNFT} from "./MachineAssetNFT.sol";
 import {ITransferGuard} from "./interfaces/ITransferGuard.sol";
 import {IOrderLifecycle} from "./interfaces/IOrderLifecycle.sol";

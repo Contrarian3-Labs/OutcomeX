@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Ownable} from "./lib/Ownable.sol";
-import {SimpleERC721} from "./lib/SimpleERC721.sol";
+import {Ownable} from "./common/Ownable.sol";
+import {SimpleERC721} from "./common/SimpleERC721.sol";
 import {ITransferGuard} from "./interfaces/ITransferGuard.sol";
 
 error TransferGuardBlocked(uint256 machineId, bytes32 reason);

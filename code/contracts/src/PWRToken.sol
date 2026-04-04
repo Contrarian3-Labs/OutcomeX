@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Ownable} from "./lib/Ownable.sol";
-import {SimpleERC20} from "./lib/SimpleERC20.sol";
+import {Ownable} from "./common/Ownable.sol";
+import {SimpleERC20} from "./common/SimpleERC20.sol";
 
 error NotMinter(address caller);
 

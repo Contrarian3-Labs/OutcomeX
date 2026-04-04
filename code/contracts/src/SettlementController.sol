@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Ownable} from "./lib/Ownable.sol";
+import {Ownable} from "./common/Ownable.sol";
 import {IRevenueVault} from "./interfaces/IRevenueVault.sol";
 import {SettlementBreakdown, SettlementInput, SettlementKind} from "./types/OutcomeXTypes.sol";
 
