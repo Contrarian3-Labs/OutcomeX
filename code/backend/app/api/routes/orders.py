@@ -11,6 +11,7 @@ from app.domain.planning import summarize_plan_from_chat
 from app.domain.rules import has_sufficient_payment
 from app.execution import IntentRequest
 from app.execution.service import ExecutionEngineService
+from app.onchain.order_writer import OrderWriter, get_order_writer
 from app.schemas.order import OrderCreateRequest, OrderResponse, ResultConfirmResponse, ResultReadyResponse
 
 router = APIRouter()
@@ -41,7 +42,11 @@ def _build_execution_metadata(*, intent_id: str, prompt: str) -> dict[str, str]:
 
 
 @router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
-def create_order(payload: OrderCreateRequest, db: Session = Depends(get_db)) -> Order:
+def create_order(
+    payload: OrderCreateRequest,
+    db: Session = Depends(get_db),
+    order_writer: OrderWriter = Depends(get_order_writer),
+) -> Order:
     machine = db.get(Machine, payload.machine_id)
     if machine is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
@@ -61,6 +66,7 @@ def create_order(payload: OrderCreateRequest, db: Session = Depends(get_db)) -> 
         intent_id=f"order-{order.id}",
         prompt=payload.user_prompt,
     )
+    order_writer.create_order(order)
     db.commit()
     db.refresh(order)
     return order
@@ -75,7 +81,11 @@ def get_order(order_id: str, db: Session = Depends(get_db)) -> Order:
 
 
 @router.post("/{order_id}/confirm-result", response_model=ResultConfirmResponse)
-def confirm_order_result(order_id: str, db: Session = Depends(get_db)) -> ResultConfirmResponse:
+def confirm_order_result(
+    order_id: str,
+    db: Session = Depends(get_db),
+    order_writer: OrderWriter = Depends(get_order_writer),
+) -> ResultConfirmResponse:
     order = db.get(Order, order_id)
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
@@ -102,7 +112,6 @@ def confirm_order_result(order_id: str, db: Session = Depends(get_db)) -> Result
         or order.settlement_is_self_use is None
         or order.settlement_is_dividend_eligible is None
     ):
-        # Settlement policy must freeze at payment time, not at confirmation.
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Settlement policy must be frozen after payment",
@@ -113,6 +122,8 @@ def confirm_order_result(order_id: str, db: Session = Depends(get_db)) -> Result
     order.result_confirmed_at = confirmed_at
     order.settlement_state = SettlementState.READY
     db.add(order)
+    db.flush()
+    order_writer.confirm_result(order)
     db.commit()
 
     return ResultConfirmResponse(
@@ -124,7 +135,11 @@ def confirm_order_result(order_id: str, db: Session = Depends(get_db)) -> Result
 
 
 @router.post("/{order_id}/mock-result-ready", response_model=ResultReadyResponse)
-def mock_mark_result_ready(order_id: str, db: Session = Depends(get_db)) -> ResultReadyResponse:
+def mock_mark_result_ready(
+    order_id: str,
+    db: Session = Depends(get_db),
+    order_writer: OrderWriter = Depends(get_order_writer),
+) -> ResultReadyResponse:
     order = db.get(Order, order_id)
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
@@ -134,6 +149,8 @@ def mock_mark_result_ready(order_id: str, db: Session = Depends(get_db)) -> Resu
     order.execution_state = ExecutionState.SUCCEEDED
     order.preview_state = PreviewState.READY
     db.add(order)
+    db.flush()
+    order_writer.mark_preview_ready(order)
     db.commit()
 
     return ResultReadyResponse(

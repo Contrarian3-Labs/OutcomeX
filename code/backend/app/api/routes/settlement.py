@@ -6,6 +6,7 @@ from app.api.deps import get_db
 from app.domain.enums import PaymentState, SettlementState
 from app.domain.models import Machine, Order, Payment, SettlementRecord
 from app.domain.rules import calculate_revenue_split, can_start_settlement, has_sufficient_payment
+from app.onchain.order_writer import OrderWriter, get_order_writer
 from app.schemas.settlement import SettlementPreviewResponse, SettlementStartResponse
 
 router = APIRouter()
@@ -61,7 +62,11 @@ def preview_settlement(order_id: str, db: Session = Depends(get_db)) -> Settleme
 
 
 @router.post("/orders/{order_id}/start", response_model=SettlementStartResponse)
-def start_settlement(order_id: str, db: Session = Depends(get_db)) -> SettlementStartResponse:
+def start_settlement(
+    order_id: str,
+    db: Session = Depends(get_db),
+    order_writer: OrderWriter = Depends(get_order_writer),
+) -> SettlementStartResponse:
     order = _validated_order_for_settlement(order_id, db)
     machine = db.get(Machine, order.machine_id)
     if machine is None:
@@ -94,6 +99,8 @@ def start_settlement(order_id: str, db: Session = Depends(get_db)) -> Settlement
     db.add(settlement)
     db.add(order)
     db.add(machine)
+    db.flush()
+    order_writer.settle_order(order, settlement)
     db.commit()
     db.refresh(settlement)
     return SettlementStartResponse(
