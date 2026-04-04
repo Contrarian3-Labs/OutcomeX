@@ -2,11 +2,18 @@
 
 # Python
 __pycache__/
+**/__pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .venv/
+**/.venv/
 venv/
+**/venv/
+*.egg-info/
+**/*.egg-info/
+.tmp/
+**/.tmp/
 
 # Node
 node_modules/
