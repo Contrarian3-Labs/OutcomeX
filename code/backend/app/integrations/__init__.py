@@ -1,2 +1,2 @@
-"""Third-party and boundary adapters."""
+"""Boundary adapters for payments, chain indexing, and execution providers."""
 
