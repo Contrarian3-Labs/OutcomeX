@@ -10,6 +10,7 @@ from .events import (
     SettlementSplitEvent,
     TransferGuardUpdatedEvent,
     normalize_decoded_event,
+    try_normalize_decoded_event,
 )
 from .projections import InMemoryProjectionStore
 from .replay import IndexerConfig, ReplayIndexer, ReplayOutcome
@@ -26,6 +27,7 @@ __all__ = [
     "SettlementSplitEvent",
     "TransferGuardUpdatedEvent",
     "normalize_decoded_event",
+    "try_normalize_decoded_event",
     "InMemoryProjectionStore",
     "IndexerConfig",
     "ReplayIndexer",

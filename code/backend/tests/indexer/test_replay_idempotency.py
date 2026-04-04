@@ -31,11 +31,31 @@ def _order_event(
     *,
     block_number: int,
     log_index: int,
-    event_name: str = "OrderOpened",
-    status: str = "OPEN",
+    event_name: str = "OrderCreated",
     transaction_hash: str = "0xabc",
     removed: bool = False,
 ) -> DecodedChainEvent:
+    args = {
+        "orderId": "1",
+        "machineId": "1",
+        "buyer": "0x9999999999999999999999999999999999999999",
+        "grossAmount": "250",
+    }
+    if event_name == "OrderPaid":
+        args = {"orderId": "1", "machineId": "1", "grossAmount": "250"}
+    elif event_name == "PreviewReady":
+        args = {"orderId": "1", "machineId": "1", "validPreview": True}
+    elif event_name == "OrderSettled":
+        args = {
+            "orderId": "1",
+            "machineId": "1",
+            "kind": 0,
+            "refundToBuyer": "0",
+            "platformShare": "25",
+            "machineShare": "225",
+            "dividendEligible": True,
+        }
+
     return DecodedChainEvent(
         chain_id=177,
         contract_name="OrderBook",
@@ -45,13 +65,7 @@ def _order_event(
         block_hash=f"0xblock-{block_number}",
         transaction_hash=transaction_hash,
         log_index=log_index,
-        args={
-            "orderId": "ord_1",
-            "machineId": "MA-001",
-            "buyer": "0x9999999999999999999999999999999999999999",
-            "amountWei": "250",
-            "status": status,
-        },
+        args=args,
         removed=removed,
     )
 
@@ -75,7 +89,7 @@ def test_replay_indexer_applies_duplicate_log_once_and_advances_cursor() -> None
         normalize_decoded_event(duplicate).event_id,
         "177:12:0xabc:1",
     ]
-    assert projection.get_order("ord_1").status == "OPEN"
+    assert projection.get_order("1").status == "CREATED"
     assert cursor_store.get(chain_id=177).last_indexed_block == 12
 
 
@@ -83,22 +97,19 @@ def test_replay_indexer_applies_events_in_chain_log_order() -> None:
     block_20_late = _order_event(
         block_number=20,
         log_index=9,
-        event_name="OrderMatched",
-        status="MATCHED",
+        event_name="OrderPaid",
         transaction_hash="0xbbb",
     )
     block_20_early = _order_event(
         block_number=20,
         log_index=1,
-        event_name="OrderOpened",
-        status="OPEN",
+        event_name="OrderCreated",
         transaction_hash="0xaaa",
     )
     block_21 = _order_event(
         block_number=21,
         log_index=0,
-        event_name="OrderResultConfirmed",
-        status="CONFIRMED",
+        event_name="PreviewReady",
         transaction_hash="0xccc",
     )
     adapter = StubChainAdapter([block_20_late, block_21, block_20_early])
@@ -132,7 +143,6 @@ def test_replay_indexer_stops_at_removed_logs_and_flags_rewind() -> None:
         block_number=104,
         log_index=0,
         event_name="OrderSettled",
-        status="SETTLED",
         transaction_hash="0x104",
     )
     adapter = StubChainAdapter([unsafe_event, removed_event, safe_event])
@@ -154,3 +164,27 @@ def test_replay_indexer_stops_at_removed_logs_and_flags_rewind() -> None:
     assert outcome.skipped_removed == 1
     assert outcome.reorg_detected is True
     assert outcome.rewind_required_from_block == 103
+
+
+def test_replay_indexer_skips_unsupported_events_without_failing() -> None:
+    supported = _order_event(block_number=11, log_index=1, event_name="OrderCreated", transaction_hash="0x111")
+    unsupported = _order_event(
+        block_number=12,
+        log_index=2,
+        event_name="SettlementControllerSet",
+        transaction_hash="0x222",
+    )
+    adapter = StubChainAdapter([unsupported, supported])
+    cursor_store = InMemoryCursorStore()
+    projection = InMemoryProjectionStore()
+    indexer = ReplayIndexer(
+        adapter=adapter,
+        projection_store=projection,
+        cursor_store=cursor_store,
+        config=IndexerConfig(confirmation_depth=0),
+    )
+
+    outcome = indexer.replay_once(chain_id=177, to_block=20)
+
+    assert projection.applied_event_ids == ["177:11:0x111:1"]
+    assert outcome.applied_events == 1

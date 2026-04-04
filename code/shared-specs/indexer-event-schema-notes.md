@@ -1,39 +1,61 @@
-# OutcomeX Indexer Event Schema Notes (First Pass)
+# OutcomeX Indexer Event Schema Notes (Current Contract Surface)
 
-These notes document the event names and payload fields expected by `code/backend/app/indexer/events.py`.
+These notes document the currently normalized event names and payload fields in
+`code/backend/app/indexer/events.py`, aligned to the active contracts:
+`MachineAssetNFT`, `OrderBook`, `SettlementController`, `RevenueVault`, and `PWRToken`/`SimpleERC20`.
 
-## MachineAsset
+## MachineAssetNFT
 
-- `MachineAssetRegistered`
-- `MachineAssetUpdated`
-- Expected args: `machineId`, `owner`, optional `metadataURI`, optional `pwrQuota`
+- `MachineMinted`
+  - Expected args: `machineId`, `owner`, `tokenURI`
+  - Normalizes to `MachineAssetEvent`.
+- `Transfer` (ERC721 transfer where args include `tokenId`)
+  - Expected args: `from`, `to`, `tokenId`
+  - Normalizes owner changes to `MachineAssetEvent`.
 
-## Order lifecycle
+## Order lifecycle (`OrderBook` + `SettlementController`)
 
-- `OrderOpened`
-- `OrderMatched`
-- `OrderResultSubmitted`
-- `OrderResultConfirmed`
+- `OrderCreated`
+- `OrderClassified`
+- `OrderPaid`
+- `PreviewReady`
 - `OrderSettled`
-- `OrderCancelled`
-- Expected args: `orderId`, optional `machineId`, optional `buyer`, optional `amountWei`, optional `status`
+- `Settled` (from `SettlementController`)
+- Shared expected args: `orderId`; optional `machineId`, `buyer`; settlement events use `kind`.
+- Amount source:
+  - `OrderCreated`/`OrderPaid`: `grossAmount`
+  - `OrderSettled`: derived from `refundToBuyer + platformShare + machineShare`
+  - `Settled`: `grossAmount`
 
-## SettlementSplit
+`kind` mapping to normalized order status:
+- `0` or `Confirmed` -> `CONFIRMED`
+- `1` or `RejectedValidPreview` -> `REJECTED`
+- `2` or `FailedOrNoValidPreview` -> `REFUNDED`
 
-- `SettlementSplit`
-- Expected args: `orderId`, `recipient`, `amountWei`, optional `role`, optional `bps`
+## Revenue settlement and claims (`RevenueVault` + `SettlementController`)
 
-## RevenueClaimed
-
+- `RevenueAccrued`
+  - Expected args: `machineId`, `orderId`, `machineOwner`, `amount`, `dividendEligible`
+  - Normalizes to `SettlementSplitEvent` with role:
+    - `MACHINE_OWNER_DIVIDEND` when dividend-eligible
+    - `MACHINE_OWNER_NON_DIVIDEND` otherwise
 - `RevenueClaimed`
-- Expected args: `account`, `amountWei`, optional `nonce`
+  - Expected args: `machineId`, `machineOwner`, `amount`
+  - Normalizes to `RevenueClaimedEvent`.
+- `RefundClaimed`
+  - Expected args: `buyer`, `amount`
+  - Normalizes to `RevenueClaimedEvent`.
+- `PlatformRevenueClaimed`
+  - Expected args: `treasury`, `amount`
+  - Normalizes to `RevenueClaimedEvent`.
 
-## TransferGuardUpdated
+## PWR token mint surface (`PWRToken`/`SimpleERC20`)
 
-- `TransferGuardUpdated`
-- Expected args: `assetId`/`machineId`/`tokenId`, `isTransferable`, optional `reason`, optional `activeTasks`, optional `unsettledRevenue`
+- `Transfer` when `from == 0x0000000000000000000000000000000000000000`
+  - Expected args: `from`, `to`, `value`
+  - Normalizes to `PWRMintedEvent` with reason `MINT`.
 
-## PWRMinted
+## Unsupported event handling
 
-- `PWRMinted`
-- Expected args: `to`, `amountWei`, optional `reason`
+Events outside this normalized surface are intentionally treated as unsupported.
+`ReplayIndexer` skips unsupported events safely and continues applying supported ones.

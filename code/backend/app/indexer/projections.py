@@ -84,20 +84,42 @@ class InMemoryProjectionStore:
         payload = event.payload
 
         if isinstance(payload, MachineAssetEvent):
+            existing = self._machine_assets.get(payload.machine_id)
             self._machine_assets[payload.machine_id] = MachineAssetView(
                 machine_id=payload.machine_id,
                 owner=payload.owner,
-                metadata_uri=payload.metadata_uri,
-                pwr_quota=payload.pwr_quota,
+                metadata_uri=(
+                    payload.metadata_uri
+                    if payload.metadata_uri is not None
+                    else (existing.metadata_uri if existing is not None else None)
+                ),
+                pwr_quota=(
+                    payload.pwr_quota
+                    if payload.pwr_quota is not None
+                    else (existing.pwr_quota if existing is not None else None)
+                ),
                 last_event_id=event.event_id,
             )
         elif isinstance(payload, OrderLifecycleEvent):
+            existing = self._orders.get(payload.order_id)
             self._orders[payload.order_id] = OrderView(
                 order_id=payload.order_id,
-                machine_id=payload.machine_id,
-                buyer=payload.buyer,
+                machine_id=(
+                    payload.machine_id
+                    if payload.machine_id is not None
+                    else (existing.machine_id if existing is not None else None)
+                ),
+                buyer=(
+                    payload.buyer
+                    if payload.buyer is not None
+                    else (existing.buyer if existing is not None else None)
+                ),
                 status=payload.status,
-                amount_wei=payload.amount_wei,
+                amount_wei=(
+                    payload.amount_wei
+                    if payload.amount_wei is not None
+                    else (existing.amount_wei if existing is not None else None)
+                ),
                 last_event_id=event.event_id,
             )
         elif isinstance(payload, SettlementSplitEvent):

@@ -9,7 +9,7 @@ from app.indexer.cursor import (
     InMemoryProcessedEventStore,
     ProcessedEventStore,
 )
-from app.indexer.events import normalize_decoded_event
+from app.indexer.events import try_normalize_decoded_event
 from app.indexer.projections import ProjectionStore
 from app.onchain.adapter import ChainAdapter, DecodedChainEvent
 
@@ -108,7 +108,9 @@ class ReplayIndexer:
             if safe_upper_block is not None and decoded_event.block_number > safe_upper_block:
                 continue
 
-            normalized_event = normalize_decoded_event(decoded_event)
+            normalized_event = try_normalize_decoded_event(decoded_event)
+            if normalized_event is None:
+                continue
             if self._processed_event_store.contains(normalized_event.event_id):
                 skipped_duplicates += 1
                 continue
