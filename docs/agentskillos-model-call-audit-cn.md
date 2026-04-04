@@ -81,6 +81,10 @@
 - OutcomeX 已经新增 `AgentSkillOSBridge`；
 - 真实调用了本地 AgentSkillOS 的 `discover_skills(...)`；
 - discovery 阶段会把 AgentSkillOS 的 LLM 环境变量切到 DashScope / 百炼兼容入口；
+- 真实 smoke check 结果表明：
+  - 单次 `LiteLLM -> DashScope` completion 是正常的；
+  - `discover_skills('Create a launch teaser poster with one final image deliverable', skill_group='skill_seeds')` 可以完成，但实测耗时约 `88.15s`；
+  - 因此最初的 `30s` bridge 超时并不是 provider 不通，而是超时时间太短；
 - 这意味着：
   - **retrieval / planning 阶段已经开始被 OutcomeX 接管**
   - **runtime delivery 阶段仍未被 OutcomeX 完全接管**

@@ -143,4 +143,4 @@ def test_agentskillos_bridge_parses_discovery_output() -> None:
     _, env, cwd, timeout_seconds = runner.calls[0]
     assert env["LLM_BASE_URL"].endswith("/compatible-mode/v1")
     assert cwd == "/tmp/AgentSkillOS"
-    assert timeout_seconds == 30.0
+    assert timeout_seconds == 120.0

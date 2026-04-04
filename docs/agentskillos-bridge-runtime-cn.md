@@ -8,6 +8,7 @@
 - OutcomeX 新增了 `code/backend/app/integrations/agentskillos_bridge.py`；
 - 该 bridge 不再只是“参考 AgentSkillOS 思路”，而是会通过 subprocess 真实调用本地 `AgentSkillOS` checkout；
 - 调用的目标是 `workflow.service.discover_skills(...)`；
+- 由于真实 `discover_skills(...)` 在 `skill_seeds` 上一次完整搜索实测约 `88s`，bridge 默认超时已提高到 `120s`，避免把“慢搜索”误判为“桥接失败”；
 - 调用时会把 AgentSkillOS 的 LLM 环境变量切到 OutcomeX 控制的 DashScope / 百炼兼容接口：
   - `LLM_MODEL`
   - `LLM_BASE_URL`

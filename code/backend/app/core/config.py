@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     agentskillos_root: str = ""
     agentskillos_skill_group: str = "skill_seeds"
     agentskillos_llm_model: str = ""
-    agentskillos_discovery_timeout_seconds: float = 30.0
+    agentskillos_discovery_timeout_seconds: float = 120.0
 
     model_config = SettingsConfigDict(
         env_prefix="OUTCOMEX_",
