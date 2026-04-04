@@ -51,66 +51,94 @@
 - HSP 回调 OutcomeX 后端
 - OutcomeX 后端再调用自己的业务合约推进订单状态
 
-## 2. HashKey 测试链对 `USDT/USDC` 的现实约束
+## 2. HashKey 测试链上的 `USDT/USDC` 真实情况
 
-我核对了官方 HashKey docs / testnet 资料，得到的结论是：
+这里需要明确修正一个先前的保守判断：
 
-### 2.1 官方测试链资料明确给出的，是 `HSK` 测试币
+- HashKey Testnet 的确提供了可直接用于支付实验的 `USDC` 和 `USDT`
+- 而且两者的授权能力不同，不能混为一谈
 
-官方资料里能明确看到的，是：
+根据你指出的文档表格，当前应明确记录为：
 
-- HashKey Chain Testnet
-- `ChainID = 133`
-- 原生 gas token 是 `HSK`
-- 官方 faucet 给的是 testnet `HSK`
+### 2.1 HashKey Testnet 基础信息
 
-但我没有在当前查到的官方测试链开发文档中，看到一组明确的、官方维护的 testnet `USDT` / `USDC` 合约地址。
+- network: `hashkey-testnet`
+- `chainId = 133`
 
-这意味着：
+### 2.2 测试链 `USDC`
 
-- 不能把“HashKey 测试链上一定有官方 `USDT/USDC` 可直接拿来支付”当成既定前提
+- token: `USDC`
+- address: `0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e`
+- decimals: `6`
+- 支持: `EIP-3009`
 
-### 2.2 主网/生态侧存在 HashKey Chain 上的 `USDT`
+### 2.3 测试链 `USDT`
 
-我查到 HashKey Global 的公开公告里，确实有：
+- token: `USDT`
+- address: `0x372325443233fEbaC1F6998aC750276468c83CC6`
+- decimals: `6`
+- 支持: `Permit2`
 
-- HashKey Chain 上支持 `USDT` 充提
+### 2.4 这意味着什么
 
-但这是：
+这意味着在 HashKey testnet 环境下，OutcomeX 完全可以实现：
 
-- 主网/交易所接入层面的事实
+- 用户钱包直接签名提交 `USDC`
+- 用户钱包直接签名提交 `USDT`
 
-不是：
+但两条技术路径不完全一样：
 
-- “官方文档已经为开发者提供稳定、标准、测试环境可直接调用的 testnet `USDT/USDC` 支付基线”
+#### `USDC`
 
-### 2.3 这对 OutcomeX 的设计意味着什么
+建议优先走：
 
-对于开发和测试阶段，我建议不要把系统设计押注在：
+- `EIP-3009`
 
-- “HashKey testnet 官方一定有可直接用于支付的 `USDT/USDC`”
+也就是：
 
-更稳妥的做法是：
+- `payWithUSDCByAuthorization(...)`
 
-#### 路线 A：测试链自部署 `MockUSDT / MockUSDC`
+#### `USDT`
+
+建议优先走：
+
+- `Permit2`
+
+也就是：
+
+- `Permit2 + payWithUSDT(...)`
+
+所以正确结论不是：
+
+- “HashKey testnet 上没有可直接用的稳定币支付基线”
+
+而是：
+
+- “HashKey testnet 上已经有可用的 `USDC/USDT`，并且授权模型不同，应分开设计支付入口”
+
+### 2.5 这对 OutcomeX 的设计意味着什么
+
+对于开发和测试阶段，推荐变成：
+
+#### 路线 A：直接使用 HashKey Testnet 上现成的 `USDC/USDT`
 
 优点：
 
-- 最可控
-- 开发和测试环境稳定
-- 可以完整模拟“用户钱包直接稳定币支付合约”的路径
+- 更接近最终链上直付形态
+- 可以真实验证钱包签名支付路径
+- 可以提前把 `EIP-3009 / Permit2` 路径打通
 
-#### 路线 B：HSP 路径用于真实商户支付接入，测试期只模拟 webhook
+#### 路线 B：保留 HSP 作为 merchant checkout 路线
 
 优点：
 
-- 更接近真实商户流程
+- 更接近真实商户支付接入
 - 与 merchant 文档完全一致
 
-我的建议是：
+所以正式建议不再是“testnet 自部署 `MockUSDT / MockUSDC` 为主”，而是：
 
-- 开发 / hackathon / testnet：自部署 `MockUSDT / MockUSDC`
-- 生产支付接入：走真实 `HSP`
+- testnet：优先使用现成 `USDC/USDT`
+- HSP：并行保留为 merchant checkout 路线
 
 ## 3. 哪些交互应该用户直连合约
 
@@ -169,11 +197,24 @@ OutcomeX 应该分成两类链上交互：
 - 这是用户从自己钱包支付协议资产
 - 最自然的模式就是用户直签
 
+#### 5. 用户直接用 `USDT/USDC` 支付订单
+
+例如：
+
+- `payWithUSDCByAuthorization(...)`
+- `Permit2 + payWithUSDT(...)`
+
+原因：
+
+- 这是用户钱包直接向业务支付路由合约付款
+- 应由用户自己签名完成授权与支付
+
 所以可以总结为：
 
 - 资产购买
 - 资产转移
 - 收益 claim
+- `USDT/USDC direct pay`
 - `PWR pay`
 
 都应该优先设计成用户直接和合约交互。
@@ -186,7 +227,7 @@ OutcomeX 应该分成两类链上交互：
 
 - 明显是后端产品逻辑
 
-#### 2. `USDT/HSP` 支付入口
+#### 2. `USDT/USDC via HSP` 支付入口
 
 - 本身就是 merchant backend + webhook 体系
 - 不是纯 dApp 直连合约交互
@@ -234,7 +275,7 @@ OutcomeX 最合理的不是：
 适用于：
 
 - 订单
-- `USDT/HSP` 支付
+- `USDT/USDC via HSP` 支付
 - 执行
 - preview
 - 结果确认
@@ -250,6 +291,7 @@ OutcomeX 最合理的不是：
 - NFT 购买
 - NFT 转移
 - 收益 claim
+- `USDT/USDC direct pay`
 - `PWR` 直接支付
 
 这两种模式同时存在，才符合 OutcomeX 的产品本质：
@@ -271,6 +313,7 @@ OutcomeX 最合理的不是：
 
 - HSP 真实 webhook -> 业务合约
 - 用户钱包直接购买 NFT 的 marketplace
+- 用户钱包直接用 `USDT/USDC` 支付订单
 - 用户钱包直接用 `PWR` 支付订单
 
 所以当前还是：
@@ -280,7 +323,7 @@ OutcomeX 最合理的不是：
 
 ## 6. 我建议锁定的正式支付路线
 
-## 6.1 `USDT/HSP` 路线
+## 6.1 `USDT/USDC via HSP` 路线
 
 ### 正式路线
 
@@ -329,22 +372,37 @@ OutcomeX 最合理的不是：
 
 ## 6.3 稳定币直签路线要不要做
 
-可以做，但我不建议它成为主路径。
+答案是：要做，而且 testnet 就应该做。
 
-也就是说，你可以额外支持：
+因为现在已经明确：
 
-- 用户钱包直接用 `MockUSDT / MockUSDC` 或正式 `USDT/USDC` 调用支付路由合约
+- HashKey testnet 上有可用 `USDC`
+- HashKey testnet 上有可用 `USDT`
+- `USDC` 支持 `EIP-3009`
+- `USDT` 支持 `Permit2`
 
-但我建议：
+所以 OutcomeX 应该正式支持：
 
-- 测试期可做
-- 生产期不要把它作为默认入口
+- `USDC direct pay`
+- `USDT direct pay`
+
+更具体地说：
+
+- `USDC` 推荐设计成 `payWithUSDCByAuthorization(...)`
+- `USDT` 推荐设计成 `Permit2 + payWithUSDT(...)`
+
+但我仍然不建议把它作为唯一入口。
+
+更准确的建议是：
+
+- 稳定币直签支付：必须实现
+- `HSP merchant checkout`：也要保留
 
 原因：
 
-- HSP 更适合商户支付体验
-- merchant webhook 模式更适合 OutcomeX 这种产品
-- 直签稳定币更像纯 DeFi/dApp，不是 chat-native outcome product 的最佳默认体验
+- 直签稳定币更接近链上原生支付路径
+- `HSP` 更适合商户 checkout 和 webhook 管理
+- 两者适合不同的产品入口与用户习惯
 
 ## 7. runtime cost service 必须单独实现
 
@@ -442,7 +500,7 @@ OutcomeX 最合理的不是：
 
 下面给一条推荐的完整路径。
 
-## 9.1 路径一：默认 `USDT/HSP`
+## 9.1 路径一：默认 `USDT/USDC via HSP`
 
 ### Step 1：用户输入需求
 
@@ -475,7 +533,7 @@ OutcomeX 最合理的不是：
 - 调合约 `createOrder`
 - 保存链上 order receipt id / tx hash
 
-### Step 3：用户通过 HSP 支付
+### Step 3：用户通过 HSP 支付 `USDT` 或 `USDC`
 
 用户：
 
@@ -542,7 +600,57 @@ indexer：
 
 - 展示收益、claimable balance、transfer blocked state
 
-## 9.2 路径二：用户直接 `PWR pay`
+## 9.2 路径二：用户直接稳定币支付合约
+
+### Step 1：用户创建订单
+
+同上。
+
+### Step 2：后端返回 direct pay quote
+
+后端：
+
+- 返回订单金额
+- 返回支付 token 类型
+- 返回当前链信息：
+  - `hashkey-testnet`
+  - `chainId = 133`
+- 返回对应 token 信息：
+  - `USDC = 0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e`
+  - `USDT = 0x372325443233fEbaC1F6998aC750276468c83CC6`
+
+### Step 3：用户钱包直签稳定币支付
+
+如果是 `USDC`：
+
+- 使用 `EIP-3009`
+- 调支付路由合约的 `payWithUSDCByAuthorization(...)`
+
+如果是 `USDT`：
+
+- 使用 `Permit2`
+- 调支付路由合约的 `payWithUSDT(...)`
+
+### Step 4：合约记录订单已支付
+
+合约：
+
+- 校验支付 token
+- 记录订单 payment success
+- 冻结 settlement classification
+
+### Step 5：indexer 回写后端
+
+indexer：
+
+- 监听支付确认事件
+- 更新后端支付状态
+
+### Step 6：后续执行 / preview / confirm / settlement
+
+与 `HSP` 路径相同。
+
+## 9.3 路径三：用户直接 `PWR pay`
 
 ### Step 1：用户创建订单
 
@@ -574,9 +682,9 @@ indexer：
 
 ### Step 4：后续执行 / preview / confirm / settlement
 
-与 `USDT/HSP` 路径相同，只是资金路径变成 `PWR`。
+与 `USDT/USDC via HSP` 路径相同，只是资金路径变成 `PWR`。
 
-## 9.3 路径三：用户购买或转移 NFT
+## 9.4 路径四：用户购买或转移 NFT
 
 ### 购买
 
@@ -617,8 +725,9 @@ indexer：
 ### 10.1 支付
 
 - 默认支付：`USDT/USDC via HSP`
-- 第二支付：`PWR pay`
-- 测试链开发时：自部署 `MockUSDT / MockUSDC`
+- 第二支付：`USDT/USDC direct contract pay`
+- 第三支付：`PWR pay`
+- testnet 开发时：直接使用现成 `USDC/USDT`
 
 ### 10.2 产品控制面
 
@@ -630,6 +739,7 @@ indexer：
 - NFT 购买：用户直连合约
 - NFT 转移：用户直连合约
 - 收益 claim：用户直连合约
+- `USDT/USDC direct pay`：用户直连合约
 - `PWR pay`：用户直连合约
 
 ### 10.4 AI 执行

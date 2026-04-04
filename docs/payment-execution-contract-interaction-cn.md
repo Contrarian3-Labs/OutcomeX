@@ -349,11 +349,11 @@
 
 ## 4. 我建议的正式技术路线
 
-## 4.1 支付路线：双支付入口
+## 4.1 支付路线：三支付入口
 
-我建议 OutcomeX 保留两条正式支付路径：
+我建议 OutcomeX 保留三条正式支付路径：
 
-### 路径 A：`USDT via HSP`
+### 路径 A：`USDT/USDC via HSP`
 
 用途：
 
@@ -366,7 +366,7 @@
 - 适合作为主交易路径
 - 便于后续接真实 checkout
 
-### 路径 B：`existing PWR pay`
+### 路径 B：`PWR pay`
 
 用途：
 
@@ -378,11 +378,29 @@
 - 只在协议内发生结算和再分配
 - 是对 `PWR` 使用价值的关键支撑
 
+### 路径 C：`USDT/USDC direct contract pay`
+
+用途：
+
+- 用户钱包直接使用稳定币支付业务支付路由合约
+
+当前已知 HashKey testnet 信息：
+
+- `chainId = 133`
+- `USDC = 0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e`
+- `USDT = 0x372325443233fEbaC1F6998aC750276468c83CC6`
+
+授权能力：
+
+- `USDC`：`EIP-3009`
+- `USDT`：`Permit2`
+
 所以最终应该是：
 
-- `USDT/HSP` 是默认主入口
-- `PWR pay` 是第二支付入口
-- 两条路径进入同一个订单状态机
+- `USDT/USDC via HSP` 是默认主入口
+- `USDT/USDC direct contract pay` 是链上原生稳定币支付入口
+- `PWR pay` 是协议资产支付入口
+- 三条路径进入同一个订单状态机
 
 ## 4.2 真实支付不建议“用户直接给业务合约打钱”
 
@@ -392,7 +410,7 @@
 
 更好的路线是：
 
-### 对 `USDT/HSP`
+### 对 `USDT/USDC via HSP`
 
 - 用户在前端点击支付
 - 后端创建 payment intent
@@ -405,6 +423,15 @@
 - 用户不直接操作业务合约
 - 后端是产品控制面
 - 合约是资产与结算状态机
+
+### 对 `USDT/USDC direct pay`
+
+这里也应该支持用户直签链上支付：
+
+- `USDC` 走 `EIP-3009`
+- `USDT` 走 `Permit2`
+
+这条路径在 testnet 就可以真实落地，不需要再假设没有可用稳定币。
 
 ### 对 `PWR pay`
 
@@ -425,7 +452,8 @@
 
 如果从产品体验来说，我更推荐：
 
-- `USDT/HSP`：后端主导
+- `USDT/USDC via HSP`：后端主导
+- `USDT/USDC direct pay`：用户钱包直接签链上交易
 - `PWR pay`：用户钱包直接签链上交易
 
 这是最合理的组合。
@@ -434,9 +462,9 @@
 
 最终建议如下：
 
-### 对 `USDT/HSP` 路径
+### 对 `USDT/USDC via HSP` 路径
 
-1. 用户通过 HSP 支付 `USDT`
+1. 用户通过 HSP 支付 `USDT` 或 `USDC`
 2. 回调后，后端确认支付完成
 3. 后端调用链上订单支付确认接口
 4. 用户确认结果后，后端再调用合约 settlement
@@ -459,6 +487,15 @@
 
 - 分润真相在链上
 - 后端只是 query + workflow coordinator
+
+### 对 `USDT/USDC direct pay` 路径
+
+1. 用户直接在钱包中签稳定币支付
+2. `USDC` 走 `EIP-3009`
+3. `USDT` 走 `Permit2`
+4. 支付路由合约记录订单已支付
+5. indexer 同步支付状态到后端
+6. 后续仍然按统一订单状态机走 preview / confirm / settlement
 
 ## 4.4 `runtime cost` 应独立成服务
 
@@ -632,9 +669,9 @@
 - 主路径：用户和后端交互
 - 后端写链
 - indexer 同步链上状态
-- 只有 `PWR pay` 这类钱包支付行为由用户直接签交易
+- `USDT/USDC direct pay` 与 `PWR pay` 这类钱包支付行为由用户直接签交易
 
-## 5.2 `USDT/HSP` 路径完整交互
+## 5.2 `USDT/USDC via HSP` 路径完整交互
 
 ### Step 1：用户输入需求
 
@@ -675,7 +712,7 @@
 - backend: `plan_recommended`
 - contract: `Created`
 
-### Step 3：用户支付 `USDT`
+### Step 3：用户支付 `USDT` 或 `USDC`
 
 用户动作：
 
@@ -790,7 +827,56 @@ indexer 动作：
 - `unsettledRevenueByMachine` 减少
 - 如果没有其他未 claim 收益，则机器可再次转移
 
-## 5.3 `PWR pay` 路径完整交互
+## 5.3 `USDT/USDC direct pay` 路径完整交互
+
+### Step 1：用户创建订单
+
+同上。
+
+### Step 2：后端返回链上支付参数
+
+后端给出：
+
+- 当前订单金额
+- token 类型
+- 当前链参数：
+  - `hashkey-testnet`
+  - `chainId = 133`
+- 对应 token 地址：
+  - `USDC = 0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e`
+  - `USDT = 0x372325443233fEbaC1F6998aC750276468c83CC6`
+
+### Step 3：用户钱包签名稳定币支付
+
+如果是 `USDC`：
+
+- 通过 `EIP-3009`
+- 调业务支付路由合约
+
+如果是 `USDT`：
+
+- 通过 `Permit2`
+- 调业务支付路由合约
+
+### Step 4：合约记录订单已支付
+
+合约：
+
+- 记录支付成功
+- 冻结 settlement classification
+
+### Step 5：indexer 回写后端
+
+indexer：
+
+- 监听支付事件
+- 更新后端支付状态
+
+### Step 6：后续执行 / preview / confirm / settlement
+
+与 `USDT/USDC via HSP` 路径相同。
+
+## 5.4 `PWR pay` 路径完整交互
 
 ### Step 1：用户创建订单
 
@@ -822,7 +908,7 @@ indexer 动作：
 
 ### Step 4 ~ Step 10
 
-之后执行、preview、confirm、settlement、claim 流程与上面类似，只是资金路径是 `PWR` 而不是 `USDT/HSP`。
+之后执行、preview、confirm、settlement、claim 流程与上面类似，只是资金路径是 `PWR` 而不是 `USDT/USDC via HSP`。
 
 ---
 
@@ -863,8 +949,9 @@ indexer 动作：
 
 ### 支付
 
-- 默认支付：`USDT via HSP`
-- 第二支付：`existing PWR`
+- 默认支付：`USDT/USDC via HSP`
+- 第二支付：`USDT/USDC direct contract pay`
+- 第三支付：`PWR pay`
 
 ### 控制面
 
