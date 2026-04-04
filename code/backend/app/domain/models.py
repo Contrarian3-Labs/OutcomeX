@@ -4,7 +4,14 @@ from uuid import uuid4
 from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from app.domain.enums import ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
+from app.domain.enums import (
+    ExecutionRunStatus,
+    ExecutionState,
+    OrderState,
+    PaymentState,
+    PreviewState,
+    SettlementState,
+)
 
 
 def utc_now() -> datetime:
@@ -63,6 +70,39 @@ class Order(Base):
     payments: Mapped[list["Payment"]] = relationship(back_populates="order")
     settlement: Mapped["SettlementRecord | None"] = relationship(back_populates="order")
     revenue_entries: Mapped[list["RevenueEntry"]] = relationship(back_populates="order")
+    execution_runs: Mapped[list["ExecutionRun"]] = relationship(back_populates="order")
+
+
+class ExecutionRun(Base):
+    __tablename__ = "execution_runs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True, nullable=False)
+    external_order_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    status: Mapped[ExecutionRunStatus] = mapped_column(
+        Enum(ExecutionRunStatus),
+        default=ExecutionRunStatus.QUEUED,
+        nullable=False,
+    )
+    workspace_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preview_manifest: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    artifact_manifest: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    skills_manifest: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    model_usage_manifest: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    summary_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+    order: Mapped["Order"] = relationship(back_populates="execution_runs")
 
 
 class Payment(Base):

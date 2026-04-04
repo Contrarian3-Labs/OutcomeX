@@ -149,7 +149,15 @@ class DashScopeProviderAdapter:
             parameters.setdefault("negative_prompt", request.negative_prompt)
         payload = {
             "model": request.model_id,
-            "input": {"prompt": request.prompt},
+            "input": {
+                "prompt": request.prompt,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"text": request.prompt}],
+                    }
+                ],
+            },
         }
         if parameters:
             payload["parameters"] = parameters

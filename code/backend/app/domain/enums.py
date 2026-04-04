@@ -27,6 +27,15 @@ class ExecutionState(str, Enum):
     CANCELLED = "cancelled"
 
 
+class ExecutionRunStatus(str, Enum):
+    QUEUED = "queued"
+    PLANNING = "planning"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class PreviewState(str, Enum):
     DRAFT = "draft"
     GENERATING = "generating"

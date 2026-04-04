@@ -1,98 +1,95 @@
-# AgentSkillOS 内部模型调用审计
+# AgentSkillOS 内部模型调用审计（更新版）
 
-本文档记录当前参考仓库 `reference-code/AgentSkillOS` 中，哪些代码路径会直接调用外部模型或提供商，从而绕过 OutcomeX 的 `ModelRouter`。
+本文档记录 `reference-code/AgentSkillOS` 当前仍然存在的模型/提供商调用边界，以及哪些部分已经被本轮改造收口。
 
-## 1. 总结
+## 1. 已收口的部分
 
-当前 AgentSkillOS 的外部模型调用分成三类：
-
-### 1.1 Runtime execution
-- 主要通过 `ClaudeSDKClient`；
-- 负责 DAG / direct / free-style 的实际执行；
-- 这是当前最关键的“未被 OutcomeX 接管”的部分。
-
-### 1.2 Retrieval / capability tree / vector search
-- 主要通过 `LiteLLM`；
-- 用于能力树构建、树搜索、vector embedding、recipe embedding；
-- 可以通过 OpenAI-compatible 接口重定向，但依旧不是 OutcomeX 的 `ModelRouter`。
-
-### 1.3 Skill script 级别的 provider 直连
-- 某些 skill 脚本会自己直连 OpenRouter 或 Anthropic SDK；
-- 这部分也会绕过 OutcomeX。
-
-## 2. Runtime 层：Claude SDK
-
-### 2.1 主运行时 client
-- `reference-code/AgentSkillOS/src/orchestrator/runtime/client.py`
-  - `SkillClient.connect()`
-  - `SkillClient.execute()`
-  - `SkillClient.execute_with_metrics()`
-  - `SkillClient.stream_execute()`
-- 直接依赖 `ClaudeSDKClient`。
-
-### 2.2 三个执行引擎都会走这条路径
-- `reference-code/AgentSkillOS/src/orchestrator/dag/engine.py`
-- `reference-code/AgentSkillOS/src/orchestrator/direct/engine.py`
-- `reference-code/AgentSkillOS/src/orchestrator/freestyle/engine.py`
+### 1.1 Runtime execution 默认不再锁死 Claude SDK
+- 文件：
+  - `reference-code/AgentSkillOS/src/orchestrator/runtime/client.py`
+  - `reference-code/AgentSkillOS/src/skill_orchestrator/client.py`
+- 变化：
+  - `SkillClient` 已从“只会 `ClaudeSDKClient`”变成 facade；
+  - 当存在 `LLM_API_KEY / OPENAI_API_KEY` 时，默认走新的 OpenAI-compatible tool loop；
+  - 只有在没有这些环境变量时，才退回 Claude backend。
 
 这意味着：
-- 只要真的跑 execution / delivery；
-- 最终运行时就仍然落在 Claude SDK；
-- OutcomeX 目前还没有接管这条 runtime 路径。
+- `dag / direct / free-style / unified_service` 这些执行路径，不再天然把 OutcomeX 排除在外；
+- OutcomeX 可以通过注入 DashScope/Qwen 兼容环境，接管 runtime 模型出口。
 
-## 3. Retrieval 层：LiteLLM
+### 1.2 直接外呼 OpenRouter / Anthropic 的两个高风险脚本已替换
 
-### 3.1 Completion
-- `reference-code/AgentSkillOS/src/manager/tree/builder.py`
-- `reference-code/AgentSkillOS/src/manager/tree/searcher.py`
-- `reference-code/AgentSkillOS/src/manager/tree/layer_processor.py`
-- `reference-code/AgentSkillOS/src/skill_retriever/tree/builder.py`
-- `reference-code/AgentSkillOS/src/skill_retriever/search/searcher.py`
+#### 已替换 1：图片脚本
+- 文件：
+  - `reference-code/AgentSkillOS/data/skill_seeds/generate-image/scripts/generate_image.py`
+- 旧状态：
+  - 直连 OpenRouter
+  - 读 `OPENROUTER_API_KEY`
+- 新状态：
+  - 走 DashScope image-generation boundary
+  - 读 DashScope/OutcomeX 兼容环境变量
 
-### 3.2 Embedding
-- `reference-code/AgentSkillOS/src/manager/vector/indexer.py`
-- `reference-code/AgentSkillOS/src/manager/vector/searcher.py`
-- `reference-code/AgentSkillOS/src/manager/tree/dormant_indexer.py`
-- `reference-code/AgentSkillOS/src/manager/tree/dormant_searcher.py`
-- `reference-code/AgentSkillOS/src/web/recipe.py`
+#### 已替换 2：MCP evaluation 脚本
+- 文件：
+  - `reference-code/AgentSkillOS/data/skill_seeds/mcp-builder/scripts/evaluation.py`
+- 旧状态：
+  - `Anthropic()`
+  - `client.messages.create(...)`
+- 新状态：
+  - `OpenAI(...)`
+  - OpenAI-compatible function tool loop
 
-这类调用并不一定是问题本身，因为它们可以切到 DashScope/OpenAI-compatible endpoint；
-但它们依旧绕过 OutcomeX 的统一 `ModelRouter`，所以只能算“可重定向”，不能算“已被 OutcomeX 真正接管”。
+## 2. 仍未完全收口的部分
 
-## 4. Skill script 层：直接外呼
+### 2.1 Retrieval / search / embedding 仍主要是 LiteLLM 直连 compatible endpoint
+- 代表文件：
+  - `reference-code/AgentSkillOS/src/manager/tree/builder.py`
+  - `reference-code/AgentSkillOS/src/manager/tree/searcher.py`
+  - `reference-code/AgentSkillOS/src/manager/tree/layer_processor.py`
+  - `reference-code/AgentSkillOS/src/manager/vector/indexer.py`
+  - `reference-code/AgentSkillOS/src/manager/vector/searcher.py`
+  - `reference-code/AgentSkillOS/src/web/recipe.py`
 
-### 4.1 OpenRouter 图片脚本
-- `reference-code/AgentSkillOS/data/skill_seeds/generate-image/scripts/generate_image.py`
-- 直接请求 `https://openrouter.ai/api/v1/chat/completions`
-- 默认模型包括：
-  - `google/gemini-3-pro-image-preview`
-  - `black-forest-labs/flux.2-pro`
-  - `black-forest-labs/flux.2-flex`
+这部分现在可以通过环境变量切到 DashScope / 百炼 compatible endpoint，但仍然不是 OutcomeX 后端 API 层面的 `ModelRouter` 收口。
 
-### 4.2 Anthropic SDK 脚本
-- `reference-code/AgentSkillOS/data/skill_seeds/mcp-builder/scripts/evaluation.py`
-- 直接使用 `Anthropic()` 与 `client.messages.create(...)`
+### 2.2 指令型 skill 还依赖模型自己理解 `SKILL.md`
+- 代表文件：
+  - `reference-code/AgentSkillOS/data/skill_seeds/canvas-design/SKILL.md`
+- 问题：
+  - 这类 skill 没有稳定脚本；
+  - 即使 runtime 已有 OpenAI-compatible tool loop，也仍依赖模型读说明、自己调用工具完成执行；
+  - 对 poster / composer / PDF 这种强可控输出，还缺本地确定性执行器。
 
-这类 skill script 是最典型的“绕过 OutcomeX provider 边界”的路径。
+### 2.3 多模态能力还没有全部做成 OutcomeX 级 provider registry
+- 目前真实跑通的是：
+  - text runtime tool loop
+  - image generation script
+- 还没完全做完的是：
+  - image editing
+  - video generation
+  - richer skill-specific execution wrappers
 
-## 5. OutcomeX 当前已经做到什么
+## 3. 对 OutcomeX 的实际意义
 
-在 `feat/phase1-integration` 中：
-- OutcomeX 已经新增 `AgentSkillOSBridge`；
-- 真实调用了本地 AgentSkillOS 的 `discover_skills(...)`；
-- discovery 阶段会把 AgentSkillOS 的 LLM 环境变量切到 DashScope / 百炼兼容入口；
-- 真实 smoke check 结果表明：
-  - 单次 `LiteLLM -> DashScope` completion 是正常的；
-  - `discover_skills('Create a launch teaser poster with one final image deliverable', skill_group='skill_seeds')` 可以完成，但实测耗时约 `88.15s`；
-  - 因此最初的 `30s` bridge 超时并不是 provider 不通，而是超时时间太短；
-- 这意味着：
-  - **retrieval / planning 阶段已经开始被 OutcomeX 接管**
-  - **runtime delivery 阶段仍未被 OutcomeX 完全接管**
+### 已经成立的结论
+- AgentSkillOS 不再只能活在 Claude SDK 世界里；
+- OutcomeX 已经可以把它拉进 DashScope / 百炼兼容运行时；
+- 至少一条真实 delivery 路径已经被实跑验证：
+  - runtime tool loop 可用
+  - `generate-image` 可真实生图
 
-## 6. 一句话结论
+### 还不能过度宣称的地方
+- 不能说 AgentSkillOS 所有内部模型调用都已经经过 OutcomeX `ModelRouter`；
+- 不能说所有 skill 都已经是稳定的、确定性的 delivery pipeline；
+- 不能说 poster / video / editing 已全部完成 OutcomeX 级收口。
 
-如果目标是“让 AgentSkillOS 真正成为 OutcomeX 内部的 orchestration engine，并且全程不绕过 OutcomeX”：
+## 4. 一句话结论
 
-还必须继续做两件事：
-- 替换 `ClaudeSDKClient` runtime
-- 改造会直连 OpenRouter / Anthropic 的 skill script
+这轮改造之后：
+- **最大的三个绕过点里，已经解决了两个半**
+
+具体说：
+- runtime 默认 Claude 绑定：已基本解除
+- OpenRouter 图片脚本：已替换
+- Anthropic evaluation 脚本：已替换
+- retrieval / embedding：仍是“可重定向，但未完全后端收口”

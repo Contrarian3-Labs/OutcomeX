@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from ..core.config import get_settings
+from ..domain.enums import ExecutionRunStatus
+from ..integrations.agentskillos_execution_service import AgentSkillOSExecutionService
 from ..integrations.model_router import ModelRouteRequest, ModelRouteStatus, ModelRouter
 from ..integrations.providers import (
     DashScopeProviderAdapter,
@@ -22,7 +24,14 @@ from ..runtime.hardware_simulator import (
 )
 from ..runtime.preview_policy import PreviewDecision, PreviewPolicy
 from .agentskillos_wrapper import AgentSkillOSWrapper
-from .contracts import ExecutionRecipe, IntentRequest, MatchStatus, MediaType, SolutionMatchResult
+from .contracts import (
+    ExecutionRecipe,
+    ExecutionRunDispatchStatus,
+    IntentRequest,
+    MatchStatus,
+    MediaType,
+    SolutionMatchResult,
+)
 
 _MULTI_OUTPUT_NOT_SUPPORTED = "multi_output_not_supported"
 
@@ -46,6 +55,8 @@ class ExecutionDispatchResult:
     accepted: bool
     admission: AdmissionResult
     provider_response: GenerationResponse | None = None
+    run_id: str | None = None
+    run_status: ExecutionRunDispatchStatus | None = None
     details: dict[str, str] = field(default_factory=dict)
 
 
@@ -70,6 +81,7 @@ class ExecutionEngineService:
         provider_adapter: MediaProviderAdapter | None = None,
         wrapper: AgentSkillOSWrapper | None = None,
         model_router: ModelRouter | None = None,
+        execution_service: AgentSkillOSExecutionService | None = None,
     ):
         self._simulator = hardware_simulator or HardwareSimulator(
             HardwareProfile(
@@ -83,6 +95,7 @@ class ExecutionEngineService:
         self._provider_adapter = provider_adapter or DashScopeProviderAdapter.from_settings(get_settings())
         self._wrapper = wrapper or AgentSkillOSWrapper()
         self._model_router = model_router or ModelRouter()
+        self._execution_service = execution_service or AgentSkillOSExecutionService()
 
     def plan(self, intent: IntentRequest) -> ExecutionPlan:
         wrapper_plan = self._wrapper.plan(intent)
@@ -130,29 +143,25 @@ class ExecutionEngineService:
                 details={"reason": admission.reason},
             )
 
-        route = self._model_router.route(
-            ModelRouteRequest(
-                output_type=plan.recipe.steps[0].output_type,
-                action=plan.recipe.steps[0].action,
-                preferred_model_id=plan.match.selected.model_id,
-                preferred_provider=intent.constraints.prefer_provider,
-            )
+        submitted_run = self._execution_service.submit_task(
+            external_order_id=intent.intent_id,
+            prompt=plan.recipe.prompt,
         )
-        routed_model_id = (
-            route.model_id
-            if route.status != ModelRouteStatus.NO_ROUTE and route.model_id is not None
-            else plan.match.selected.model_id
-        )
-        provider_response = self._submit_provider_request(plan.recipe.prompt, routed_model_id, plan.recipe.steps[0].output_type)
-        accepted = provider_response is None or provider_response.success
+        accepted = submitted_run.status in {
+            ExecutionRunStatus.QUEUED,
+            ExecutionRunStatus.PLANNING,
+            ExecutionRunStatus.RUNNING,
+            ExecutionRunStatus.SUCCEEDED,
+        }
         return ExecutionDispatchResult(
             accepted=accepted,
             admission=admission,
-            provider_response=provider_response,
+            run_id=submitted_run.run_id,
+            run_status=ExecutionRunDispatchStatus(submitted_run.status.value),
             details={
                 "match_status": plan.match.status.value,
-                "model_router_status": route.status.value,
-                "model_family": route.model_family or "",
+                "run_id": submitted_run.run_id,
+                "run_status": submitted_run.status.value,
             },
         )
 

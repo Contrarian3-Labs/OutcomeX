@@ -133,8 +133,8 @@ def test_agentskillos_bridge_parses_discovery_output() -> None:
 
     runner = _Runner()
     bridge = AgentSkillOSBridge(settings=Settings(dashscope_api_key="test-key"), runner=runner)
-    bridge._resolve_repo_root = lambda: __import__("pathlib").Path("/tmp/AgentSkillOS")  # type: ignore[method-assign]
-    bridge._resolve_python_executable = lambda _repo_root: __import__("pathlib").Path("/tmp/AgentSkillOS/.venv/bin/python")  # type: ignore[method-assign]
+    bridge.resolve_repo_root = lambda: __import__("pathlib").Path("/tmp/AgentSkillOS")  # type: ignore[method-assign]
+    bridge.resolve_python_executable = lambda _repo_root: __import__("pathlib").Path("/tmp/AgentSkillOS/.venv/bin/python")  # type: ignore[method-assign]
 
     result = bridge.discover_skills("Make a teaser video")
 

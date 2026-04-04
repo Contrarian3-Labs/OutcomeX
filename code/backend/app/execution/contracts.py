@@ -18,6 +18,15 @@ class MediaType(str, Enum):
     VIDEO = "video"
 
 
+class ExecutionRunDispatchStatus(str, Enum):
+    QUEUED = "queued"
+    PLANNING = "planning"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class MatchStatus(str, Enum):
     """Outcome of solution matching against provider capabilities."""
 

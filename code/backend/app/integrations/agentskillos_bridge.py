@@ -70,7 +70,7 @@ class AgentSkillOSBridge:
                 error="dashscope_api_key_missing",
             )
 
-        repo_root = self._resolve_repo_root()
+        repo_root = self.resolve_repo_root()
         if repo_root is None:
             return AgentSkillOSDiscoveryResult(
                 skill_ids=(),
@@ -78,7 +78,7 @@ class AgentSkillOSBridge:
                 error="repo_root_not_found",
             )
 
-        python_executable = self._resolve_python_executable(repo_root)
+        python_executable = self.resolve_python_executable(repo_root)
         if python_executable is None:
             return AgentSkillOSDiscoveryResult(
                 skill_ids=(),
@@ -96,7 +96,7 @@ class AgentSkillOSBridge:
                 task,
                 self._settings.agentskillos_skill_group,
             ],
-            env=self._build_env(),
+            env=self.build_execution_env(),
             cwd=str(repo_root),
             timeout_seconds=self._settings.agentskillos_discovery_timeout_seconds,
         )
@@ -126,7 +126,7 @@ class AgentSkillOSBridge:
             repo_root=str(repo_root),
         )
 
-    def _resolve_repo_root(self) -> Path | None:
+    def resolve_repo_root(self) -> Path | None:
         configured = self._settings.agentskillos_root.strip()
         candidates: list[Path] = []
         if configured:
@@ -142,7 +142,7 @@ class AgentSkillOSBridge:
         return None
 
     @staticmethod
-    def _resolve_python_executable(repo_root: Path) -> Path | None:
+    def resolve_python_executable(repo_root: Path) -> Path | None:
         candidates = (
             repo_root / ".venv" / "bin" / "python",
             repo_root / ".venv" / "Scripts" / "python.exe",
@@ -152,7 +152,7 @@ class AgentSkillOSBridge:
                 return candidate
         return None
 
-    def _build_env(self) -> dict[str, str]:
+    def build_execution_env(self) -> dict[str, str]:
         env = os.environ.copy()
         model = self._settings.agentskillos_llm_model or f"openai/{self._settings.dashscope_text_model}"
         env.update(

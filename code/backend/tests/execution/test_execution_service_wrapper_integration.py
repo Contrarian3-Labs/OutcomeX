@@ -10,6 +10,7 @@ from app.execution.contracts import (
     WrapperPlanResult,
 )
 from app.execution.service import ExecutionEngineService
+from app.domain.enums import ExecutionRunStatus
 from app.integrations.model_router import ModelRoute, ModelRouteRequest, ModelRouteStatus
 from app.integrations.providers.base import GenerationResponse, ProviderTaskStatus
 from app.runtime.hardware_simulator import AdmissionStatus
@@ -73,6 +74,26 @@ class _ProviderSpy:
         raise NotImplementedError
 
 
+class _ExecutionServiceSpy:
+    def __init__(self):
+        self.calls = []
+
+    def submit_task(self, *, external_order_id: str, prompt: str, input_files=()):
+        self.calls.append(
+            {
+                "external_order_id": external_order_id,
+                "prompt": prompt,
+                "input_files": tuple(input_files),
+            }
+        )
+
+        class _Snapshot:
+            run_id = "aso-run-123"
+            status = ExecutionRunStatus.QUEUED
+
+        return _Snapshot()
+
+
 def test_execution_service_plan_uses_wrapper_output() -> None:
     wrapper_result = WrapperPlanResult(
         recipe=_build_recipe(output_type=MediaType.IMAGE, model="wan2.6-t2i"),
@@ -132,15 +153,23 @@ def test_execution_service_dispatch_uses_model_router_selection() -> None:
     )
     router = _RouterSpy(route)
     provider = _ProviderSpy()
-    service = ExecutionEngineService(wrapper=wrapper, model_router=router, provider_adapter=provider)
+    execution_service = _ExecutionServiceSpy()
+    service = ExecutionEngineService(
+        wrapper=wrapper,
+        model_router=router,
+        provider_adapter=provider,
+        execution_service=execution_service,
+    )
 
     result = service.dispatch(IntentRequest(intent_id="intent-dispatch", prompt="Generate image", desired_outputs=(MediaType.IMAGE,)))
 
     assert result.accepted is True
     assert result.admission.status in {AdmissionStatus.RUNNING, AdmissionStatus.QUEUED}
-    assert len(router.calls) == 1
-    assert provider.submitted[0].model_id == "wan2.6-t2i"
-    assert result.details["model_router_status"] == ModelRouteStatus.FALLBACK.value
+    assert execution_service.calls[0]["external_order_id"] == "intent-dispatch"
+    assert execution_service.calls[0]["prompt"] == "Generate image"
+    assert result.run_id == "aso-run-123"
+    assert result.run_status.value == "queued"
+    assert result.details["run_status"] == "queued"
 
 
 def test_execution_service_dispatch_rejects_multi_output_without_provider_call() -> None:

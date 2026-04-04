@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.routes.chat_plans import router as chat_plans_router
+from app.api.routes.execution_runs import router as execution_runs_router
 from app.api.routes.health import router as health_router
 from app.api.routes.hsp_webhooks import router as hsp_webhooks_router
 from app.api.routes.machines import router as machines_router
@@ -12,6 +13,7 @@ from app.api.routes.settlement import router as settlement_router
 api_router = APIRouter()
 api_router.include_router(health_router, tags=["health"])
 api_router.include_router(chat_plans_router, prefix="/chat", tags=["chat"])
+api_router.include_router(execution_runs_router, prefix="/execution-runs", tags=["execution-runs"])
 api_router.include_router(orders_router, prefix="/orders", tags=["orders"])
 api_router.include_router(machines_router, prefix="/machines", tags=["machines"])
 api_router.include_router(settlement_router, prefix="/settlement", tags=["settlement"])
