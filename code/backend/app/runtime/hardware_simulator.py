@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import lru_cache
 
 
 class AdmissionStatus(str, Enum):
@@ -180,4 +181,23 @@ class HardwareSimulator:
         while self._queue and self._can_start(self._queue[0]):
             queued = self._queue.pop(0)
             self._start(queued)
+
+
+def _default_hardware_profile() -> HardwareProfile:
+    return HardwareProfile(
+        total_capacity_units=24,
+        total_memory_mb=32_768,
+        max_concurrency=3,
+        max_queue_depth=8,
+    )
+
+
+@lru_cache(maxsize=1)
+def get_shared_hardware_simulator() -> HardwareSimulator:
+    """Process-wide simulator so admission occupancy survives service re-instantiation."""
+    return HardwareSimulator(_default_hardware_profile())
+
+
+def reset_shared_hardware_simulator() -> None:
+    get_shared_hardware_simulator.cache_clear()
 

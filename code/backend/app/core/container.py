@@ -7,6 +7,7 @@ from app.core.config import Settings, get_settings
 from app.integrations.execution_gateway import NullExecutionGateway
 from app.integrations.hsp_adapter import HSPAdapter
 from app.integrations.onchain_indexer import NullOnchainIndexer
+from app.runtime.hardware_simulator import get_shared_hardware_simulator, reset_shared_hardware_simulator
 
 
 def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
@@ -42,6 +43,7 @@ class Container:
         )
         # Extension point: swap with concrete execution integration.
         self.execution_gateway = NullExecutionGateway()
+        self.hardware_simulator = get_shared_hardware_simulator()
         # Extension point: swap with concrete on-chain indexer integration.
         self.onchain_indexer = NullOnchainIndexer()
 
@@ -53,3 +55,4 @@ def get_container() -> Container:
 
 def reset_container_cache() -> None:
     get_container.cache_clear()
+    reset_shared_hardware_simulator()

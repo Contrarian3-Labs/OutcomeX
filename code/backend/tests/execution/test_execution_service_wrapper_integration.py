@@ -1,3 +1,5 @@
+from app.api.deps import get_dependency_container, get_execution_engine_service
+from app.core.container import reset_container_cache
 from app.execution.contracts import ExecutionStrategy, IntentRequest
 from app.execution.service import ExecutionEngineService
 from app.domain.enums import ExecutionRunStatus
@@ -72,3 +74,50 @@ def test_execution_service_dispatch_forwards_only_thin_boundary_fields() -> None
     assert result.run_id == "aso-run-123"
     assert result.run_status.value == "queued"
     assert result.details["run_status"] == "queued"
+
+
+def test_dependency_execution_service_shares_admission_state_and_reset_hook() -> None:
+    container = get_dependency_container()
+    service_a = get_execution_engine_service(
+        hardware_simulator=container.hardware_simulator,
+        execution_service=_ExecutionServiceSpy(),
+    )
+    service_b = get_execution_engine_service(
+        hardware_simulator=container.hardware_simulator,
+        execution_service=_ExecutionServiceSpy(),
+    )
+
+    for idx in range(3):
+        dispatch = service_a.dispatch(
+            IntentRequest(
+                intent_id=f"intent-di-{idx}",
+                prompt="Use shared simulator via deps",
+                input_files=(),
+                execution_strategy=ExecutionStrategy.SIMPLICITY,
+            )
+        )
+        assert dispatch.admission.status == AdmissionStatus.RUNNING
+
+    overflow = service_b.dispatch(
+        IntentRequest(
+            intent_id="intent-di-overflow",
+            prompt="Should be queued on shared occupancy",
+            input_files=(),
+            execution_strategy=ExecutionStrategy.SIMPLICITY,
+        )
+    )
+    assert overflow.admission.status == AdmissionStatus.QUEUED
+
+    reset_container_cache()
+    refreshed = get_execution_engine_service(
+        hardware_simulator=get_dependency_container().hardware_simulator,
+        execution_service=_ExecutionServiceSpy(),
+    ).dispatch(
+        IntentRequest(
+            intent_id="intent-after-reset",
+            prompt="reset hook clears shared occupancy",
+            input_files=(),
+            execution_strategy=ExecutionStrategy.SIMPLICITY,
+        )
+    )
+    assert refreshed.admission.status == AdmissionStatus.RUNNING

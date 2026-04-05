@@ -11,9 +11,9 @@ from ..integrations.agentskillos_execution_service import AgentSkillOSExecutionS
 from ..runtime.hardware_simulator import (
     AdmissionResult,
     AdmissionStatus,
-    HardwareProfile,
     HardwareSimulator,
     WorkloadSpec,
+    get_shared_hardware_simulator,
 )
 from .contracts import (
     ExecutionRunDispatchStatus,
@@ -61,14 +61,7 @@ class ExecutionEngineService:
         execution_service: AgentSkillOSExecutionService | None = None,
     ):
         self._settings = settings or get_settings()
-        self._simulator = hardware_simulator or HardwareSimulator(
-            HardwareProfile(
-                total_capacity_units=24,
-                total_memory_mb=32_768,
-                max_concurrency=3,
-                max_queue_depth=8,
-            )
-        )
+        self._simulator = hardware_simulator or get_shared_hardware_simulator()
         self._execution_service = execution_service or AgentSkillOSExecutionService()
 
     def plan(self, intent: IntentRequest) -> ExecutionPlan:

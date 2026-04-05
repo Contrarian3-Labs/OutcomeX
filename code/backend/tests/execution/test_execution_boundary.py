@@ -79,3 +79,36 @@ def test_execution_service_dispatch_uses_generic_workload_and_thin_submission() 
             "execution_strategy": ExecutionStrategy.EFFICIENCY,
         }
     ]
+
+
+def test_execution_admission_state_is_shared_across_service_instances() -> None:
+    first_wrapper = ExecutionEngineService(execution_service=_ExecutionServiceSpy())
+    second_wrapper = ExecutionEngineService(execution_service=_ExecutionServiceSpy())
+
+    statuses = []
+    for idx in range(3):
+        result = first_wrapper.dispatch(
+            IntentRequest(
+                intent_id=f"intent-shared-{idx}",
+                prompt="Fill runtime slots",
+                input_files=(),
+                execution_strategy=ExecutionStrategy.SIMPLICITY,
+            )
+        )
+        statuses.append(result.admission.status)
+
+    overflow = second_wrapper.dispatch(
+        IntentRequest(
+            intent_id="intent-shared-overflow",
+            prompt="Overflow should queue",
+            input_files=(),
+            execution_strategy=ExecutionStrategy.SIMPLICITY,
+        )
+    )
+
+    assert statuses == [
+        AdmissionStatus.RUNNING,
+        AdmissionStatus.RUNNING,
+        AdmissionStatus.RUNNING,
+    ]
+    assert overflow.admission.status == AdmissionStatus.QUEUED
