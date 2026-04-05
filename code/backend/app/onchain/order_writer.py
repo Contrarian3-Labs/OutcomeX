@@ -32,7 +32,11 @@ class OrderWriter:
             "machine_id": order.machine_id,
             "gross_amount": order.quoted_amount_cents,
         }
-        return self._submit("createOrder", payload)
+        return self._submit(
+            "createOrder",
+            payload,
+            idempotency_scope={"client_order_id": order.id},
+        )
 
     def mark_order_paid(self, order: Order, payment: Payment) -> OrderWriteResult:
         payload = {
@@ -129,12 +133,38 @@ class OrderWriter:
         }
         return self._submit("settleOrder", payload)
 
-    def _submit(self, method_name: str, payload: dict[str, Any]) -> OrderWriteResult:
-        return self._submit_to_target(self._contracts_registry.order_book(), method_name, payload)
+    def _submit(
+        self,
+        method_name: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_scope: dict[str, Any] | None = None,
+    ) -> OrderWriteResult:
+        return self._submit_to_target(
+            self._contracts_registry.order_book(),
+            method_name,
+            payload,
+            idempotency_scope=idempotency_scope,
+        )
 
-    def _submit_to_target(self, target: Any, method_name: str, payload: dict[str, Any]) -> OrderWriteResult:
+    def _submit_to_target(
+        self,
+        target: Any,
+        method_name: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_scope: dict[str, Any] | None = None,
+    ) -> OrderWriteResult:
         canonical_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=self._json_default)
-        idempotency_key = hashlib.sha256(f"{method_name}:{canonical_payload}".encode("utf-8")).hexdigest()
+        canonical_scope = json.dumps(
+            idempotency_scope or {},
+            sort_keys=True,
+            separators=(",", ":"),
+            default=self._json_default,
+        )
+        idempotency_key = hashlib.sha256(
+            f"{method_name}:{canonical_payload}:{canonical_scope}".encode("utf-8")
+        ).hexdigest()
         tx_hash = "0x" + hashlib.sha256(
             f"{target.contract_name}:{target.contract_address}:{idempotency_key}".encode("utf-8")
         ).hexdigest()

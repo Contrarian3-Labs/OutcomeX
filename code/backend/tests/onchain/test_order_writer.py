@@ -82,6 +82,22 @@ def test_writer_exposes_create_confirm_and_settle_actions() -> None:
     assert settle_result.payload["machine_share_cents"] == 900
 
 
+def test_create_order_uses_per_order_idempotency_scope() -> None:
+    writer = OrderWriter(ContractsRegistry())
+    order_a = _build_order()
+    order_b = _build_order()
+    order_b.id = "order-2"
+
+    first = writer.create_order(order_a)
+    second = writer.create_order(order_b)
+
+    assert first.payload == second.payload
+    assert first.payload["machine_id"] == "machine-1"
+    assert first.payload["gross_amount"] == 1000
+    assert first.idempotency_key != second.idempotency_key
+    assert first.tx_hash != second.tx_hash
+
+
 def test_writer_builds_direct_payment_call_spec() -> None:
     writer = OrderWriter(ContractsRegistry())
     order = _build_order()
