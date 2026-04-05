@@ -1,119 +1,81 @@
 from typing import get_type_hints
 
-from app.execution.contracts import (
-    ExecutionConstraints,
-    ExecutionRecipe,
-    ExecutionStep,
-    IntentRequest,
-    MatchStatus,
-    MediaType,
-    ResourceEstimate,
-    SolutionMatchResult,
-)
-from app.execution.matcher import match_recipe_to_solution
-from app.execution.normalizer import normalize_intent_to_recipe
+from app.domain.enums import ExecutionRunStatus
+from app.execution.contracts import ExecutionStrategy, IntentRequest
 from app.execution.service import ExecutionEngineService, ExecutionPlan
 from app.runtime.hardware_simulator import AdmissionStatus
 
 
-class _FailIfCalledProvider:
-    provider_name = "test-provider"
+class _ExecutionServiceSpy:
+    def __init__(self):
+        self.calls = []
 
-    def submit_generation(self, request):  # pragma: no cover - should never be called
-        raise AssertionError("provider adapter should not be called for unsupported multi-output intents")
+    def submit_task(self, *, external_order_id: str, prompt: str, input_files=(), execution_strategy=ExecutionStrategy.QUALITY):
+        self.calls.append(
+            {
+                "external_order_id": external_order_id,
+                "prompt": prompt,
+                "input_files": tuple(input_files),
+                "execution_strategy": execution_strategy,
+            }
+        )
 
-    def poll_generation(self, task_id: str, *, model_id: str, action: str):  # pragma: no cover
-        raise AssertionError("provider adapter should not be called for unsupported multi-output intents")
+        class _Snapshot:
+            run_id = "aso-run-boundary"
+            status = ExecutionRunStatus.QUEUED
+
+        return _Snapshot()
 
 
-def test_execution_plan_boundary_uses_concrete_execution_types():
+def test_execution_plan_boundary_uses_thin_submission_types() -> None:
     hints = get_type_hints(ExecutionPlan)
-    assert hints["recipe"] is ExecutionRecipe
-    assert hints["match"] is SolutionMatchResult
+    assert hints["execution_request"] == dict[str, object]
+    assert hints["metadata"] == dict[str, str]
 
 
-def test_normalizer_limits_mvp_recipe_to_single_step():
-    intent = IntentRequest(
-        intent_id="intent-multi",
-        prompt="Create both an image and a video",
-        desired_outputs=(MediaType.IMAGE, MediaType.VIDEO),
+def test_execution_service_plan_keeps_boundary_to_intent_files_and_strategy() -> None:
+    service = ExecutionEngineService(execution_service=_ExecutionServiceSpy())
+
+    plan = service.plan(
+        IntentRequest(
+            intent_id="intent-thin-plan",
+            prompt="Create a product teaser",
+            input_files=("brief.md", "reference.png"),
+            execution_strategy=ExecutionStrategy.QUALITY,
+        )
     )
 
-    recipe = normalize_intent_to_recipe(intent)
+    assert plan.execution_request == {
+        "intent": "Create a product teaser",
+        "files": ["brief.md", "reference.png"],
+        "execution_strategy": "quality",
+    }
+    assert plan.metadata["gateway"] == "outcomex_agentskillos_thin.v1"
+    assert plan.metadata["agentskillos_mode"] == "dag"
 
-    assert len(recipe.steps) == 1
-    assert recipe.steps[0].output_type == MediaType.IMAGE
-    assert recipe.metadata["outputs"] == "image,video"
-    assert recipe.metadata["requested_outputs"] == "image,video"
-    assert recipe.metadata["primary_output"] == "image"
 
+def test_execution_service_dispatch_uses_generic_workload_and_thin_submission() -> None:
+    execution_service = _ExecutionServiceSpy()
+    service = ExecutionEngineService(execution_service=execution_service)
 
-def test_execution_service_plan_marks_multi_output_as_unsupported():
-    service = ExecutionEngineService(provider_adapter=_FailIfCalledProvider())
-    intent = IntentRequest(
-        intent_id="intent-multi-plan",
-        prompt="Create both an image and a video",
-        desired_outputs=(MediaType.IMAGE, MediaType.VIDEO),
+    result = service.dispatch(
+        IntentRequest(
+            intent_id="intent-thin-dispatch",
+            prompt="Generate a short teaser",
+            input_files=("reference.png",),
+            execution_strategy=ExecutionStrategy.EFFICIENCY,
+        )
     )
 
-    plan = service.plan(intent)
-
-    assert len(plan.recipe.steps) == 1
-    assert plan.recipe.steps[0].output_type == MediaType.IMAGE
-    assert plan.recipe.metadata["requested_outputs"] == "image,video"
-    assert plan.match.status == MatchStatus.NO_MATCH
-    assert plan.match.selected is None
-    assert plan.match.missing_requirements == ("multi_output_not_supported",)
-
-
-def test_execution_service_dispatch_rejects_unsupported_multi_output():
-    service = ExecutionEngineService(provider_adapter=_FailIfCalledProvider())
-    intent = IntentRequest(
-        intent_id="intent-multi-dispatch",
-        prompt="Create both an image and a video",
-        desired_outputs=(MediaType.IMAGE, MediaType.VIDEO),
-    )
-
-    result = service.dispatch(intent)
-
-    assert result.accepted is False
-    assert result.admission.status == AdmissionStatus.REJECTED
-    assert result.admission.reason == "multi_output_not_supported"
-    assert result.details["reason"] == "multi_output_not_supported"
-    assert result.details["match_status"] == MatchStatus.NO_MATCH.value
-    assert result.details["requested_outputs"] == "image,video"
-    snapshot = service.simulator.snapshot()
-    assert snapshot.running_count == 0
-    assert snapshot.queued_count == 0
-
-
-def test_matcher_rejects_multi_step_recipe_for_mvp():
-    recipe = ExecutionRecipe(
-        recipe_id="recipe-multi",
-        source_intent_id="intent-multi",
-        prompt="Create both",
-        steps=(
-            ExecutionStep(
-                step_id="s1",
-                provider="alibaba-mulerouter",
-                model="alibaba/wan2.6-t2i",
-                action="generation",
-                output_type=MediaType.IMAGE,
-                resources=ResourceEstimate(capacity_units=3, memory_mb=2_048, expected_duration_ticks=2),
-            ),
-            ExecutionStep(
-                step_id="s2",
-                provider="alibaba-mulerouter",
-                model="alibaba/wan2.6-t2v",
-                action="generation",
-                output_type=MediaType.VIDEO,
-                resources=ResourceEstimate(capacity_units=6, memory_mb=6_144, expected_duration_ticks=4),
-            ),
-        ),
-    )
-
-    result = match_recipe_to_solution(recipe, ExecutionConstraints())
-
-    assert result.status == MatchStatus.NO_MATCH
-    assert result.selected is None
-    assert result.missing_requirements == ("multi_step_recipe_not_supported",)
+    assert result.accepted is True
+    assert result.admission.status in {AdmissionStatus.RUNNING, AdmissionStatus.QUEUED}
+    assert result.details["gateway"] == "outcomex_agentskillos_thin.v1"
+    assert result.details["execution_strategy"] == "efficiency"
+    assert execution_service.calls == [
+        {
+            "external_order_id": "intent-thin-dispatch",
+            "prompt": "Generate a short teaser",
+            "input_files": ("reference.png",),
+            "execution_strategy": ExecutionStrategy.EFFICIENCY,
+        }
+    ]

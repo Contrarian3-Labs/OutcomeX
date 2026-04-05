@@ -11,8 +11,8 @@ def _video_recipe() -> ExecutionRecipe:
         steps=(
             ExecutionStep(
                 step_id="s1",
-                provider="alibaba-mulerouter",
-                model="alibaba/wan2.6-t2v",
+                provider="dashscope",
+                model="wan2.2-t2v-plus",
                 action="generation",
                 output_type=MediaType.VIDEO,
                 resources=ResourceEstimate(capacity_units=6, memory_mb=6_144, expected_duration_ticks=4),

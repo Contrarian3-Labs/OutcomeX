@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.domain.enums import PreviewState
+from app.schemas.quote import QuoteResponse
 
 
 class ChatPlanRequest(BaseModel):
@@ -18,7 +19,7 @@ class ChatPlanResponse(BaseModel):
     user_message: str
     recommended_plan_summary: str
     preview_state: PreviewState
+    quote: QuoteResponse | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
-

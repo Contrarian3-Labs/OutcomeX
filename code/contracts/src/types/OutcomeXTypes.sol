@@ -35,6 +35,7 @@ struct SettlementInput {
     uint256 machineId;
     address buyer;
     address settlementBeneficiary;
+    address paymentToken;
     uint256 grossAmount;
     bool dividendEligible;
 }

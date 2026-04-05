@@ -7,6 +7,10 @@ import {SettlementBreakdown, SettlementInput, SettlementKind} from "./types/Outc
 
 error NotOrderBook(address caller);
 
+interface IERC20Like {
+    function transfer(address to, uint256 amount) external returns (bool);
+}
+
 contract SettlementController is Ownable {
     uint256 public constant BPS_DENOMINATOR = 10_000;
     uint256 public constant PLATFORM_FEE_BPS = 1_000;
@@ -19,6 +23,8 @@ contract SettlementController is Ownable {
 
     mapping(address => uint256) public refundableUSDT;
     uint256 public platformAccruedUSDT;
+    mapping(address => mapping(address => uint256)) public refundableByToken;
+    mapping(address => uint256) public platformAccruedByToken;
 
     event OrderBookSet(address indexed previousOrderBook, address indexed newOrderBook);
     event PlatformTreasurySet(address indexed previousTreasury, address indexed newTreasury);
@@ -83,11 +89,19 @@ contract SettlementController is Ownable {
         }
 
         if (breakdown.refundToBuyer > 0) {
-            refundableUSDT[input.buyer] += breakdown.refundToBuyer;
+            if (input.paymentToken == address(0)) {
+                refundableUSDT[input.buyer] += breakdown.refundToBuyer;
+            } else {
+                refundableByToken[input.buyer][input.paymentToken] += breakdown.refundToBuyer;
+            }
         }
 
         if (breakdown.platformShare > 0) {
-            platformAccruedUSDT += breakdown.platformShare;
+            if (input.paymentToken == address(0)) {
+                platformAccruedUSDT += breakdown.platformShare;
+            } else {
+                platformAccruedByToken[input.paymentToken] += breakdown.platformShare;
+            }
         }
 
         if (breakdown.machineShare > 0) {
@@ -122,6 +136,19 @@ contract SettlementController is Ownable {
         emit RefundClaimed(msg.sender, amount);
     }
 
+    function claimRefund(address token) external returns (uint256 amount) {
+        require(token != address(0), "ZERO_TOKEN");
+
+        amount = refundableByToken[msg.sender][token];
+        require(amount > 0, "NOTHING_TO_CLAIM");
+
+        refundableByToken[msg.sender][token] = 0;
+        bool success = IERC20Like(token).transfer(msg.sender, amount);
+        require(success, "TOKEN_TRANSFER_FAILED");
+
+        emit RefundClaimed(msg.sender, amount);
+    }
+
     function claimPlatformRevenue() external returns (uint256 amount) {
         require(msg.sender == platformTreasury, "NOT_TREASURY");
 
@@ -129,6 +156,20 @@ contract SettlementController is Ownable {
         require(amount > 0, "NOTHING_TO_CLAIM");
 
         platformAccruedUSDT = 0;
+        emit PlatformRevenueClaimed(msg.sender, amount);
+    }
+
+    function claimPlatformRevenue(address token) external returns (uint256 amount) {
+        require(msg.sender == platformTreasury, "NOT_TREASURY");
+        require(token != address(0), "ZERO_TOKEN");
+
+        amount = platformAccruedByToken[token];
+        require(amount > 0, "NOTHING_TO_CLAIM");
+
+        platformAccruedByToken[token] = 0;
+        bool success = IERC20Like(token).transfer(msg.sender, amount);
+        require(success, "TOKEN_TRANSFER_FAILED");
+
         emit PlatformRevenueClaimed(msg.sender, amount);
     }
 }
