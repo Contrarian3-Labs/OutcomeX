@@ -9,6 +9,7 @@ from app.domain.enums import PaymentState
 from app.domain.models import Order, Payment, utc_now
 from app.integrations.onchain_broadcaster import OnchainBroadcaster, get_onchain_broadcaster
 from app.onchain.order_writer import OrderWriter, get_order_writer
+from app.onchain.tx_sender import TransactionSender, get_onchain_transaction_sender
 
 router = APIRouter()
 
@@ -35,6 +36,7 @@ async def ingest_hsp_webhook(
     container: Container = Depends(get_dependency_container),
     order_writer: OrderWriter = Depends(get_order_writer),
     onchain_broadcaster: OnchainBroadcaster = Depends(get_onchain_broadcaster),
+    tx_sender: TransactionSender = Depends(get_onchain_transaction_sender),
 ) -> dict[str, object]:
     body = await request.body()
     signature = request.headers.get("x-hsp-signature")
@@ -77,7 +79,8 @@ async def ingest_hsp_webhook(
                 payment,
                 buyer_wallet_address=buyer_wallet_address,
             )
-            create_paid_receipt = onchain_broadcaster.broadcast_create_paid_order(write_result=write_result)
+            broadcasted_write = tx_sender.send(write_result)
+            create_paid_receipt = onchain_broadcaster.broadcast_create_paid_order(write_result=broadcasted_write)
             _backfill_order_chain_anchor_from_receipt(order, create_paid_receipt)
             db.add(order)
     _apply_payment_state(payment, state=mapped_state, db=db, order_writer=order_writer, write_chain=False)

@@ -13,6 +13,7 @@ from app.integrations.onchain_broadcaster import OnchainCreateOrderReceipt, get_
 from app.domain.models import Payment
 from app.main import create_app
 from app.onchain.order_writer import OrderWriteResult, get_order_writer
+from app.onchain.tx_sender import get_onchain_transaction_sender
 
 
 class SpyOrderWriter:
@@ -77,14 +78,32 @@ class SpyOnchainBroadcaster:
         )
         return OnchainCreateOrderReceipt(
             onchain_order_id="oc_98001",
-            tx_hash="0xcreatepaid",
-            event_id="OrderCreated:oc_98001:0xcreatepaid",
+            tx_hash=write_result.tx_hash,
+            event_id=f"OrderCreated:oc_98001:{write_result.tx_hash}",
             block_number=3330001,
         )
 
 
+class SpyTransactionSender:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def send(self, write_result):
+        self.calls.append({"method_name": write_result.method_name, "tx_hash": write_result.tx_hash})
+        return OrderWriteResult(
+            tx_hash="0xlivetx",
+            submitted_at=write_result.submitted_at,
+            chain_id=write_result.chain_id,
+            contract_name=write_result.contract_name,
+            contract_address=write_result.contract_address,
+            method_name=write_result.method_name,
+            idempotency_key=write_result.idempotency_key,
+            payload=write_result.payload,
+        )
+
+
 @pytest.fixture
-def client(tmp_path) -> tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster]:
+def client(tmp_path) -> tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender]:
     db_path = tmp_path / "hsp-webhooks.db"
     os.environ["OUTCOMEX_DATABASE_URL"] = f"sqlite+pysqlite:///{db_path.as_posix()}"
     os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
@@ -95,11 +114,13 @@ def client(tmp_path) -> tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster]
     reset_container_cache()
     spy_writer = SpyOrderWriter()
     spy_broadcaster = SpyOnchainBroadcaster()
+    spy_sender = SpyTransactionSender()
     app = create_app()
     app.dependency_overrides[get_order_writer] = lambda: spy_writer
     app.dependency_overrides[get_onchain_broadcaster] = lambda: spy_broadcaster
+    app.dependency_overrides[get_onchain_transaction_sender] = lambda: spy_sender
     with TestClient(app) as test_client:
-        yield test_client, spy_writer, spy_broadcaster
+        yield test_client, spy_writer, spy_broadcaster, spy_sender
     reset_settings_cache()
     reset_container_cache()
 
@@ -158,9 +179,9 @@ def _create_payment_intent(client: TestClient, order_id: str, amount_cents: int 
 
 
 def test_hsp_webhook_is_idempotent_and_freezes_settlement_policy(
-    client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster],
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
 ) -> None:
-    test_client, spy_writer, spy_broadcaster = client
+    test_client, spy_writer, spy_broadcaster, spy_sender = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine_id=machine["id"])
     payment = _create_payment_intent(test_client, order_id=order["id"])
@@ -194,8 +215,8 @@ def test_hsp_webhook_is_idempotent_and_freezes_settlement_policy(
     order_after_payment = test_client.get(f"/api/v1/orders/{order['id']}")
     assert order_after_payment.status_code == 200
     assert order_after_payment.json()["onchain_order_id"] == "oc_98001"
-    assert order_after_payment.json()["create_order_tx_hash"] == "0xcreatepaid"
-    assert order_after_payment.json()["create_order_event_id"] == "OrderCreated:oc_98001:0xcreatepaid"
+    assert order_after_payment.json()["create_order_tx_hash"] == "0xlivetx"
+    assert order_after_payment.json()["create_order_event_id"] == "OrderCreated:oc_98001:0xlivetx"
     assert order_after_payment.json()["create_order_block_number"] == 3330001
     assert order_after_payment.json()["settlement_beneficiary_user_id"] == "owner-1"
     assert order_after_payment.json()["settlement_is_self_use"] is False
@@ -208,6 +229,7 @@ def test_hsp_webhook_is_idempotent_and_freezes_settlement_policy(
         }
     ]
     assert spy_writer.mark_paid_calls == []
+    assert spy_sender.calls == [{"method_name": "createPaidOrderByAdapter", "tx_hash": "0xcreatepaid"}]
     assert spy_broadcaster.create_paid_calls == [
         {
             "method_name": "createPaidOrderByAdapter",
@@ -224,9 +246,9 @@ def test_hsp_webhook_is_idempotent_and_freezes_settlement_policy(
 
 
 def test_hsp_webhook_rejects_invalid_signatures(
-    client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster],
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
 ) -> None:
-    test_client, _spy_writer, _spy_broadcaster = client
+    test_client, _spy_writer, _spy_broadcaster, _spy_sender = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine_id=machine["id"])
     payment = _create_payment_intent(test_client, order_id=order["id"])
@@ -255,9 +277,9 @@ def test_hsp_webhook_rejects_invalid_signatures(
 
 
 def test_hsp_webhook_rejects_unresolved_buyer_wallet(
-    client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster],
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
 ) -> None:
-    test_client, spy_writer, spy_broadcaster = client
+    test_client, spy_writer, spy_broadcaster, spy_sender = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine_id=machine["id"], user_id="user-unmapped")
     payment = _create_payment_intent(test_client, order_id=order["id"])
@@ -278,3 +300,4 @@ def test_hsp_webhook_rejects_unresolved_buyer_wallet(
     assert response.json()["detail"] == "Buyer wallet address unresolved for HSP settlement"
     assert spy_writer.create_and_mark_paid_calls == []
     assert spy_broadcaster.create_paid_calls == []
+    assert spy_sender.calls == []

@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     agentskillos_execution_output_root: str = "data/agentskillos-execution"
     buyer_wallet_map_json: str = "{}"
     onchain_rpc_url: str = ""
+    onchain_broadcaster_private_key: str = ""
 
     model_config = SettingsConfigDict(
         env_prefix="OUTCOMEX_",
