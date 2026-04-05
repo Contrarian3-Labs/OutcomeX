@@ -42,32 +42,35 @@ class SpyOrderWriter:
     ):
         currency = payment.currency.upper()
         if currency == "USDC":
-            method_name = "payWithUSDCByAuthorization"
+            method_name = "createOrderAndPayWithUSDC"
             signing_standard = "eip3009"
             payload = {
-                "order_id": order.onchain_order_id,
+                "client_order_id": order.id,
+                "machine_id": order.machine_id,
                 "payment_id": payment.id,
-                "amount_cents": payment.amount_cents,
+                "gross_amount_cents": order.quoted_amount_cents,
                 "currency": currency,
                 "signing_standard": signing_standard,
             }
         elif currency == "USDT":
-            method_name = "payWithUSDT"
+            method_name = "createOrderAndPayWithUSDT"
             signing_standard = "permit2"
             payload = {
-                "order_id": order.onchain_order_id,
+                "client_order_id": order.id,
+                "machine_id": order.machine_id,
                 "payment_id": payment.id,
-                "amount_cents": payment.amount_cents,
+                "gross_amount_cents": order.quoted_amount_cents,
                 "currency": currency,
                 "signing_standard": signing_standard,
             }
         else:
-            method_name = "payWithPWR"
+            method_name = "createOrderAndPayWithPWR"
             signing_standard = "erc20_approve"
             payload = {
-                "order_id": order.onchain_order_id,
+                "client_order_id": order.id,
+                "machine_id": order.machine_id,
                 "payment_id": payment.id,
-                "amount_cents": payment.amount_cents,
+                "gross_amount_cents": order.quoted_amount_cents,
                 "currency": currency,
                 "pwr_amount": pwr_amount,
                 "pricing_version": pricing_version,
@@ -118,6 +121,9 @@ class SpyOnchainPaymentVerifier:
                 evidence_amount_cents=None,
                 evidence_currency=None,
                 evidence_wallet_address=wallet_address,
+                evidence_create_order_tx_hash=None,
+                evidence_create_order_event_id=None,
+                evidence_create_order_block_number=None,
             ),
         )
 
@@ -162,7 +168,10 @@ def _create_order(client: TestClient, machine_id: str, quoted_amount_cents: int 
     )
     assert response.status_code == 201
     payload = response.json()
-    assert payload["onchain_order_id"].startswith("oc_")
+    assert payload["onchain_order_id"] is None
+    assert payload["create_order_tx_hash"] is None
+    assert payload["create_order_event_id"] is None
+    assert payload["create_order_block_number"] is None
     return payload
 
 
@@ -181,12 +190,14 @@ def test_create_direct_payment_intent_returns_router_call_spec(
     assert response.status_code == 201
     payload = response.json()
     assert payload["provider"] == "onchain_router"
-    assert payload["order_id"] == order["onchain_order_id"]
+    assert payload["order_id"] == order["id"]
     assert payload["contract_name"] == "OrderPaymentRouter"
-    assert payload["method_name"] == "payWithUSDCByAuthorization"
+    assert payload["method_name"] == "createOrderAndPayWithUSDC"
     assert payload["signing_standard"] == "eip3009"
     assert payload["submit_payload"]["currency"] == "USDC"
-    assert payload["submit_payload"]["amount_cents"] == 1000
+    assert payload["submit_payload"]["gross_amount_cents"] == 1000
+    assert payload["submit_payload"]["machine_id"] == machine["id"]
+    assert "order_id" not in payload["submit_payload"]
 
 
 def test_create_direct_payment_intent_supports_pwr_when_anchor_exists(
@@ -205,7 +216,7 @@ def test_create_direct_payment_intent_supports_pwr_when_anchor_exists(
     payload = response.json()
     assert payload["provider"] == "onchain_router"
     assert payload["contract_name"] == "OrderPaymentRouter"
-    assert payload["method_name"] == "payWithPWR"
+    assert payload["method_name"] == "createOrderAndPayWithPWR"
     assert payload["submit_payload"]["currency"] == "PWR"
     assert payload["submit_payload"]["pwr_amount"] == "36000000000000000000"
     assert payload["quote"]["pwr_anchor_price_cents"] == 25
@@ -232,10 +243,13 @@ def test_sync_onchain_payment_freezes_policy_without_duplicate_write_chain_call(
             tx_hash="0xabc123",
             event_id="onchain:0xabc123",
             reason=None,
-            evidence_order_id=order["onchain_order_id"],
+            evidence_order_id="oc_42001",
             evidence_amount_cents=1000,
             evidence_currency="USDT",
             evidence_wallet_address="0xbuyer",
+            evidence_create_order_tx_hash="0xabc123",
+            evidence_create_order_event_id="OrderCreated:oc_42001:0xabc123",
+            evidence_create_order_block_number=2001001,
         ),
     )
 
@@ -249,6 +263,10 @@ def test_sync_onchain_payment_freezes_policy_without_duplicate_write_chain_call(
 
     order_after = test_client.get(f"/api/v1/orders/{order['id']}")
     assert order_after.status_code == 200
+    assert order_after.json()["onchain_order_id"] == "oc_42001"
+    assert order_after.json()["create_order_tx_hash"] == "0xabc123"
+    assert order_after.json()["create_order_event_id"] == "OrderCreated:oc_42001:0xabc123"
+    assert order_after.json()["create_order_block_number"] == 2001001
     assert order_after.json()["settlement_beneficiary_user_id"] == "owner-1"
     assert order_after.json()["settlement_is_dividend_eligible"] is True
     assert spy_writer.mark_paid_calls == []
@@ -275,10 +293,13 @@ def test_sync_onchain_pwr_payment_freezes_policy_without_duplicate_write_chain_c
             tx_hash="0xpwr123",
             event_id="onchain:0xpwr123",
             reason=None,
-            evidence_order_id=order["onchain_order_id"],
+            evidence_order_id="oc_53001",
             evidence_amount_cents=1000,
             evidence_currency="PWR",
             evidence_wallet_address="0xbuyer",
+            evidence_create_order_tx_hash="0xpwr123",
+            evidence_create_order_event_id="OrderCreated:oc_53001:0xpwr123",
+            evidence_create_order_block_number=2002002,
         ),
     )
 
@@ -292,6 +313,10 @@ def test_sync_onchain_pwr_payment_freezes_policy_without_duplicate_write_chain_c
 
     order_after = test_client.get(f"/api/v1/orders/{order['id']}")
     assert order_after.status_code == 200
+    assert order_after.json()["onchain_order_id"] == "oc_53001"
+    assert order_after.json()["create_order_tx_hash"] == "0xpwr123"
+    assert order_after.json()["create_order_event_id"] == "OrderCreated:oc_53001:0xpwr123"
+    assert order_after.json()["create_order_block_number"] == 2002002
     assert order_after.json()["settlement_beneficiary_user_id"] == "owner-1"
     assert order_after.json()["settlement_is_dividend_eligible"] is True
     assert spy_writer.mark_paid_calls == []
@@ -322,6 +347,9 @@ def test_sync_onchain_rejects_unverified_event_mismatch(
             evidence_amount_cents=1000,
             evidence_currency="USDC",
             evidence_wallet_address="0xbuyer",
+            evidence_create_order_tx_hash=None,
+            evidence_create_order_event_id=None,
+            evidence_create_order_block_number=None,
         ),
     )
 
@@ -354,10 +382,13 @@ def test_sync_onchain_uses_verifier_state_instead_of_caller_state(
             tx_hash="0xfailed",
             event_id="onchain:0xfailed",
             reason="reverted",
-            evidence_order_id=order["onchain_order_id"],
+            evidence_order_id="oc_unused_failed",
             evidence_amount_cents=1000,
             evidence_currency="USDC",
             evidence_wallet_address="0xbuyer",
+            evidence_create_order_tx_hash=None,
+            evidence_create_order_event_id=None,
+            evidence_create_order_block_number=None,
         ),
     )
 

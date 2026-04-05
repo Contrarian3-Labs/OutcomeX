@@ -6,7 +6,7 @@ from app.integrations.onchain_payment_verifier import OnchainPaymentVerifier
 def _build_order() -> Order:
     return Order(
         id="order-1",
-        onchain_order_id="oc_chain_1",
+        onchain_order_id=None,
         user_id="user-1",
         machine_id="machine-1",
         chat_session_id="chat-1",
@@ -46,9 +46,14 @@ def test_verifier_stub_returns_order_aligned_evidence() -> None:
     assert verification.matched is True
     assert verification.state == PaymentState.SUCCEEDED
     assert verification.event_id == "onchain:0xabc123"
-    assert verification.evidence_order_id == "oc_chain_1"
+    assert verification.evidence_order_id.startswith("oc_")
     assert verification.evidence_amount_cents == 1000
     assert verification.evidence_currency == "USDC"
+    assert verification.evidence_create_order_tx_hash == "0xabc123"
+    assert verification.evidence_create_order_event_id == (
+        f"OrderCreated:{verification.evidence_order_id}:0xabc123"
+    )
+    assert verification.evidence_create_order_block_number is not None
 
 
 def test_verifier_stub_rejects_invalid_tx_hash() -> None:
@@ -66,3 +71,6 @@ def test_verifier_stub_rejects_invalid_tx_hash() -> None:
     assert verification.matched is False
     assert verification.reason == "invalid_tx_hash"
     assert verification.state == PaymentState.FAILED
+    assert verification.evidence_create_order_tx_hash is None
+    assert verification.evidence_create_order_event_id is None
+    assert verification.evidence_create_order_block_number is None

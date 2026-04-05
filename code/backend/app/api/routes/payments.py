@@ -9,6 +9,7 @@ from app.core.container import Container
 from app.domain.enums import PaymentState
 from app.domain.models import Machine, Order, Payment, utc_now
 from app.domain.rules import has_sufficient_payment, is_dividend_eligible
+from app.integrations.onchain_broadcaster import OnchainCreateOrderReceipt
 from app.integrations.onchain_payment_verifier import OnchainPaymentVerifier, get_onchain_payment_verifier
 from app.onchain.order_writer import OrderWriter, get_order_writer
 from app.runtime.cost_service import RuntimeCostService, get_runtime_cost_service
@@ -77,6 +78,65 @@ def _apply_payment_state(
     if state == PaymentState.SUCCEEDED and _freeze_settlement_policy_if_fully_paid(order, db) and write_chain:
         order_writer.mark_order_paid(order, payment)
     return order
+
+
+def _persist_order_chain_anchor(
+    order: Order,
+    *,
+    onchain_order_id: str,
+    create_order_tx_hash: str,
+    create_order_event_id: str,
+    create_order_block_number: int,
+) -> None:
+    conflict_fields = (
+        ("onchain_order_id", order.onchain_order_id, onchain_order_id),
+        ("create_order_tx_hash", order.create_order_tx_hash, create_order_tx_hash),
+        ("create_order_event_id", order.create_order_event_id, create_order_event_id),
+        ("create_order_block_number", order.create_order_block_number, create_order_block_number),
+    )
+    for field_name, existing_value, new_value in conflict_fields:
+        if existing_value is not None and existing_value != new_value:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Order already anchored with conflicting {field_name}",
+            )
+
+    order.onchain_order_id = onchain_order_id
+    order.create_order_tx_hash = create_order_tx_hash
+    order.create_order_event_id = create_order_event_id
+    order.create_order_block_number = create_order_block_number
+
+
+def _backfill_order_chain_anchor_from_verification(order: Order, verification) -> None:
+    if verification.state != PaymentState.SUCCEEDED:
+        return
+    if (
+        verification.evidence_order_id is None
+        or verification.evidence_create_order_tx_hash is None
+        or verification.evidence_create_order_event_id is None
+        or verification.evidence_create_order_block_number is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Onchain evidence missing create+paid anchor fields",
+        )
+    _persist_order_chain_anchor(
+        order,
+        onchain_order_id=verification.evidence_order_id,
+        create_order_tx_hash=verification.evidence_create_order_tx_hash,
+        create_order_event_id=verification.evidence_create_order_event_id,
+        create_order_block_number=verification.evidence_create_order_block_number,
+    )
+
+
+def _backfill_order_chain_anchor_from_receipt(order: Order, receipt: OnchainCreateOrderReceipt) -> None:
+    _persist_order_chain_anchor(
+        order,
+        onchain_order_id=receipt.onchain_order_id,
+        create_order_tx_hash=receipt.tx_hash,
+        create_order_event_id=receipt.event_id,
+        create_order_block_number=receipt.block_number,
+    )
 
 
 @router.post("/orders/{order_id}/intent", response_model=PaymentIntentResponse, status_code=status.HTTP_201_CREATED)
@@ -171,7 +231,7 @@ def create_direct_payment_intent(
     else:
         direct_intent = order_writer.build_direct_payment_intent(order, payment)
     payment.provider_reference = direct_intent.method_name
-    payment.merchant_order_id = order.onchain_order_id
+    payment.merchant_order_id = order.id
     payment.flow_id = payment.id
     db.add(payment)
     db.commit()
@@ -179,7 +239,7 @@ def create_direct_payment_intent(
 
     return DirectPaymentIntentResponse(
         payment_id=payment.id,
-        order_id=order.onchain_order_id,
+        order_id=order.id,
         provider=payment.provider,
         contract_name=direct_intent.contract_name,
         contract_address=direct_intent.contract_address,
@@ -224,6 +284,9 @@ def sync_onchain_payment(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Onchain evidence verification failed: {verification.reason or 'mismatch'}",
         )
+
+    _backfill_order_chain_anchor_from_verification(order, verification)
+    db.add(order)
 
     payment.callback_event_id = verification.event_id
     payment.callback_state = verification.state.value

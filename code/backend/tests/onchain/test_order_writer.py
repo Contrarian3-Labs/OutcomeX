@@ -55,6 +55,34 @@ def test_mark_order_paid_returns_deterministic_tx_metadata() -> None:
     assert first.payload["settlement_is_dividend_eligible"] is True
 
 
+def test_create_order_and_mark_paid_uses_create_paid_router_method() -> None:
+    writer = OrderWriter(ContractsRegistry())
+    order = _build_order()
+    order.onchain_order_id = None
+    payment = Payment(
+        id="payment-1",
+        order_id=order.id,
+        provider="hsp",
+        provider_reference="flow_123",
+        merchant_order_id="merchant_123",
+        flow_id="flow_123",
+        amount_cents=1000,
+        currency="USDC",
+        state=PaymentState.SUCCEEDED,
+    )
+
+    write_result = writer.create_order_and_mark_paid(order, payment)
+
+    assert write_result.contract_name == "OrderPaymentRouter"
+    assert write_result.method_name == "createPaidOrderByAdapter"
+    assert write_result.payload["client_order_id"] == "order-1"
+    assert write_result.payload["machine_id"] == "machine-1"
+    assert write_result.payload["payment_id"] == "payment-1"
+    assert write_result.payload["gross_amount_cents"] == 1000
+    assert "order_id" not in write_result.payload
+    assert "settlement_beneficiary_user_id" not in write_result.payload
+
+
 def test_writer_exposes_create_confirm_and_settle_actions() -> None:
     writer = OrderWriter(ContractsRegistry())
     order = _build_order()
@@ -114,8 +142,10 @@ def test_writer_builds_direct_payment_call_spec() -> None:
     intent = writer.build_direct_payment_intent(order, payment)
 
     assert intent.contract_name == "OrderPaymentRouter"
-    assert intent.method_name == "payWithUSDCByAuthorization"
-    assert intent.payload["order_id"] == "chain-order-1"
+    assert intent.method_name == "createOrderAndPayWithUSDC"
+    assert intent.payload["client_order_id"] == "order-1"
+    assert intent.payload["machine_id"] == "machine-1"
+    assert "order_id" not in intent.payload
     assert intent.payload["signing_standard"] == "eip3009"
     assert intent.payload["currency"] == "USDC"
 
@@ -142,7 +172,7 @@ def test_writer_builds_pwr_direct_payment_call_spec() -> None:
     )
 
     assert intent.contract_name == "OrderPaymentRouter"
-    assert intent.method_name == "payWithPWR"
+    assert intent.method_name == "createOrderAndPayWithPWR"
     assert intent.payload["currency"] == "PWR"
     assert intent.payload["pwr_amount"] == "36000000000000000000"
     assert intent.payload["pricing_version"] == "phase1_v3"

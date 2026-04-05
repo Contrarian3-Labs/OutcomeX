@@ -12,7 +12,6 @@ from app.domain.rules import has_sufficient_payment
 from app.execution import ExecutionStrategy, IntentRequest
 from app.execution.service import ExecutionEngineService
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
-from app.integrations.onchain_broadcaster import OnchainBroadcaster, get_onchain_broadcaster
 from app.onchain.order_writer import OrderWriter, get_order_writer
 from app.schemas.execution_run import ExecutionRunResponse
 from app.schemas.order import OrderCreateRequest, OrderResponse, ResultConfirmResponse, ResultReadyResponse
@@ -44,8 +43,6 @@ def _build_execution_plan(*, intent_id: str, prompt: str, input_files: list[str]
 def create_order(
     payload: OrderCreateRequest,
     db: Session = Depends(get_db),
-    order_writer: OrderWriter = Depends(get_order_writer),
-    onchain_broadcaster: OnchainBroadcaster = Depends(get_onchain_broadcaster),
 ) -> Order:
     machine = db.get(Machine, payload.machine_id)
     if machine is None:
@@ -70,15 +67,6 @@ def create_order(
     )
     order.execution_request = plan.execution_request
     order.execution_metadata = plan.metadata
-    create_order_write = order_writer.create_order(order)
-    create_order_receipt = onchain_broadcaster.broadcast_create_order(
-        order=order,
-        write_result=create_order_write,
-    )
-    order.onchain_order_id = create_order_receipt.onchain_order_id
-    order.create_order_tx_hash = create_order_receipt.tx_hash
-    order.create_order_event_id = create_order_receipt.event_id
-    order.create_order_block_number = create_order_receipt.block_number
     db.add(order)
     db.commit()
     db.refresh(order)

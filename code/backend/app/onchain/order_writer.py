@@ -53,6 +53,28 @@ class OrderWriter:
         }
         return self._submit("markOrderPaid", payload)
 
+    def create_order_and_mark_paid(self, order: Order, payment: Payment) -> OrderWriteResult:
+        currency = payment.currency.upper()
+        payload = {
+            "client_order_id": order.id,
+            "buyer_user_id": order.user_id,
+            "machine_id": order.machine_id,
+            "gross_amount_cents": order.quoted_amount_cents,
+            "payment_id": payment.id,
+            "merchant_order_id": payment.merchant_order_id,
+            "flow_id": payment.flow_id,
+            "provider_reference": payment.provider_reference,
+            "amount_cents": payment.amount_cents,
+            "currency": currency,
+            "payment_token_address": self._contracts_registry.payment_token(currency),
+        }
+        return self._submit_to_target(
+            self._contracts_registry.payment_router(),
+            "createPaidOrderByAdapter",
+            payload,
+            idempotency_scope={"client_order_id": order.id, "payment_id": payment.id},
+        )
+
     def build_direct_payment_intent(
         self,
         order: Order,
@@ -64,23 +86,25 @@ class OrderWriter:
     ) -> OrderWriteResult:
         currency = payment.currency.upper()
         if currency == "USDC":
-            method_name = "payWithUSDCByAuthorization"
+            method_name = "createOrderAndPayWithUSDC"
             signing_standard = "eip3009"
             payload = {
-                "order_id": self._chain_order_id(order),
+                "client_order_id": order.id,
+                "machine_id": order.machine_id,
                 "payment_id": payment.id,
-                "amount_cents": payment.amount_cents,
+                "gross_amount_cents": order.quoted_amount_cents,
                 "currency": currency,
                 "token_address": self._contracts_registry.payment_token(currency),
                 "signing_standard": signing_standard,
             }
         elif currency == "USDT":
-            method_name = "payWithUSDT"
+            method_name = "createOrderAndPayWithUSDT"
             signing_standard = "permit2"
             payload = {
-                "order_id": self._chain_order_id(order),
+                "client_order_id": order.id,
+                "machine_id": order.machine_id,
                 "payment_id": payment.id,
-                "amount_cents": payment.amount_cents,
+                "gross_amount_cents": order.quoted_amount_cents,
                 "currency": currency,
                 "token_address": self._contracts_registry.payment_token(currency),
                 "signing_standard": signing_standard,
@@ -88,11 +112,12 @@ class OrderWriter:
         elif currency == "PWR":
             if pwr_amount is None or pricing_version is None or pwr_anchor_price_cents is None:
                 raise ValueError("pwr_amount_required")
-            method_name = "payWithPWR"
+            method_name = "createOrderAndPayWithPWR"
             payload = {
-                "order_id": self._chain_order_id(order),
+                "client_order_id": order.id,
+                "machine_id": order.machine_id,
                 "payment_id": payment.id,
-                "amount_cents": payment.amount_cents,
+                "gross_amount_cents": order.quoted_amount_cents,
                 "currency": "PWR",
                 "token_address": self._contracts_registry.payment_token("PWR"),
                 "signing_standard": "erc20_approve",

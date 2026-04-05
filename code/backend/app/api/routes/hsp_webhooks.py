@@ -3,10 +3,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_dependency_container
-from app.api.routes.payments import _apply_payment_state
+from app.api.routes.payments import _apply_payment_state, _backfill_order_chain_anchor_from_receipt
 from app.core.container import Container
 from app.domain.enums import PaymentState
-from app.domain.models import Payment, utc_now
+from app.domain.models import Order, Payment, utc_now
+from app.integrations.onchain_broadcaster import OnchainBroadcaster, get_onchain_broadcaster
 from app.onchain.order_writer import OrderWriter, get_order_writer
 
 router = APIRouter()
@@ -33,6 +34,7 @@ async def ingest_hsp_webhook(
     db: Session = Depends(get_db),
     container: Container = Depends(get_dependency_container),
     order_writer: OrderWriter = Depends(get_order_writer),
+    onchain_broadcaster: OnchainBroadcaster = Depends(get_onchain_broadcaster),
 ) -> dict[str, object]:
     body = await request.body()
     signature = request.headers.get("x-hsp-signature")
@@ -58,7 +60,21 @@ async def ingest_hsp_webhook(
     payment.callback_state = event.status
     payment.callback_received_at = utc_now()
     payment.callback_tx_hash = event.tx_hash
-    _apply_payment_state(payment, state=_map_hsp_status(event.status), db=db, order_writer=order_writer)
+    mapped_state = _map_hsp_status(event.status)
+    if mapped_state == PaymentState.SUCCEEDED:
+        order = db.get(Order, payment.order_id)
+        if order is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+        if order.onchain_order_id is None:
+            write_result = order_writer.create_order_and_mark_paid(order, payment)
+            create_paid_receipt = onchain_broadcaster.broadcast_create_paid_order(
+                order=order,
+                payment=payment,
+                write_result=write_result,
+            )
+            _backfill_order_chain_anchor_from_receipt(order, create_paid_receipt)
+            db.add(order)
+    _apply_payment_state(payment, state=mapped_state, db=db, order_writer=order_writer, write_chain=False)
     db.commit()
     return {
         "payment_id": payment.id,
