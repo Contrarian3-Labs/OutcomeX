@@ -106,8 +106,13 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
         _markOrderPaid(orderId, amount, address(usdt), PAYMENT_SOURCE_USDT_PERMIT2, dividendEligible);
     }
 
-    function payWithPWR(uint256, uint256) external pure {
-        revert("PWR_PAYMENT_DISABLED");
+    function payWithPWR(uint256 orderId, uint256 amount) external {
+        bool dividendEligible = _validateOrderForPayment(orderId, amount);
+
+        bool success = pwr.transferFrom(msg.sender, _settlementEscrow(), amount);
+        require(success, "PWR_TRANSFER_FAILED");
+
+        _markOrderPaid(orderId, amount, address(pwr), PAYMENT_SOURCE_PWR, dividendEligible);
     }
 
     function _validateOrderForPayment(uint256 orderId, uint256 amount) internal view returns (bool dividendEligible) {

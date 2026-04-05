@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -21,6 +23,7 @@ from app.schemas.payment import (
 )
 
 router = APIRouter()
+PWR_WEI_MULTIPLIER = Decimal("1000000000000000000")
 
 
 def _succeeded_payment_total_cents(order_id: str, db: Session) -> int:
@@ -50,6 +53,10 @@ def _freeze_settlement_policy_if_fully_paid(order: Order, db: Session) -> bool:
     db.add(order)
     db.add(machine)
     return True
+
+
+def _pwr_quote_to_wei_string(pwr_quote: str) -> str:
+    return str(int((Decimal(pwr_quote) * PWR_WEI_MULTIPLIER).to_integral_value()))
 
 
 def _apply_payment_state(
@@ -133,12 +140,7 @@ def create_direct_payment_intent(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
 
     currency = payload.currency.upper()
-    if currency == "PWR":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="PWR direct payment is disabled until anchor exists",
-        )
-    if currency not in {"USDC", "USDT"}:
+    if currency not in {"USDC", "USDT", "PWR"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported direct payment currency")
     if payload.amount_cents != order.quoted_amount_cents:
         raise HTTPException(
@@ -156,7 +158,17 @@ def create_direct_payment_intent(
     db.add(payment)
     db.flush()
 
-    direct_intent = order_writer.build_direct_payment_intent(order, payment)
+    quote = cost_service.quote_for_order_amount(order.quoted_amount_cents)
+    if currency == "PWR":
+        direct_intent = order_writer.build_direct_payment_intent(
+            order,
+            payment,
+            pwr_amount=_pwr_quote_to_wei_string(quote.pwr_quote),
+            pricing_version=quote.pricing_version,
+            pwr_anchor_price_cents=quote.pwr_anchor_price_cents,
+        )
+    else:
+        direct_intent = order_writer.build_direct_payment_intent(order, payment)
     payment.provider_reference = direct_intent.method_name
     payment.merchant_order_id = order.id
     payment.flow_id = payment.id
@@ -175,7 +187,7 @@ def create_direct_payment_intent(
         signing_standard=str(direct_intent.payload["signing_standard"]),
         submit_payload=direct_intent.payload,
         state=payment.state,
-        quote=cost_service.quote_for_order_amount(order.quoted_amount_cents),
+        quote=quote,
         created_at=payment.created_at,
     )
 

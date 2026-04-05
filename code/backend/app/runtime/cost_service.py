@@ -11,7 +11,7 @@ PWR_QUANTIZE = Decimal("0.0001")
 
 
 class RuntimeCostService:
-    pricing_version = "phase1_v2"
+    pricing_version = "phase1_v3"
 
     def __init__(self, *, minimum_margin_cents: int = 60, pwr_anchor_price_cents: int = 25) -> None:
         self.minimum_margin_cents = minimum_margin_cents
@@ -38,6 +38,7 @@ class RuntimeCostService:
             platform_fee_cents=platform_fee_cents,
             machine_share_cents=machine_share_cents,
             pwr_quote=f"{pwr_quote:.4f}",
+            pwr_anchor_price_cents=self.pwr_anchor_price_cents,
             currency="USD",
             pricing_version=self.pricing_version,
         )

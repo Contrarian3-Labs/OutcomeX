@@ -10,9 +10,9 @@
 
 当前已经包含的关键支付语义：
 
-- `USDC` / `USDT` 可以走用户直签的链上支付路由
-- 后端只负责生成直签意图、同步链上结果、冻结结算资格
-- `PWR` 直付仍然显式 gated，等待 anchor 机制落地后再开放
+- `USDC` / `USDT` / `PWR` 都可以走用户直签的链上支付路由
+- 后端负责生成直签意图、同步链上结果、冻结结算资格
+- `PWR` 当前使用的是最小 backend-priced、deterministic、versioned anchor
 
 不包含的内容：
 
@@ -140,7 +140,7 @@
 6. 把机器标记为 `has_unsettled_revenue=true`
 7. 通过 `OrderWriter.mark_order_paid(...)` 形成 `OrderBook.markOrderPaid` 写链 payload
 
-#### 路径 B：用户直签链上 stablecoin rail
+#### 路径 B：用户直签链上 stablecoin / PWR rail
 
 后端动作：
 
@@ -149,11 +149,12 @@
 3. 后端落一条 `Payment(provider="onchain_router")`
 4. 后端通过 `OrderWriter.build_direct_payment_intent(...)` 返回用户直签所需的合约调用规格：
    - `contract_name=OrderPaymentRouter`
-   - `method_name=payWithUSDCByAuthorization` 或 `payWithUSDT`
+   - `method_name=payWithUSDCByAuthorization` / `payWithUSDT` / `payWithPWR`
    - `chain_id=133`
    - `token_address`
-   - `signing_standard=eip3009 | permit2`
-5. 用户在钱包里直接签名并把 stablecoin 送进链上 `OrderPaymentRouter`
+   - `signing_standard=eip3009 | permit2 | erc20_approve`
+   - 如果是 `PWR`，还会带上 `pwr_quote` 对应的 `pwr_amount`、`pwr_anchor_price_cents`、`pricing_version`
+5. 用户在钱包里直接签名并把 stablecoin / `PWR` 送进链上 `OrderPaymentRouter`
 6. 交易确认后，前端再调 `POST /api/v1/payments/{payment_id}/sync-onchain`
 7. 后端只做状态同步：
    - 回填 `callback_event_id`
@@ -168,7 +169,7 @@
 - 收益资格在支付成功后冻结，不在结果确认时才决定
 - self-use 不进入 dividend-eligible
 - 用户直签链上支付时，用户是直接与合约交互，后端只生成意图并同步状态
-- `PWR` 直付当前仍然关闭，避免在没有 anchor 的情况下引入错误支付语义
+- `PWR` 当前已经可支付，但使用的是最小 deterministic anchor，不是完整市场化 anchor
 
 ### 3.3 启动执行
 
@@ -297,7 +298,7 @@
 7. 后端生成链上 `createOrder` 写链 payload
 8. 前端调 `POST /api/v1/payments/orders/{order_id}/direct-intent`
 9. 后端返回 `OrderPaymentRouter` 的方法名、代币地址、签名标准和提交载荷
-10. 用户在钱包里直接签 `USDC` / `USDT` 支付交易
+10. 用户在钱包里直接签 `USDC` / `USDT` / `PWR` 支付交易
 11. 链上交易确认后，前端调 `POST /api/v1/payments/{payment_id}/sync-onchain`
 12. 后端把 `Payment`、settlement policy、machine revenue guard 同步到控制面
 13. 前端调 `POST /api/v1/orders/{order_id}/start-execution`
@@ -334,7 +335,7 @@
 | chat 要结果 | `POST /api/v1/chat/plans` | `ChatPlan` | 无 | 无 |
 | 创建订单 | `POST /api/v1/orders` | `Order.execution_request` / `Order.execution_metadata` | 还未真正执行 | `OrderBook.createOrder` |
 | 创建 HSP 支付意图 | `POST /api/v1/payments/orders/{order_id}/intent` | `Payment` | 无 | HSP rail |
-| 创建链上直签意图 | `POST /api/v1/payments/orders/{order_id}/direct-intent` | `Payment` | 无 | `OrderPaymentRouter.payWithUSDCByAuthorization` / `payWithUSDT` |
+| 创建链上直签意图 | `POST /api/v1/payments/orders/{order_id}/direct-intent` | `Payment` | 无 | `OrderPaymentRouter.payWithUSDCByAuthorization` / `payWithUSDT` / `payWithPWR` |
 | HSP 支付确认 | `mock-confirm` / `hsp webhooks` | `Payment` / `Order` / `Machine` | 无 | `OrderBook.markOrderPaid` |
 | 链上支付同步 | `POST /api/v1/payments/{payment_id}/sync-onchain` | `Payment` / `Order` / `Machine` | 无 | 用户已直接完成链上支付，后端只同步事实 |
 | 启动执行 | `POST /api/v1/orders/{order_id}/start-execution` | `Order` / `ExecutionRun` | 提交 `intent/files/execution_strategy` | 当前无直接链上动作 |
@@ -397,7 +398,7 @@
 | --- | --- |
 | `create_order(order)` | `createOrder` |
 | `mark_order_paid(order, payment)` | `markOrderPaid` |
-| `build_direct_payment_intent(order, payment)` | `OrderPaymentRouter.payWithUSDCByAuthorization` / `payWithUSDT` 直签载荷 |
+| `build_direct_payment_intent(order, payment)` | `OrderPaymentRouter.payWithUSDCByAuthorization` / `payWithUSDT` / `payWithPWR` 直签载荷 |
 | `mark_preview_ready(order)` | `markPreviewReady` |
 | `confirm_result(order)` | `confirmResult` |
 | `settle_order(order, settlement)` | `settleOrder` |
@@ -406,6 +407,7 @@
 
 这些写链动作大部分现在仍是 deterministic payload / fake tx hash，不是真实广播器。
 但用户直签链上支付这条路已经允许前端直接拿到真实合约调用规格，并在交易确认后把真实 `tx_hash` 同步回后端。
+如果支付币种是 `PWR`，后端还会把这次 intent 对应的 `pricing_version` 和 `pwr_anchor_price_cents` 一起固化到 payload。
 
 ---
 
@@ -419,11 +421,11 @@
 - 支付成功后冻结 settlement policy
 - 结果确认后才能开始 settlement
 - transfer guard 所需的后端状态位
-- 用户直签 `USDC` / `USDT` -> backend sync-onchain 的控制面闭环
+- 用户直签 `USDC` / `USDT` / `PWR` -> backend sync-onchain 的控制面闭环
 
 ### 还没并入这个干净分支的
 
-- `PWR` 链上直付 quote / anchor / conversion 层
+- 更完整的 `PWR` 市场化 anchor / conversion 层
 - 更完整的用户直连支付前端封装与报价层
 - 后端真实广播交易并回写 tx hash
 - indexer 完整闭环回写

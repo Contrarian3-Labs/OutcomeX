@@ -51,28 +51,56 @@ class OrderWriter:
         }
         return self._submit("markOrderPaid", payload)
 
-    def build_direct_payment_intent(self, order: Order, payment: Payment) -> OrderWriteResult:
+    def build_direct_payment_intent(
+        self,
+        order: Order,
+        payment: Payment,
+        *,
+        pwr_amount: str | None = None,
+        pricing_version: str | None = None,
+        pwr_anchor_price_cents: int | None = None,
+    ) -> OrderWriteResult:
         currency = payment.currency.upper()
-        if currency == "PWR":
-            raise ValueError("pwr_direct_payment_disabled")
-
         if currency == "USDC":
             method_name = "payWithUSDCByAuthorization"
             signing_standard = "eip3009"
+            payload = {
+                "order_id": order.id,
+                "payment_id": payment.id,
+                "amount_cents": payment.amount_cents,
+                "currency": currency,
+                "token_address": self._contracts_registry.payment_token(currency),
+                "signing_standard": signing_standard,
+            }
         elif currency == "USDT":
             method_name = "payWithUSDT"
             signing_standard = "permit2"
+            payload = {
+                "order_id": order.id,
+                "payment_id": payment.id,
+                "amount_cents": payment.amount_cents,
+                "currency": currency,
+                "token_address": self._contracts_registry.payment_token(currency),
+                "signing_standard": signing_standard,
+            }
+        elif currency == "PWR":
+            if pwr_amount is None or pricing_version is None or pwr_anchor_price_cents is None:
+                raise ValueError("pwr_amount_required")
+            method_name = "payWithPWR"
+            payload = {
+                "order_id": order.id,
+                "payment_id": payment.id,
+                "amount_cents": payment.amount_cents,
+                "currency": "PWR",
+                "token_address": self._contracts_registry.payment_token("PWR"),
+                "signing_standard": "erc20_approve",
+                "pwr_amount": pwr_amount,
+                "pricing_version": pricing_version,
+                "pwr_anchor_price_cents": pwr_anchor_price_cents,
+            }
         else:
             raise ValueError(f"unsupported_direct_payment_currency:{currency}")
 
-        payload = {
-            "order_id": order.id,
-            "payment_id": payment.id,
-            "amount_cents": payment.amount_cents,
-            "currency": currency,
-            "token_address": self._contracts_registry.payment_token(currency),
-            "signing_standard": signing_standard,
-        }
         return self._submit_to_target(self._contracts_registry.payment_router(), method_name, payload)
 
     def mark_preview_ready(self, order: Order) -> OrderWriteResult:

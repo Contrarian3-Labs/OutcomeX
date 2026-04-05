@@ -71,13 +71,19 @@ code/backend
 This backend now supports two parallel payment rails:
 
 - `HSP rail`: backend creates checkout intent and later ingests webhook confirmation
-- `Direct onchain rail`: backend creates a wallet-signable `OrderPaymentRouter` call spec for `USDC` / `USDT`, and later syncs the confirmed tx back into control-plane state
+- `Direct onchain rail`: backend creates a wallet-signable `OrderPaymentRouter` call spec for `USDC` / `USDT` / `PWR`, and later syncs the confirmed tx back into control-plane state
 
 Current direct onchain behavior:
 
 - `USDC` uses `payWithUSDCByAuthorization` (`eip3009`)
 - `USDT` uses `payWithUSDT` (`permit2`)
-- `PWR` direct pay is intentionally disabled until anchor semantics exist
+- `PWR` uses `payWithPWR` (`erc20_approve`)
+
+Current PWR anchor behavior:
+
+- quote math is deterministic and versioned in backend `RuntimeCostService`
+- `pwr_quote` and `pwr_anchor_price_cents` are returned together
+- the current anchor is a minimal backend-priced anchor, not a market oracle
 
 Direct onchain payment success freezes settlement policy in backend state, but does not emit a duplicate `markOrderPaid` write because escrow has already happened onchain.
 

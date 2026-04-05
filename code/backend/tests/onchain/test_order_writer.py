@@ -97,3 +97,31 @@ def test_writer_builds_direct_payment_call_spec() -> None:
     assert intent.method_name == "payWithUSDCByAuthorization"
     assert intent.payload["signing_standard"] == "eip3009"
     assert intent.payload["currency"] == "USDC"
+
+
+def test_writer_builds_pwr_direct_payment_call_spec() -> None:
+    writer = OrderWriter(ContractsRegistry())
+    order = _build_order()
+    payment = Payment(
+        id="payment-3",
+        order_id=order.id,
+        provider="onchain_router",
+        provider_reference="payWithPWR",
+        amount_cents=1000,
+        currency="PWR",
+        state=PaymentState.PENDING,
+    )
+
+    intent = writer.build_direct_payment_intent(
+        order,
+        payment,
+        pwr_amount="36000000000000000000",
+        pricing_version="phase1_v3",
+        pwr_anchor_price_cents=25,
+    )
+
+    assert intent.contract_name == "OrderPaymentRouter"
+    assert intent.method_name == "payWithPWR"
+    assert intent.payload["currency"] == "PWR"
+    assert intent.payload["pwr_amount"] == "36000000000000000000"
+    assert intent.payload["pricing_version"] == "phase1_v3"

@@ -29,10 +29,49 @@ class SpyOrderWriter:
         self.mark_paid_calls.append({"order_id": order.id, "payment_id": payment.id})
         return None
 
-    def build_direct_payment_intent(self, order, payment):
+    def build_direct_payment_intent(
+        self,
+        order,
+        payment,
+        *,
+        pwr_amount=None,
+        pricing_version=None,
+        pwr_anchor_price_cents=None,
+    ):
         currency = payment.currency.upper()
-        method_name = "payWithUSDCByAuthorization" if currency == "USDC" else "payWithUSDT"
-        signing_standard = "eip3009" if currency == "USDC" else "permit2"
+        if currency == "USDC":
+            method_name = "payWithUSDCByAuthorization"
+            signing_standard = "eip3009"
+            payload = {
+                "order_id": order.id,
+                "payment_id": payment.id,
+                "amount_cents": payment.amount_cents,
+                "currency": currency,
+                "signing_standard": signing_standard,
+            }
+        elif currency == "USDT":
+            method_name = "payWithUSDT"
+            signing_standard = "permit2"
+            payload = {
+                "order_id": order.id,
+                "payment_id": payment.id,
+                "amount_cents": payment.amount_cents,
+                "currency": currency,
+                "signing_standard": signing_standard,
+            }
+        else:
+            method_name = "payWithPWR"
+            signing_standard = "erc20_approve"
+            payload = {
+                "order_id": order.id,
+                "payment_id": payment.id,
+                "amount_cents": payment.amount_cents,
+                "currency": currency,
+                "pwr_amount": pwr_amount,
+                "pricing_version": pricing_version,
+                "pwr_anchor_price_cents": pwr_anchor_price_cents,
+                "signing_standard": signing_standard,
+            }
         return OrderWriteResult(
             tx_hash="0xintent",
             submitted_at=payment.created_at,
@@ -41,13 +80,7 @@ class SpyOrderWriter:
             contract_address="0x0000000000000000000000000000000000000134",
             method_name=method_name,
             idempotency_key="intent-key",
-            payload={
-                "order_id": order.id,
-                "payment_id": payment.id,
-                "amount_cents": payment.amount_cents,
-                "currency": currency,
-                "signing_standard": signing_standard,
-            },
+            payload=payload,
         )
 
 
@@ -111,6 +144,26 @@ def test_create_direct_payment_intent_returns_router_call_spec(client: tuple[Tes
     assert payload["submit_payload"]["amount_cents"] == 1000
 
 
+def test_create_direct_payment_intent_supports_pwr_when_anchor_exists(client: tuple[TestClient, SpyOrderWriter]) -> None:
+    test_client, _spy_writer = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine["id"])
+
+    response = test_client.post(
+        f"/api/v1/payments/orders/{order['id']}/direct-intent",
+        json={"amount_cents": 1000, "currency": "PWR"},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["provider"] == "onchain_router"
+    assert payload["contract_name"] == "OrderPaymentRouter"
+    assert payload["method_name"] == "payWithPWR"
+    assert payload["submit_payload"]["currency"] == "PWR"
+    assert payload["submit_payload"]["pwr_amount"] == "36000000000000000000"
+    assert payload["quote"]["pwr_anchor_price_cents"] == 25
+
+
 def test_sync_onchain_payment_freezes_policy_without_duplicate_write_chain_call(client: tuple[TestClient, SpyOrderWriter]) -> None:
     test_client, spy_writer = client
     machine = _create_machine(test_client)
@@ -138,15 +191,28 @@ def test_sync_onchain_payment_freezes_policy_without_duplicate_write_chain_call(
     assert spy_writer.mark_paid_calls == []
 
 
-def test_create_direct_payment_intent_rejects_pwr_until_anchor_exists(client: tuple[TestClient, SpyOrderWriter]) -> None:
-    test_client, _spy_writer = client
+def test_sync_onchain_pwr_payment_freezes_policy_without_duplicate_write_chain_call(client: tuple[TestClient, SpyOrderWriter]) -> None:
+    test_client, spy_writer = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine["id"])
 
-    response = test_client.post(
+    intent = test_client.post(
         f"/api/v1/payments/orders/{order['id']}/direct-intent",
         json={"amount_cents": 1000, "currency": "PWR"},
     )
+    assert intent.status_code == 201
+    payment_id = intent.json()["payment_id"]
 
-    assert response.status_code == 409
-    assert response.json()["detail"] == "PWR direct payment is disabled until anchor exists"
+    sync = test_client.post(
+        f"/api/v1/payments/{payment_id}/sync-onchain",
+        json={"state": "succeeded", "tx_hash": "0xpwr123", "wallet_address": "0xbuyer"},
+    )
+    assert sync.status_code == 200
+    assert sync.json()["state"] == "succeeded"
+    assert sync.json()["synced_onchain"] is True
+
+    order_after = test_client.get(f"/api/v1/orders/{order['id']}")
+    assert order_after.status_code == 200
+    assert order_after.json()["settlement_beneficiary_user_id"] == "owner-1"
+    assert order_after.json()["settlement_is_dividend_eligible"] is True
+    assert spy_writer.mark_paid_calls == []

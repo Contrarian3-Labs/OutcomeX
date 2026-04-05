@@ -160,15 +160,57 @@ contract OrderPaymentRouterTest is TestBase {
         assertEq(usdt.balanceOf(address(settlement)), 900_000, "remaining usdt should stay as reserve backing");
     }
 
-    function testPWRDirectPaymentIsDisabledUntilAnchorExists() public {
+    function testPWRConfirmedOrderCreatesPlatformClaimAndMachineReserve() public {
         vm.prank(BUYER);
         uint256 orderId = orderBook.createOrder(machineId, 1_000);
+
+        vm.startPrank(ADMIN);
+        pwr.setMinter(ADMIN, true);
+        pwr.mint(BUYER, 1_000);
+        vm.stopPrank();
 
         vm.prank(BUYER);
         pwr.approve(address(router), 1_000);
 
         vm.prank(BUYER);
-        vm.expectRevert("PWR_PAYMENT_DISABLED");
         router.payWithPWR(orderId, 1_000);
+
+        assertEq(pwr.balanceOf(address(settlement)), 1_000, "settlement should escrow pwr");
+
+        vm.prank(MACHINE_OWNER);
+        orderBook.markPreviewReady(orderId, true);
+
+        vm.prank(BUYER);
+        orderBook.confirmResult(orderId);
+
+        assertEq(settlement.platformAccruedByToken(address(pwr)), 100, "platform pwr claim mismatch");
+        assertEq(revenueVault.unsettledRevenueByMachine(machineId), 900, "machine pwr accrual mismatch");
+    }
+
+    function testPWRFailedBeforePreviewCanRefundPaidPWR() public {
+        vm.prank(BUYER);
+        uint256 orderId = orderBook.createOrder(machineId, 1_000);
+
+        vm.startPrank(ADMIN);
+        pwr.setMinter(ADMIN, true);
+        pwr.mint(BUYER, 1_000);
+        vm.stopPrank();
+
+        vm.prank(BUYER);
+        pwr.approve(address(router), 1_000);
+
+        vm.prank(BUYER);
+        router.payWithPWR(orderId, 1_000);
+
+        vm.prank(BUYER);
+        orderBook.refundFailedOrNoValidPreview(orderId);
+
+        assertEq(settlement.refundableByToken(BUYER, address(pwr)), 1_000, "refund ledger mismatch");
+
+        vm.prank(BUYER);
+        uint256 claimed = settlement.claimRefund(address(pwr));
+        assertEq(claimed, 1_000, "refund amount mismatch");
+        assertEq(pwr.balanceOf(BUYER), 1_000, "buyer should recover all pwr");
+        assertEq(pwr.balanceOf(address(settlement)), 0, "settlement escrow should be empty");
     }
 }
