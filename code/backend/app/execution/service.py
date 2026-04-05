@@ -5,12 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from ..core.config import get_settings
+from ..domain.enums import ExecutionRunStatus
+from ..integrations.agentskillos_execution_service import AgentSkillOSExecutionService
+from ..integrations.model_router import ModelRouteRequest, ModelRouteStatus, ModelRouter
 from ..integrations.providers import (
-    AlibabaMuleRouterAdapter,
+    DashScopeProviderAdapter,
     GenerationRequest,
     GenerationResponse,
     MediaProviderAdapter,
-    ProviderTaskStatus,
 )
 from ..runtime.hardware_simulator import (
     AdmissionResult,
@@ -20,9 +23,15 @@ from ..runtime.hardware_simulator import (
     WorkloadSpec,
 )
 from ..runtime.preview_policy import PreviewDecision, PreviewPolicy
-from .contracts import ExecutionRecipe, IntentRequest, MatchStatus, MediaType, SolutionMatchResult
-from .matcher import match_recipe_to_solution
-from .normalizer import normalize_intent_to_recipe
+from .agentskillos_wrapper import AgentSkillOSWrapper
+from .contracts import (
+    ExecutionRecipe,
+    ExecutionRunDispatchStatus,
+    IntentRequest,
+    MatchStatus,
+    MediaType,
+    SolutionMatchResult,
+)
 
 _MULTI_OUTPUT_NOT_SUPPORTED = "multi_output_not_supported"
 
@@ -34,6 +43,9 @@ class ExecutionPlan:
     recipe: ExecutionRecipe
     match: SolutionMatchResult
     preview: tuple[PreviewDecision, ...]
+    candidate_artifacts: tuple[str, ...] = ()
+    preview_candidates: tuple[str, ...] = ()
+    metadata: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -43,6 +55,8 @@ class ExecutionDispatchResult:
     accepted: bool
     admission: AdmissionResult
     provider_response: GenerationResponse | None = None
+    run_id: str | None = None
+    run_status: ExecutionRunDispatchStatus | None = None
     details: dict[str, str] = field(default_factory=dict)
 
 
@@ -65,6 +79,9 @@ class ExecutionEngineService:
         hardware_simulator: HardwareSimulator | None = None,
         preview_policy: PreviewPolicy | None = None,
         provider_adapter: MediaProviderAdapter | None = None,
+        wrapper: AgentSkillOSWrapper | None = None,
+        model_router: ModelRouter | None = None,
+        execution_service: AgentSkillOSExecutionService | None = None,
     ):
         self._simulator = hardware_simulator or HardwareSimulator(
             HardwareProfile(
@@ -75,20 +92,22 @@ class ExecutionEngineService:
             )
         )
         self._preview_policy = preview_policy or PreviewPolicy()
-        self._provider_adapter = provider_adapter or AlibabaMuleRouterAdapter()
+        self._provider_adapter = provider_adapter or DashScopeProviderAdapter.from_settings(get_settings())
+        self._wrapper = wrapper or AgentSkillOSWrapper()
+        self._model_router = model_router or ModelRouter()
+        self._execution_service = execution_service or AgentSkillOSExecutionService()
 
     def plan(self, intent: IntentRequest) -> ExecutionPlan:
-        recipe = normalize_intent_to_recipe(intent)
-        if len(intent.desired_outputs) > 1:
-            match = SolutionMatchResult(
-                status=MatchStatus.NO_MATCH,
-                selected=None,
-                missing_requirements=(_MULTI_OUTPUT_NOT_SUPPORTED,),
-            )
-        else:
-            match = match_recipe_to_solution(recipe, intent.constraints)
-        preview = self._preview_policy.decide(recipe, self._simulator.snapshot())
-        return ExecutionPlan(recipe=recipe, match=match, preview=preview)
+        wrapper_plan = self._wrapper.plan(intent)
+        preview = self._preview_policy.decide(wrapper_plan.recipe, self._simulator.snapshot())
+        return ExecutionPlan(
+            recipe=wrapper_plan.recipe,
+            match=wrapper_plan.match,
+            preview=preview,
+            candidate_artifacts=wrapper_plan.candidate_artifacts,
+            preview_candidates=wrapper_plan.preview_candidates,
+            metadata=wrapper_plan.execution_metadata,
+        )
 
     def dispatch(self, intent: IntentRequest) -> ExecutionDispatchResult:
         plan = self.plan(intent)
@@ -124,25 +143,29 @@ class ExecutionEngineService:
                 details={"reason": admission.reason},
             )
 
-        provider_response = self._submit_provider_request(plan.recipe.prompt, plan.match.selected.model_id, plan.recipe.steps[0].output_type)
-        accepted = provider_response is None or provider_response.success
+        submitted_run = self._execution_service.submit_task(
+            external_order_id=intent.intent_id,
+            prompt=plan.recipe.prompt,
+        )
+        accepted = submitted_run.status in {
+            ExecutionRunStatus.QUEUED,
+            ExecutionRunStatus.PLANNING,
+            ExecutionRunStatus.RUNNING,
+            ExecutionRunStatus.SUCCEEDED,
+        }
         return ExecutionDispatchResult(
             accepted=accepted,
             admission=admission,
-            provider_response=provider_response,
-            details={"match_status": plan.match.status.value},
+            run_id=submitted_run.run_id,
+            run_status=ExecutionRunDispatchStatus(submitted_run.status.value),
+            details={
+                "match_status": plan.match.status.value,
+                "run_id": submitted_run.run_id,
+                "run_status": submitted_run.status.value,
+            },
         )
 
     def _submit_provider_request(self, prompt: str, model_id: str, output_type: MediaType) -> GenerationResponse | None:
-        if output_type == MediaType.TEXT:
-            return GenerationResponse(
-                success=True,
-                provider="builtin",
-                status=ProviderTaskStatus.SUCCEEDED,
-                result_urls=(),
-                metadata={"mode": "inline_text"},
-            )
-
         request = GenerationRequest(
             prompt=prompt,
             output_type=output_type,

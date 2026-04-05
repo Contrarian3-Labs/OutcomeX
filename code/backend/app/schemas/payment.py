@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.domain.enums import PaymentState
+from app.schemas.quote import QuoteResponse
 
 
 class PaymentIntentRequest(BaseModel):
@@ -16,7 +17,10 @@ class PaymentIntentResponse(BaseModel):
     provider: str
     provider_reference: str
     checkout_url: str
+    flow_id: str | None = None
+    merchant_order_id: str | None = None
     state: PaymentState
+    quote: QuoteResponse | None = None
     created_at: datetime
 
 
@@ -27,4 +31,3 @@ class MockPaymentConfirmRequest(BaseModel):
 class MockPaymentConfirmResponse(BaseModel):
     payment_id: str
     state: PaymentState
-

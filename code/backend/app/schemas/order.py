@@ -28,6 +28,7 @@ class OrderResponse(BaseModel):
     settlement_beneficiary_user_id: str | None
     settlement_is_self_use: bool | None
     settlement_is_dividend_eligible: bool | None
+    execution_metadata: dict[str, str] | None
     result_confirmed_at: datetime | None
     created_at: datetime
 

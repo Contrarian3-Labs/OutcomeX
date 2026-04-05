@@ -95,16 +95,16 @@ def test_matcher_rejects_multi_step_recipe_for_mvp():
         steps=(
             ExecutionStep(
                 step_id="s1",
-                provider="alibaba-mulerouter",
-                model="alibaba/wan2.6-t2i",
+                provider="dashscope",
+                model="wan2.6-t2i",
                 action="generation",
                 output_type=MediaType.IMAGE,
                 resources=ResourceEstimate(capacity_units=3, memory_mb=2_048, expected_duration_ticks=2),
             ),
             ExecutionStep(
                 step_id="s2",
-                provider="alibaba-mulerouter",
-                model="alibaba/wan2.6-t2v",
+                provider="dashscope",
+                model="wan2.2-t2v-plus",
                 action="generation",
                 output_type=MediaType.VIDEO,
                 resources=ResourceEstimate(capacity_units=6, memory_mb=6_144, expected_duration_ticks=4),

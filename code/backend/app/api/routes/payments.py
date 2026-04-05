@@ -7,6 +7,8 @@ from app.core.container import Container
 from app.domain.enums import PaymentState
 from app.domain.models import Machine, Order, Payment
 from app.domain.rules import has_sufficient_payment, is_dividend_eligible
+from app.onchain.order_writer import OrderWriter, get_order_writer
+from app.runtime.cost_service import RuntimeCostService, get_runtime_cost_service
 from app.schemas.payment import (
     MockPaymentConfirmRequest,
     MockPaymentConfirmResponse,
@@ -26,10 +28,10 @@ def _succeeded_payment_total_cents(order_id: str, db: Session) -> int:
     )
 
 
-def _freeze_settlement_policy_if_fully_paid(order: Order, db: Session) -> None:
+def _freeze_settlement_policy_if_fully_paid(order: Order, db: Session) -> bool:
     paid_cents = _succeeded_payment_total_cents(order.id, db)
     if not has_sufficient_payment(order.quoted_amount_cents, paid_cents):
-        return
+        return False
 
     machine = db.get(Machine, order.machine_id)
     if machine is None:
@@ -43,6 +45,25 @@ def _freeze_settlement_policy_if_fully_paid(order: Order, db: Session) -> None:
     machine.has_unsettled_revenue = True
     db.add(order)
     db.add(machine)
+    return True
+
+
+def _apply_payment_state(
+    payment: Payment,
+    *,
+    state: PaymentState,
+    db: Session,
+    order_writer: OrderWriter,
+) -> Order:
+    payment.state = state
+    db.add(payment)
+    db.flush()
+    order = db.get(Order, payment.order_id)
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    if state == PaymentState.SUCCEEDED and _freeze_settlement_policy_if_fully_paid(order, db):
+        order_writer.mark_order_paid(order, payment)
+    return order
 
 
 @router.post("/orders/{order_id}/intent", response_model=PaymentIntentResponse, status_code=status.HTTP_201_CREATED)
@@ -51,20 +72,24 @@ def create_payment_intent(
     payload: PaymentIntentRequest,
     db: Session = Depends(get_db),
     container: Container = Depends(get_dependency_container),
+    cost_service: RuntimeCostService = Depends(get_runtime_cost_service),
 ) -> PaymentIntentResponse:
     order = db.get(Order, order_id)
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
 
-    intent = container.hsp_adapter.create_payment_intent(
+    merchant_order = container.hsp_adapter.create_payment_intent(
         order_id=order.id,
         amount_cents=payload.amount_cents,
         currency=payload.currency.upper(),
     )
     payment = Payment(
         order_id=order.id,
-        provider=intent.provider,
-        provider_reference=intent.provider_reference,
+        provider=merchant_order.provider,
+        provider_reference=merchant_order.provider_reference,
+        merchant_order_id=merchant_order.merchant_order_id,
+        flow_id=merchant_order.flow_id,
+        checkout_url=merchant_order.payment_url,
         amount_cents=payload.amount_cents,
         currency=payload.currency.upper(),
         state=PaymentState.PENDING,
@@ -76,9 +101,12 @@ def create_payment_intent(
         payment_id=payment.id,
         order_id=payment.order_id,
         provider=payment.provider,
-        provider_reference=intent.provider_reference,
-        checkout_url=intent.checkout_url,
+        provider_reference=merchant_order.provider_reference,
+        checkout_url=merchant_order.payment_url,
+        flow_id=merchant_order.flow_id,
+        merchant_order_id=merchant_order.merchant_order_id,
         state=payment.state,
+        quote=cost_service.quote_for_order_amount(order.quoted_amount_cents),
         created_at=payment.created_at,
     )
 
@@ -88,6 +116,7 @@ def mock_confirm_payment(
     payment_id: str,
     payload: MockPaymentConfirmRequest,
     db: Session = Depends(get_db),
+    order_writer: OrderWriter = Depends(get_order_writer),
 ) -> MockPaymentConfirmResponse:
     payment = db.get(Payment, payment_id)
     if payment is None:
@@ -99,14 +128,6 @@ def mock_confirm_payment(
             detail="Mock confirmation only accepts succeeded or failed",
         )
 
-    payment.state = payload.state
-    db.add(payment)
-    db.flush()
-    order = db.get(Order, payment.order_id)
-    if order is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
-    if payload.state == PaymentState.SUCCEEDED:
-        _freeze_settlement_policy_if_fully_paid(order, db)
+    _apply_payment_state(payment, state=payload.state, db=db, order_writer=order_writer)
     db.commit()
     return MockPaymentConfirmResponse(payment_id=payment.id, state=payment.state)
-

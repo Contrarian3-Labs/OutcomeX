@@ -14,6 +14,30 @@
 - 当前代码已经是什么
 - 我建议锁定的正式路线是什么
 
+## 0. 2026-04-04 当前代码补充
+
+为了避免这份文档和最新代码状态错位，先补充当前 `feat/phase1-integration` 分支的真实情况：
+
+- 当前默认支付主路径仍是后端控制的 merchant-style 流程：
+  - 后端创建 payment intent
+  - 支付成功后冻结 settlement policy
+  - 再由后端推进订单与链上写入边界
+- `USDC direct pay`、`USDT direct pay`、`PWR pay` 的正式合约入口设计已经明确，但还没有全部和后端产品流打通
+- AI 执行层现在已经切换为：
+  - OutcomeX 提交任务给 `AgentSkillOSExecutionService`
+  - `AgentSkillOS` 内部负责 orchestration / model / tool / artifact
+  - OutcomeX 只消费 `run_id`、状态、技能清单、模型消耗与产物清单
+
+所以这份文档下面关于支付与合约交互的设计仍然成立，但关于 AI 执行层的最新事实应以：
+
+- `docs/agentskillos-execution-service-cn.md`
+
+和：
+
+- `docs/current-backend-state-cn.md`
+
+为准。
+
 ## 1. 基于 HSP 文档的直接结论
 
 我查看了本地 PDF：

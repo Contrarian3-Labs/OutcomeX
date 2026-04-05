@@ -18,6 +18,15 @@ class MediaType(str, Enum):
     VIDEO = "video"
 
 
+class ExecutionRunDispatchStatus(str, Enum):
+    QUEUED = "queued"
+    PLANNING = "planning"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class MatchStatus(str, Enum):
     """Outcome of solution matching against provider capabilities."""
 
@@ -111,4 +120,15 @@ class SolutionMatchResult:
     selected: CandidateMatch | None
     alternatives: tuple[CandidateMatch, ...] = ()
     missing_requirements: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class WrapperPlanResult:
+    """Wrapper planning output consumed by execution service."""
+
+    recipe: ExecutionRecipe
+    match: SolutionMatchResult
+    candidate_artifacts: tuple[str, ...] = ()
+    preview_candidates: tuple[str, ...] = ()
+    execution_metadata: dict[str, str] = field(default_factory=dict)
 
