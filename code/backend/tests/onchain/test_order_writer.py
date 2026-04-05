@@ -73,6 +73,8 @@ def test_writer_exposes_create_confirm_and_settle_actions() -> None:
     settle_result = writer.settle_order(order, settlement)
 
     assert create_result.method_name == "createOrder"
+    assert "order_id" not in create_result.payload
+    assert create_result.payload["gross_amount"] == 1000
     assert preview_result.method_name == "markPreviewReady"
     assert confirm_result.method_name == "confirmResult"
     assert settle_result.method_name == "settleOrder"

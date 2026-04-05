@@ -18,7 +18,10 @@ class OrderCreateRequest(BaseModel):
 
 class OrderResponse(BaseModel):
     id: str
-    onchain_order_id: str
+    onchain_order_id: str | None
+    create_order_tx_hash: str | None
+    create_order_event_id: str | None
+    create_order_block_number: int | None
     user_id: str
     machine_id: str
     chat_session_id: str

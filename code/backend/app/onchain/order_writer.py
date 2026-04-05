@@ -29,10 +29,8 @@ class OrderWriter:
 
     def create_order(self, order: Order) -> OrderWriteResult:
         payload = {
-            "order_id": self._chain_order_id(order),
             "machine_id": order.machine_id,
-            "quoted_amount_cents": order.quoted_amount_cents,
-            "user_id": order.user_id,
+            "gross_amount": order.quoted_amount_cents,
         }
         return self._submit("createOrder", payload)
 

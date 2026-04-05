@@ -52,7 +52,10 @@ class Order(Base):
     __tablename__ = "orders"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    onchain_order_id: Mapped[str] = mapped_column(String(64), unique=True, index=True, default=lambda: f"oc_{uuid4().hex}")
+    onchain_order_id: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
+    create_order_tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    create_order_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    create_order_block_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     user_id: Mapped[str] = mapped_column(String(64), index=True)
     machine_id: Mapped[str] = mapped_column(ForeignKey("machines.id"), index=True)
     chat_session_id: Mapped[str] = mapped_column(String(64), index=True)
