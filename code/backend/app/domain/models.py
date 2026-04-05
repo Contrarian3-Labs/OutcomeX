@@ -52,6 +52,7 @@ class Order(Base):
     __tablename__ = "orders"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    onchain_order_id: Mapped[str] = mapped_column(String(64), unique=True, index=True, default=lambda: f"oc_{uuid4().hex}")
     user_id: Mapped[str] = mapped_column(String(64), index=True)
     machine_id: Mapped[str] = mapped_column(ForeignKey("machines.id"), index=True)
     chat_session_id: Mapped[str] = mapped_column(String(64), index=True)

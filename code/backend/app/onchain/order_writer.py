@@ -29,7 +29,7 @@ class OrderWriter:
 
     def create_order(self, order: Order) -> OrderWriteResult:
         payload = {
-            "order_id": order.id,
+            "order_id": self._chain_order_id(order),
             "machine_id": order.machine_id,
             "quoted_amount_cents": order.quoted_amount_cents,
             "user_id": order.user_id,
@@ -38,7 +38,7 @@ class OrderWriter:
 
     def mark_order_paid(self, order: Order, payment: Payment) -> OrderWriteResult:
         payload = {
-            "order_id": order.id,
+            "order_id": self._chain_order_id(order),
             "payment_id": payment.id,
             "merchant_order_id": payment.merchant_order_id,
             "flow_id": payment.flow_id,
@@ -65,7 +65,7 @@ class OrderWriter:
             method_name = "payWithUSDCByAuthorization"
             signing_standard = "eip3009"
             payload = {
-                "order_id": order.id,
+                "order_id": self._chain_order_id(order),
                 "payment_id": payment.id,
                 "amount_cents": payment.amount_cents,
                 "currency": currency,
@@ -76,7 +76,7 @@ class OrderWriter:
             method_name = "payWithUSDT"
             signing_standard = "permit2"
             payload = {
-                "order_id": order.id,
+                "order_id": self._chain_order_id(order),
                 "payment_id": payment.id,
                 "amount_cents": payment.amount_cents,
                 "currency": currency,
@@ -88,7 +88,7 @@ class OrderWriter:
                 raise ValueError("pwr_amount_required")
             method_name = "payWithPWR"
             payload = {
-                "order_id": order.id,
+                "order_id": self._chain_order_id(order),
                 "payment_id": payment.id,
                 "amount_cents": payment.amount_cents,
                 "currency": "PWR",
@@ -105,7 +105,7 @@ class OrderWriter:
 
     def mark_preview_ready(self, order: Order) -> OrderWriteResult:
         payload = {
-            "order_id": order.id,
+            "order_id": self._chain_order_id(order),
             "preview_state": order.preview_state.value,
             "execution_state": order.execution_state.value,
         }
@@ -113,7 +113,7 @@ class OrderWriter:
 
     def confirm_result(self, order: Order) -> OrderWriteResult:
         payload = {
-            "order_id": order.id,
+            "order_id": self._chain_order_id(order),
             "result_confirmed_at": order.result_confirmed_at.isoformat() if order.result_confirmed_at else None,
             "settlement_state": order.settlement_state.value,
         }
@@ -121,7 +121,7 @@ class OrderWriter:
 
     def settle_order(self, order: Order, settlement: SettlementRecord) -> OrderWriteResult:
         payload = {
-            "order_id": order.id,
+            "order_id": self._chain_order_id(order),
             "settlement_id": settlement.id,
             "gross_amount_cents": settlement.gross_amount_cents,
             "platform_fee_cents": settlement.platform_fee_cents,
@@ -156,6 +156,10 @@ class OrderWriter:
         if isinstance(value, datetime):
             return value.isoformat()
         return str(value)
+
+    @staticmethod
+    def _chain_order_id(order: Order) -> str:
+        return order.onchain_order_id or order.id
 
 
 @lru_cache

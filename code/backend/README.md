@@ -9,10 +9,10 @@ OutcomeX backend owns:
 
 - chat-native product APIs
 - order, payment, settlement, and revenue state
-- machine transfer guards and control-plane projections
+- machine transfer guards and chain-projected ownership semantics
 - the thin submission boundary into AgentSkillOS
 - deterministic write-chain payload generation
-- payment rail intent generation and onchain sync
+- payment rail intent generation and verifier-backed onchain sync
 
 AgentSkillOS owns:
 
@@ -86,6 +86,13 @@ Current PWR anchor behavior:
 - the current anchor is a minimal backend-priced anchor, not a market oracle
 
 Direct onchain payment success freezes settlement policy in backend state, but does not emit a duplicate `markOrderPaid` write because escrow has already happened onchain.
+
+Additional hardening now in place:
+
+- direct onchain sync uses a verifier boundary instead of trusting caller-reported success
+- backend orders carry a chain-facing `onchain_order_id` for direct-pay addressability
+- machine transfer API records transfer intent; canonical owner comes from chain projection
+- runtime admission occupancy is shared across service instances via a container-managed simulator
 
 ## Local run
 

@@ -9,6 +9,7 @@ from app.core.container import Container
 from app.domain.enums import PaymentState
 from app.domain.models import Machine, Order, Payment, utc_now
 from app.domain.rules import has_sufficient_payment, is_dividend_eligible
+from app.integrations.onchain_payment_verifier import OnchainPaymentVerifier, get_onchain_payment_verifier
 from app.onchain.order_writer import OrderWriter, get_order_writer
 from app.runtime.cost_service import RuntimeCostService, get_runtime_cost_service
 from app.schemas.payment import (
@@ -170,7 +171,7 @@ def create_direct_payment_intent(
     else:
         direct_intent = order_writer.build_direct_payment_intent(order, payment)
     payment.provider_reference = direct_intent.method_name
-    payment.merchant_order_id = order.id
+    payment.merchant_order_id = order.onchain_order_id
     payment.flow_id = payment.id
     db.add(payment)
     db.commit()
@@ -178,7 +179,7 @@ def create_direct_payment_intent(
 
     return DirectPaymentIntentResponse(
         payment_id=payment.id,
-        order_id=payment.order_id,
+        order_id=order.onchain_order_id,
         provider=payment.provider,
         contract_name=direct_intent.contract_name,
         contract_address=direct_intent.contract_address,
@@ -198,6 +199,7 @@ def sync_onchain_payment(
     payload: DirectPaymentSyncRequest,
     db: Session = Depends(get_db),
     order_writer: OrderWriter = Depends(get_order_writer),
+    verifier: OnchainPaymentVerifier = Depends(get_onchain_payment_verifier),
 ) -> DirectPaymentSyncResponse:
     payment = db.get(Payment, payment_id)
     if payment is None:
@@ -207,15 +209,31 @@ def sync_onchain_payment(
     if payload.state == PaymentState.CREATED:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Sync state must be pending or terminal")
 
-    payment.callback_event_id = f"onchain:{payload.tx_hash.lower()}"
-    payment.callback_state = payload.state.value
+    order = db.get(Order, payment.order_id)
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    verification = verifier.verify_payment(
+        tx_hash=payload.tx_hash,
+        wallet_address=payload.wallet_address,
+        order=order,
+        payment=payment,
+    )
+    if not verification.matched:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Onchain evidence verification failed: {verification.reason or 'mismatch'}",
+        )
+
+    payment.callback_event_id = verification.event_id
+    payment.callback_state = verification.state.value
     payment.callback_received_at = utc_now()
-    payment.callback_tx_hash = payload.tx_hash
+    payment.callback_tx_hash = verification.tx_hash
     db.add(payment)
 
     _apply_payment_state(
         payment,
-        state=payload.state,
+        state=verification.state,
         db=db,
         order_writer=order_writer,
         write_chain=False,
@@ -224,7 +242,7 @@ def sync_onchain_payment(
     return DirectPaymentSyncResponse(
         payment_id=payment.id,
         state=payment.state,
-        tx_hash=payload.tx_hash,
+        tx_hash=verification.tx_hash,
         synced_onchain=True,
     )
 

@@ -18,6 +18,7 @@ class OrderCreateRequest(BaseModel):
 
 class OrderResponse(BaseModel):
     id: str
+    onchain_order_id: str
     user_id: str
     machine_id: str
     chat_session_id: str

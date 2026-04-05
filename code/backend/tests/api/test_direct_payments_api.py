@@ -5,6 +5,8 @@ from fastapi.testclient import TestClient
 
 from app.core.config import reset_settings_cache
 from app.core.container import reset_container_cache
+from app.domain.enums import PaymentState
+from app.integrations.onchain_payment_verifier import OnchainPaymentVerificationResult, get_onchain_payment_verifier
 from app.main import create_app
 from app.onchain.order_writer import OrderWriteResult, get_order_writer
 
@@ -43,7 +45,7 @@ class SpyOrderWriter:
             method_name = "payWithUSDCByAuthorization"
             signing_standard = "eip3009"
             payload = {
-                "order_id": order.id,
+                "order_id": order.onchain_order_id,
                 "payment_id": payment.id,
                 "amount_cents": payment.amount_cents,
                 "currency": currency,
@@ -53,7 +55,7 @@ class SpyOrderWriter:
             method_name = "payWithUSDT"
             signing_standard = "permit2"
             payload = {
-                "order_id": order.id,
+                "order_id": order.onchain_order_id,
                 "payment_id": payment.id,
                 "amount_cents": payment.amount_cents,
                 "currency": currency,
@@ -63,7 +65,7 @@ class SpyOrderWriter:
             method_name = "payWithPWR"
             signing_standard = "erc20_approve"
             payload = {
-                "order_id": order.id,
+                "order_id": order.onchain_order_id,
                 "payment_id": payment.id,
                 "amount_cents": payment.amount_cents,
                 "currency": currency,
@@ -84,18 +86,56 @@ class SpyOrderWriter:
         )
 
 
+class SpyOnchainPaymentVerifier:
+    def __init__(self) -> None:
+        self.results: dict[str, OnchainPaymentVerificationResult] = {}
+
+    def set_result(
+        self,
+        *,
+        tx_hash: str,
+        verification: OnchainPaymentVerificationResult,
+    ) -> None:
+        self.results[tx_hash.lower()] = verification
+
+    def verify_payment(
+        self,
+        *,
+        tx_hash: str,
+        wallet_address: str | None,
+        order,
+        payment,
+    ) -> OnchainPaymentVerificationResult:
+        return self.results.get(
+            tx_hash.lower(),
+            OnchainPaymentVerificationResult(
+                matched=False,
+                state=PaymentState.FAILED,
+                tx_hash=tx_hash,
+                event_id=f"onchain:{tx_hash.lower()}",
+                reason="unconfigured_tx_hash",
+                evidence_order_id=None,
+                evidence_amount_cents=None,
+                evidence_currency=None,
+                evidence_wallet_address=wallet_address,
+            ),
+        )
+
+
 @pytest.fixture
-def client(tmp_path) -> tuple[TestClient, SpyOrderWriter]:
+def client(tmp_path) -> tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier]:
     db_path = tmp_path / "direct-payments.db"
     os.environ["OUTCOMEX_DATABASE_URL"] = f"sqlite+pysqlite:///{db_path.as_posix()}"
     os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
     reset_settings_cache()
     reset_container_cache()
     spy_writer = SpyOrderWriter()
+    spy_verifier = SpyOnchainPaymentVerifier()
     app = create_app()
     app.dependency_overrides[get_order_writer] = lambda: spy_writer
+    app.dependency_overrides[get_onchain_payment_verifier] = lambda: spy_verifier
     with TestClient(app) as test_client:
-        yield test_client, spy_writer
+        yield test_client, spy_writer, spy_verifier
     reset_settings_cache()
     reset_container_cache()
 
@@ -121,11 +161,15 @@ def _create_order(client: TestClient, machine_id: str, quoted_amount_cents: int 
         },
     )
     assert response.status_code == 201
-    return response.json()
+    payload = response.json()
+    assert payload["onchain_order_id"].startswith("oc_")
+    return payload
 
 
-def test_create_direct_payment_intent_returns_router_call_spec(client: tuple[TestClient, SpyOrderWriter]) -> None:
-    test_client, _spy_writer = client
+def test_create_direct_payment_intent_returns_router_call_spec(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
+) -> None:
+    test_client, _spy_writer, _spy_verifier = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine["id"])
 
@@ -137,6 +181,7 @@ def test_create_direct_payment_intent_returns_router_call_spec(client: tuple[Tes
     assert response.status_code == 201
     payload = response.json()
     assert payload["provider"] == "onchain_router"
+    assert payload["order_id"] == order["onchain_order_id"]
     assert payload["contract_name"] == "OrderPaymentRouter"
     assert payload["method_name"] == "payWithUSDCByAuthorization"
     assert payload["signing_standard"] == "eip3009"
@@ -144,8 +189,10 @@ def test_create_direct_payment_intent_returns_router_call_spec(client: tuple[Tes
     assert payload["submit_payload"]["amount_cents"] == 1000
 
 
-def test_create_direct_payment_intent_supports_pwr_when_anchor_exists(client: tuple[TestClient, SpyOrderWriter]) -> None:
-    test_client, _spy_writer = client
+def test_create_direct_payment_intent_supports_pwr_when_anchor_exists(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
+) -> None:
+    test_client, _spy_writer, _spy_verifier = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine["id"])
 
@@ -164,8 +211,10 @@ def test_create_direct_payment_intent_supports_pwr_when_anchor_exists(client: tu
     assert payload["quote"]["pwr_anchor_price_cents"] == 25
 
 
-def test_sync_onchain_payment_freezes_policy_without_duplicate_write_chain_call(client: tuple[TestClient, SpyOrderWriter]) -> None:
-    test_client, spy_writer = client
+def test_sync_onchain_payment_freezes_policy_without_duplicate_write_chain_call(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
+) -> None:
+    test_client, spy_writer, spy_verifier = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine["id"])
 
@@ -175,6 +224,20 @@ def test_sync_onchain_payment_freezes_policy_without_duplicate_write_chain_call(
     )
     assert intent.status_code == 201
     payment_id = intent.json()["payment_id"]
+    spy_verifier.set_result(
+        tx_hash="0xabc123",
+        verification=OnchainPaymentVerificationResult(
+            matched=True,
+            state=PaymentState.SUCCEEDED,
+            tx_hash="0xabc123",
+            event_id="onchain:0xabc123",
+            reason=None,
+            evidence_order_id=order["onchain_order_id"],
+            evidence_amount_cents=1000,
+            evidence_currency="USDT",
+            evidence_wallet_address="0xbuyer",
+        ),
+    )
 
     sync = test_client.post(
         f"/api/v1/payments/{payment_id}/sync-onchain",
@@ -191,8 +254,10 @@ def test_sync_onchain_payment_freezes_policy_without_duplicate_write_chain_call(
     assert spy_writer.mark_paid_calls == []
 
 
-def test_sync_onchain_pwr_payment_freezes_policy_without_duplicate_write_chain_call(client: tuple[TestClient, SpyOrderWriter]) -> None:
-    test_client, spy_writer = client
+def test_sync_onchain_pwr_payment_freezes_policy_without_duplicate_write_chain_call(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
+) -> None:
+    test_client, spy_writer, spy_verifier = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine["id"])
 
@@ -202,6 +267,20 @@ def test_sync_onchain_pwr_payment_freezes_policy_without_duplicate_write_chain_c
     )
     assert intent.status_code == 201
     payment_id = intent.json()["payment_id"]
+    spy_verifier.set_result(
+        tx_hash="0xpwr123",
+        verification=OnchainPaymentVerificationResult(
+            matched=True,
+            state=PaymentState.SUCCEEDED,
+            tx_hash="0xpwr123",
+            event_id="onchain:0xpwr123",
+            reason=None,
+            evidence_order_id=order["onchain_order_id"],
+            evidence_amount_cents=1000,
+            evidence_currency="PWR",
+            evidence_wallet_address="0xbuyer",
+        ),
+    )
 
     sync = test_client.post(
         f"/api/v1/payments/{payment_id}/sync-onchain",
@@ -216,3 +295,75 @@ def test_sync_onchain_pwr_payment_freezes_policy_without_duplicate_write_chain_c
     assert order_after.json()["settlement_beneficiary_user_id"] == "owner-1"
     assert order_after.json()["settlement_is_dividend_eligible"] is True
     assert spy_writer.mark_paid_calls == []
+
+
+def test_sync_onchain_rejects_unverified_event_mismatch(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
+) -> None:
+    test_client, _spy_writer, spy_verifier = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine["id"])
+
+    intent = test_client.post(
+        f"/api/v1/payments/orders/{order['id']}/direct-intent",
+        json={"amount_cents": 1000, "currency": "USDC"},
+    )
+    assert intent.status_code == 201
+    payment_id = intent.json()["payment_id"]
+    spy_verifier.set_result(
+        tx_hash="0xmismatch",
+        verification=OnchainPaymentVerificationResult(
+            matched=False,
+            state=PaymentState.FAILED,
+            tx_hash="0xmismatch",
+            event_id="onchain:0xmismatch",
+            reason="order_id_mismatch",
+            evidence_order_id="wrong-onchain-order",
+            evidence_amount_cents=1000,
+            evidence_currency="USDC",
+            evidence_wallet_address="0xbuyer",
+        ),
+    )
+
+    sync = test_client.post(
+        f"/api/v1/payments/{payment_id}/sync-onchain",
+        json={"state": "succeeded", "tx_hash": "0xmismatch", "wallet_address": "0xbuyer"},
+    )
+    assert sync.status_code == 409
+    assert sync.json()["detail"] == "Onchain evidence verification failed: order_id_mismatch"
+
+
+def test_sync_onchain_uses_verifier_state_instead_of_caller_state(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
+) -> None:
+    test_client, _spy_writer, spy_verifier = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine["id"])
+
+    intent = test_client.post(
+        f"/api/v1/payments/orders/{order['id']}/direct-intent",
+        json={"amount_cents": 1000, "currency": "USDC"},
+    )
+    assert intent.status_code == 201
+    payment_id = intent.json()["payment_id"]
+    spy_verifier.set_result(
+        tx_hash="0xfailed",
+        verification=OnchainPaymentVerificationResult(
+            matched=True,
+            state=PaymentState.FAILED,
+            tx_hash="0xfailed",
+            event_id="onchain:0xfailed",
+            reason="reverted",
+            evidence_order_id=order["onchain_order_id"],
+            evidence_amount_cents=1000,
+            evidence_currency="USDC",
+            evidence_wallet_address="0xbuyer",
+        ),
+    )
+
+    sync = test_client.post(
+        f"/api/v1/payments/{payment_id}/sync-onchain",
+        json={"state": "succeeded", "tx_hash": "0xfailed", "wallet_address": "0xbuyer"},
+    )
+    assert sync.status_code == 200
+    assert sync.json()["state"] == "failed"

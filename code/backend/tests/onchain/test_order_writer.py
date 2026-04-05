@@ -9,6 +9,7 @@ from app.onchain.order_writer import OrderWriter
 def _build_order() -> Order:
     order = Order(
         id="order-1",
+        onchain_order_id="chain-order-1",
         user_id="user-1",
         machine_id="machine-1",
         chat_session_id="chat-1",
@@ -48,6 +49,7 @@ def test_mark_order_paid_returns_deterministic_tx_metadata() -> None:
     assert first.tx_hash == second.tx_hash
     assert first.method_name == "markOrderPaid"
     assert first.contract_name == "OrderBook"
+    assert first.payload["order_id"] == "chain-order-1"
     assert first.payload["settlement_beneficiary_user_id"] == "owner-1"
     assert first.payload["settlement_is_self_use"] is False
     assert first.payload["settlement_is_dividend_eligible"] is True
@@ -95,6 +97,7 @@ def test_writer_builds_direct_payment_call_spec() -> None:
 
     assert intent.contract_name == "OrderPaymentRouter"
     assert intent.method_name == "payWithUSDCByAuthorization"
+    assert intent.payload["order_id"] == "chain-order-1"
     assert intent.payload["signing_standard"] == "eip3009"
     assert intent.payload["currency"] == "USDC"
 

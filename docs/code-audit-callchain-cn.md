@@ -447,6 +447,11 @@
 - 创建真实 `createOrder` 广播 / 索引回写闭环
 - direct-intent 返回 ABI 参数对象或 calldata，而不是仅返回抽象 payload
 
+状态更新（2026-04-05）：
+
+- 已补 `Order.onchain_order_id`，direct-intent 和 mark/order writer 已统一绑定链侧 order 标识
+- 真实 createOrder 广播 / 回写仍未完成，因此该 finding 目前是部分修复
+
 ### Finding 2 — High
 `/sync-onchain` 当前完全信任调用方上报的 `state` 和 `tx_hash`，没有做链上 receipt / log 验证。
 
@@ -475,6 +480,12 @@
 - 以 event/log 为准，而不是以前端上报 `state` 为准
 - `wallet_address` 当前未参与校验，应纳入验证逻辑
 
+状态更新（2026-04-05）：
+
+- 已增加 `OnchainPaymentVerifier` 边界，`/sync-onchain` 现在使用 verifier 返回的 `state/event_id/tx_hash`
+- 前端上报的 `state` 不再是最终真值；mismatch 会被拒绝
+- 默认 verifier 仍是本地占位实现，后续仍应接入真实 indexer / receipt provider
+
 ### Finding 3 — Medium
 后端 `machines/transfer` 是纯 off-chain owner 切换，没有和链上 `MachineAssetNFT.ownerOf(...)` 做一致性绑定，可能导致 ownership 双写漂移。
 
@@ -501,6 +512,11 @@
 - 以 indexer 投影更新 `owner_user_id`
 - 若保留 demo route，必须显式标记为 mock/off-chain only
 
+状态更新（2026-04-05）：
+
+- 已将 transfer route 改为记录 pending intent，不再直接写 canonical owner
+- 已引入 `MachineOwnershipProjectionIntegrator`，把链上 owner 投影为后端真值
+
 ### Finding 4 — Medium
 硬件 admission control 目前是请求级新实例，`HardwareSimulator` 状态不会跨请求持久化，无法真正表达共享机器容量。
 
@@ -526,6 +542,11 @@
 - 把 `HardwareSimulator` 提升为单例依赖或持久化服务
 - 或者直接用数据库 / redis 记录 machine runtime occupancy
 
+状态更新（2026-04-05）：
+
+- 已把 simulator 提升为共享依赖，并通过 container reset hook 清理测试期状态
+- admission occupancy 现在可以跨 service/request 实例延续
+
 ---
 
 ## 6. 适合合入 main 吗？
@@ -539,14 +560,15 @@
 
 - 主产品故事线已经完整
 - 测试覆盖了当前 MVP 范围
-- 但上面 4 个问题仍应作为合入后的高优先级后续项
+- 其中 Finding 2/3/4 已在 `feat/post-hackathon-hardening` 修复，Finding 1 已完成 `onchain_order_id` 部分修复
+- 仍需继续推进真实广播 / indexer 回写，才能达到 production-ready onchain payment system
 
 ---
 
 ## 7. 建议的 main 后续优先级
 
-1. 打通真实 `createOrder` 广播 + `onchain_order_id` 回写
-2. 用 indexer / receipt 验证替换 `/sync-onchain` 的前端自报成功
-3. 把 machine transfer 改成链上优先，backend 只做投影
-4. 把 hardware simulator 改成跨请求共享状态
+1. 打通真实 `createOrder` 广播 + `onchain_order_id` 回写（仍未完成）
+2. 将 `OnchainPaymentVerifier` 接入真实 indexer / receipt provider（当前为占位 verifier 边界）
+3. 把 machine owner 地址到用户身份的 resolver 接到真实映射源
+4. 如果要走多实例部署，把共享 runtime occupancy 从进程内单例升级到 Redis / DB
 

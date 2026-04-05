@@ -1,6 +1,6 @@
 # OutcomeX 后端 / 合约 / AgentSkillOS 完整对照文档
 
-本文档对应当前干净集成分支：`feat/agentskillos-thin-interface`。
+本文档对应当前干净集成分支：`feat/post-hackathon-hardening`。
 
 当前代码基线是：
 
@@ -11,7 +11,7 @@
 当前已经包含的关键支付语义：
 
 - `USDC` / `USDT` / `PWR` 都可以走用户直签的链上支付路由
-- 后端负责生成直签意图、同步链上结果、冻结结算资格
+- 后端负责生成直签意图、用 verifier 边界同步链上结果、冻结结算资格
 - `PWR` 当前使用的是最小 backend-priced、deterministic、versioned anchor
 
 不包含的内容：
@@ -147,7 +147,7 @@
 1. 前端调 `POST /api/v1/payments/orders/{order_id}/direct-intent`
 2. 后端要求金额必须等于 `order.quoted_amount_cents`
 3. 后端落一条 `Payment(provider="onchain_router")`
-4. 后端通过 `OrderWriter.build_direct_payment_intent(...)` 返回用户直签所需的合约调用规格：
+4. 后端通过 `OrderWriter.build_direct_payment_intent(...)` 返回用户直签所需的合约调用规格（其中 `order_id` 已切到链侧 `onchain_order_id`）：
    - `contract_name=OrderPaymentRouter`
    - `method_name=payWithUSDCByAuthorization` / `payWithUSDT` / `payWithPWR`
    - `chain_id=133`
@@ -156,7 +156,7 @@
    - 如果是 `PWR`，还会带上 `pwr_quote` 对应的 `pwr_amount`、`pwr_anchor_price_cents`、`pricing_version`
 5. 用户在钱包里直接签名并把 stablecoin / `PWR` 送进链上 `OrderPaymentRouter`
 6. 交易确认后，前端再调 `POST /api/v1/payments/{payment_id}/sync-onchain`
-7. 后端只做状态同步：
+7. 后端通过 `OnchainPaymentVerifier` 校验并同步链上事实：
    - 回填 `callback_event_id`
    - 回填 `callback_state`
    - 回填 `callback_tx_hash`
@@ -168,7 +168,7 @@
 
 - 收益资格在支付成功后冻结，不在结果确认时才决定
 - self-use 不进入 dividend-eligible
-- 用户直签链上支付时，用户是直接与合约交互，后端只生成意图并同步状态
+- 用户直签链上支付时，用户是直接与合约交互，后端只生成意图并根据 verifier 结果同步状态
 - `PWR` 当前已经可支付，但使用的是最小 deterministic anchor，不是完整市场化 anchor
 
 ### 3.3 启动执行
@@ -300,7 +300,7 @@
 9. 后端返回 `OrderPaymentRouter` 的方法名、代币地址、签名标准和提交载荷
 10. 用户在钱包里直接签 `USDC` / `USDT` / `PWR` 支付交易
 11. 链上交易确认后，前端调 `POST /api/v1/payments/{payment_id}/sync-onchain`
-12. 后端把 `Payment`、settlement policy、machine revenue guard 同步到控制面
+12. 后端把 verifier 确认过的 `Payment`、settlement policy、machine revenue guard 同步到控制面
 13. 前端调 `POST /api/v1/orders/{order_id}/start-execution`
 14. 后端把薄执行请求提交给 AgentSkillOS
 15. AgentSkillOS 产出结果和 artifact
@@ -315,7 +315,7 @@
 
 1. HSP rail 成功或链上直签 rail 同步成功后，机器都会被标记为有未结收益
 2. 订单执行期间，机器会被标记为有活跃任务
-3. 任一条件成立时，都不允许转移机器资产
+3. 任一条件成立时，都不允许转移机器资产；后端 transfer 接口只记录 intent，不直接改 canonical owner
 4. run 结束后释放 active task
 5. settlement distribute 完成后，如果没有其他未结收益，则释放 unsettled revenue 锁
 
@@ -335,9 +335,9 @@
 | chat 要结果 | `POST /api/v1/chat/plans` | `ChatPlan` | 无 | 无 |
 | 创建订单 | `POST /api/v1/orders` | `Order.execution_request` / `Order.execution_metadata` | 还未真正执行 | `OrderBook.createOrder` |
 | 创建 HSP 支付意图 | `POST /api/v1/payments/orders/{order_id}/intent` | `Payment` | 无 | HSP rail |
-| 创建链上直签意图 | `POST /api/v1/payments/orders/{order_id}/direct-intent` | `Payment` | 无 | `OrderPaymentRouter.payWithUSDCByAuthorization` / `payWithUSDT` / `payWithPWR` |
+| 创建链上直签意图 | `POST /api/v1/payments/orders/{order_id}/direct-intent` | `Payment` + `Order.onchain_order_id` | 无 | `OrderPaymentRouter.payWithUSDCByAuthorization` / `payWithUSDT` / `payWithPWR` |
 | HSP 支付确认 | `mock-confirm` / `hsp webhooks` | `Payment` / `Order` / `Machine` | 无 | `OrderBook.markOrderPaid` |
-| 链上支付同步 | `POST /api/v1/payments/{payment_id}/sync-onchain` | `Payment` / `Order` / `Machine` | 无 | 用户已直接完成链上支付，后端只同步事实 |
+| 链上支付同步 | `POST /api/v1/payments/{payment_id}/sync-onchain` | `Payment` / `Order` / `Machine` | 无 | 用户已直接完成链上支付，后端通过 verifier 边界同步事实 |
 | 启动执行 | `POST /api/v1/orders/{order_id}/start-execution` | `Order` / `ExecutionRun` | 提交 `intent/files/execution_strategy` | 当前无直接链上动作 |
 | 查询执行 | `GET /api/v1/execution-runs/{run_id}` | `ExecutionRun` | 读取 run/artifacts/skills/models | 未来可映射 preview-ready receipt |
 | 确认结果 | `POST /api/v1/orders/{order_id}/confirm-result` | `Order` | 无 | `OrderBook.confirmResult` |
@@ -421,7 +421,9 @@
 - 支付成功后冻结 settlement policy
 - 结果确认后才能开始 settlement
 - transfer guard 所需的后端状态位
-- 用户直签 `USDC` / `USDT` / `PWR` -> backend sync-onchain 的控制面闭环
+- 用户直签 `USDC` / `USDT` / `PWR` -> verifier-backed sync-onchain 的控制面闭环
+- machine owner 改为链上投影真值，backend transfer 只记录 intent
+- runtime admission state 改为跨请求共享
 
 ### 还没并入这个干净分支的
 
