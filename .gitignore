@@ -32,3 +32,7 @@ broadcast/
 .DS_Store
 Thumbs.db
 *.pem
+
+# Local docs and benchmark outputs
+docs/
+benchmark-runs/
