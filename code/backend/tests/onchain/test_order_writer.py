@@ -76,3 +76,24 @@ def test_writer_exposes_create_confirm_and_settle_actions() -> None:
     assert settle_result.method_name == "settleOrder"
     assert settle_result.payload["platform_fee_cents"] == 100
     assert settle_result.payload["machine_share_cents"] == 900
+
+
+def test_writer_builds_direct_payment_call_spec() -> None:
+    writer = OrderWriter(ContractsRegistry())
+    order = _build_order()
+    payment = Payment(
+        id="payment-2",
+        order_id=order.id,
+        provider="onchain_router",
+        provider_reference="payWithUSDCByAuthorization",
+        amount_cents=1000,
+        currency="USDC",
+        state=PaymentState.PENDING,
+    )
+
+    intent = writer.build_direct_payment_intent(order, payment)
+
+    assert intent.contract_name == "OrderPaymentRouter"
+    assert intent.method_name == "payWithUSDCByAuthorization"
+    assert intent.payload["signing_standard"] == "eip3009"
+    assert intent.payload["currency"] == "USDC"

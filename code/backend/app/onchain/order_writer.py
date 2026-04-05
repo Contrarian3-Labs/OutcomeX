@@ -17,6 +17,7 @@ class OrderWriteResult:
     submitted_at: datetime
     chain_id: int
     contract_name: str
+    contract_address: str
     method_name: str
     idempotency_key: str
     payload: dict[str, Any]
@@ -50,6 +51,30 @@ class OrderWriter:
         }
         return self._submit("markOrderPaid", payload)
 
+    def build_direct_payment_intent(self, order: Order, payment: Payment) -> OrderWriteResult:
+        currency = payment.currency.upper()
+        if currency == "PWR":
+            raise ValueError("pwr_direct_payment_disabled")
+
+        if currency == "USDC":
+            method_name = "payWithUSDCByAuthorization"
+            signing_standard = "eip3009"
+        elif currency == "USDT":
+            method_name = "payWithUSDT"
+            signing_standard = "permit2"
+        else:
+            raise ValueError(f"unsupported_direct_payment_currency:{currency}")
+
+        payload = {
+            "order_id": order.id,
+            "payment_id": payment.id,
+            "amount_cents": payment.amount_cents,
+            "currency": currency,
+            "token_address": self._contracts_registry.payment_token(currency),
+            "signing_standard": signing_standard,
+        }
+        return self._submit_to_target(self._contracts_registry.payment_router(), method_name, payload)
+
     def mark_preview_ready(self, order: Order) -> OrderWriteResult:
         payload = {
             "order_id": order.id,
@@ -79,7 +104,9 @@ class OrderWriter:
         return self._submit("settleOrder", payload)
 
     def _submit(self, method_name: str, payload: dict[str, Any]) -> OrderWriteResult:
-        target = self._contracts_registry.order_book()
+        return self._submit_to_target(self._contracts_registry.order_book(), method_name, payload)
+
+    def _submit_to_target(self, target: Any, method_name: str, payload: dict[str, Any]) -> OrderWriteResult:
         canonical_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=self._json_default)
         idempotency_key = hashlib.sha256(f"{method_name}:{canonical_payload}".encode("utf-8")).hexdigest()
         tx_hash = "0x" + hashlib.sha256(
@@ -90,6 +117,7 @@ class OrderWriter:
             submitted_at=datetime.now(timezone.utc),
             chain_id=target.chain_id,
             contract_name=target.contract_name,
+            contract_address=target.contract_address,
             method_name=method_name,
             idempotency_key=idempotency_key,
             payload=payload,
