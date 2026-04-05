@@ -53,19 +53,12 @@ class OrderWriter:
         }
         return self._submit("markOrderPaid", payload)
 
-    def create_order_and_mark_paid(self, order: Order, payment: Payment) -> OrderWriteResult:
+    def create_order_and_mark_paid(self, order: Order, payment: Payment, *, buyer_wallet_address: str) -> OrderWriteResult:
         currency = payment.currency.upper()
         payload = {
-            "client_order_id": order.id,
-            "buyer_user_id": order.user_id,
+            "buyer": buyer_wallet_address.lower(),
             "machine_id": order.machine_id,
-            "gross_amount_cents": order.quoted_amount_cents,
-            "payment_id": payment.id,
-            "merchant_order_id": payment.merchant_order_id,
-            "flow_id": payment.flow_id,
-            "provider_reference": payment.provider_reference,
-            "amount_cents": payment.amount_cents,
-            "currency": currency,
+            "amount": payment.amount_cents,
             "payment_token_address": self._contracts_registry.payment_token(currency),
         }
         return self._submit_to_target(

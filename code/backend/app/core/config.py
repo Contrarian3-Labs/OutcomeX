@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     agentskillos_execution_mode: str = "dag"
     agentskillos_execution_timeout_seconds: float = 1800.0
     agentskillos_execution_output_root: str = "data/agentskillos-execution"
+    buyer_wallet_map_json: str = "{}"
+    onchain_rpc_url: str = ""
 
     model_config = SettingsConfigDict(
         env_prefix="OUTCOMEX_",

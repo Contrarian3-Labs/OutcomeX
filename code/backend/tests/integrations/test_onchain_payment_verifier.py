@@ -1,6 +1,7 @@
 from app.domain.enums import ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
 from app.domain.models import Order, Payment
 from app.integrations.onchain_payment_verifier import OnchainPaymentVerifier
+from app.onchain.receipts import ChainReceipt
 
 
 def _build_order() -> Order:
@@ -74,3 +75,67 @@ def test_verifier_stub_rejects_invalid_tx_hash() -> None:
     assert verification.evidence_create_order_tx_hash is None
     assert verification.evidence_create_order_event_id is None
     assert verification.evidence_create_order_block_number is None
+
+
+class StubReceiptReader:
+    def __init__(self, receipt: ChainReceipt | None) -> None:
+        self._receipt = receipt
+
+    def get_receipt(self, tx_hash: str) -> ChainReceipt | None:
+        return self._receipt
+
+
+def test_verifier_prefers_live_receipt_when_available() -> None:
+    order = _build_order()
+    payment = _build_payment(order.id)
+    verifier = OnchainPaymentVerifier(
+        receipt_reader=StubReceiptReader(
+            ChainReceipt(
+                tx_hash="0xabc123",
+                status=1,
+                from_address="0xbuyer",
+                to_address="0x0000000000000000000000000000000000000134",
+                block_number=888,
+                event_id="receipt:0xabc123:888",
+            )
+        )
+    )
+
+    verification = verifier.verify_payment(
+        tx_hash="0xabc123",
+        wallet_address="0xbuyer",
+        order=order,
+        payment=payment,
+    )
+
+    assert verification.matched is True
+    assert verification.event_id == "receipt:0xabc123:888"
+    assert verification.evidence_create_order_tx_hash == "0xabc123"
+    assert verification.evidence_create_order_block_number == 888
+
+
+def test_verifier_rejects_wallet_mismatch_from_live_receipt() -> None:
+    order = _build_order()
+    payment = _build_payment(order.id)
+    verifier = OnchainPaymentVerifier(
+        receipt_reader=StubReceiptReader(
+            ChainReceipt(
+                tx_hash="0xabc123",
+                status=1,
+                from_address="0xsomeoneelse",
+                to_address="0x0000000000000000000000000000000000000134",
+                block_number=888,
+                event_id="receipt:0xabc123:888",
+            )
+        )
+    )
+
+    verification = verifier.verify_payment(
+        tx_hash="0xabc123",
+        wallet_address="0xbuyer",
+        order=order,
+        payment=payment,
+    )
+
+    assert verification.matched is False
+    assert verification.reason == "wallet_mismatch"

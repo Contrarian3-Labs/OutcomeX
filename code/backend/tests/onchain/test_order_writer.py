@@ -71,16 +71,19 @@ def test_create_order_and_mark_paid_uses_create_paid_router_method() -> None:
         state=PaymentState.SUCCEEDED,
     )
 
-    write_result = writer.create_order_and_mark_paid(order, payment)
+    write_result = writer.create_order_and_mark_paid(
+        order,
+        payment,
+        buyer_wallet_address="0x1111111111111111111111111111111111111111",
+    )
 
     assert write_result.contract_name == "OrderPaymentRouter"
     assert write_result.method_name == "createPaidOrderByAdapter"
-    assert write_result.payload["client_order_id"] == "order-1"
+    assert write_result.payload["buyer"] == "0x1111111111111111111111111111111111111111"
     assert write_result.payload["machine_id"] == "machine-1"
-    assert write_result.payload["payment_id"] == "payment-1"
-    assert write_result.payload["gross_amount_cents"] == 1000
+    assert write_result.payload["amount"] == 1000
+    assert write_result.payload["payment_token_address"] == "0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e"
     assert "order_id" not in write_result.payload
-    assert "settlement_beneficiary_user_id" not in write_result.payload
 
 
 def test_writer_exposes_create_confirm_and_settle_actions() -> None:

@@ -32,11 +32,12 @@ class SpyOrderWriter:
     def settle_order(self, order, settlement):  # pragma: no cover - route noise for this test
         return None
 
-    def create_order_and_mark_paid(self, order, payment):
+    def create_order_and_mark_paid(self, order, payment, *, buyer_wallet_address):
         self.create_and_mark_paid_calls.append(
             {
                 "order_id": order.id,
                 "payment_id": payment.id,
+                "buyer_wallet_address": buyer_wallet_address,
             }
         )
         return OrderWriteResult(
@@ -47,7 +48,7 @@ class SpyOrderWriter:
             contract_address="0x0000000000000000000000000000000000000134",
             method_name="createPaidOrderByAdapter",
             idempotency_key="writer-create-paid",
-            payload={"client_order_id": order.id, "payment_id": payment.id},
+            payload={"buyer": buyer_wallet_address, "machine_id": order.machine_id, "amount": payment.amount_cents},
         )
 
     def mark_order_paid(self, order, payment):
@@ -67,12 +68,11 @@ class SpyOnchainBroadcaster:
     def __init__(self) -> None:
         self.create_paid_calls: list[dict] = []
 
-    def _record_create_paid(self, *, order, payment, write_result):
+    def broadcast_create_paid_order(self, *, write_result):
         self.create_paid_calls.append(
             {
-                "order_id": order.id,
-                "payment_id": payment.id,
                 "method_name": write_result.method_name,
+                "buyer": write_result.payload["buyer"],
             }
         )
         return OnchainCreateOrderReceipt(
@@ -82,18 +82,15 @@ class SpyOnchainBroadcaster:
             block_number=3330001,
         )
 
-    def broadcast_create_paid_order(self, *, order, payment, write_result):
-        return self._record_create_paid(order=order, payment=payment, write_result=write_result)
-
-    def broadcast_create_order_and_mark_paid(self, *, order, payment, write_result):
-        return self._record_create_paid(order=order, payment=payment, write_result=write_result)
-
 
 @pytest.fixture
 def client(tmp_path) -> tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster]:
     db_path = tmp_path / "hsp-webhooks.db"
     os.environ["OUTCOMEX_DATABASE_URL"] = f"sqlite+pysqlite:///{db_path.as_posix()}"
     os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
+    os.environ["OUTCOMEX_BUYER_WALLET_MAP_JSON"] = json.dumps(
+        {"user-2": "0x2222222222222222222222222222222222222222"}
+    )
     reset_settings_cache()
     reset_container_cache()
     spy_writer = SpyOrderWriter()
@@ -207,14 +204,14 @@ def test_hsp_webhook_is_idempotent_and_freezes_settlement_policy(
         {
             "order_id": order["id"],
             "payment_id": payment["payment_id"],
+            "buyer_wallet_address": "0x2222222222222222222222222222222222222222",
         }
     ]
     assert spy_writer.mark_paid_calls == []
     assert spy_broadcaster.create_paid_calls == [
         {
-            "order_id": order["id"],
-            "payment_id": payment["payment_id"],
             "method_name": "createPaidOrderByAdapter",
+            "buyer": "0x2222222222222222222222222222222222222222",
         }
     ]
 
@@ -255,3 +252,29 @@ def test_hsp_webhook_rejects_invalid_signatures(
 
     assert response.status_code == 401
     assert response.json()["detail"] == "Invalid HSP signature"
+
+
+def test_hsp_webhook_rejects_unresolved_buyer_wallet(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster],
+) -> None:
+    test_client, spy_writer, spy_broadcaster = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine_id=machine["id"], user_id="user-unmapped")
+    payment = _create_payment_intent(test_client, order_id=order["id"])
+    payload = {
+        "event_id": "evt_unmapped",
+        "merchant_order_id": payment["merchant_order_id"],
+        "flow_id": payment["flow_id"],
+        "status": "completed",
+        "amount_cents": 500,
+        "currency": "USDC",
+        "tx_hash": "0xdeadbeef",
+    }
+    body, headers = _sign_payload(payload)
+
+    response = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Buyer wallet address unresolved for HSP settlement"
+    assert spy_writer.create_and_mark_paid_calls == []
+    assert spy_broadcaster.create_paid_calls == []

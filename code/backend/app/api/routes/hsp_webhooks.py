@@ -66,12 +66,18 @@ async def ingest_hsp_webhook(
         if order is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
         if order.onchain_order_id is None:
-            write_result = order_writer.create_order_and_mark_paid(order, payment)
-            create_paid_receipt = onchain_broadcaster.broadcast_create_paid_order(
-                order=order,
-                payment=payment,
-                write_result=write_result,
+            buyer_wallet_address = container.buyer_address_resolver.resolve_wallet(order.user_id)
+            if buyer_wallet_address is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Buyer wallet address unresolved for HSP settlement",
+                )
+            write_result = order_writer.create_order_and_mark_paid(
+                order,
+                payment,
+                buyer_wallet_address=buyer_wallet_address,
             )
+            create_paid_receipt = onchain_broadcaster.broadcast_create_paid_order(write_result=write_result)
             _backfill_order_chain_anchor_from_receipt(order, create_paid_receipt)
             db.add(order)
     _apply_payment_state(payment, state=mapped_state, db=db, order_writer=order_writer, write_chain=False)
