@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.domain.models import Machine
+from app.domain.models import Machine, utc_now
 from app.domain.rules import can_transfer_machine
 from app.schemas.machine import (
     MachineCreateRequest,
@@ -49,14 +49,19 @@ def transfer_machine(
         )
 
     previous_owner = machine.owner_user_id
-    machine.owner_user_id = payload.new_owner_user_id
+    machine.pending_transfer_new_owner_user_id = payload.new_owner_user_id
+    machine.pending_transfer_keep_previous_setup = payload.keep_previous_setup
+    machine.pending_transfer_requested_at = utc_now()
     db.add(machine)
     db.commit()
 
     return MachineTransferResponse(
         machine_id=machine.id,
         previous_owner_user_id=previous_owner,
-        new_owner_user_id=machine.owner_user_id,
+        canonical_owner_user_id=machine.owner_user_id,
+        new_owner_user_id=payload.new_owner_user_id,
         setup_carried_over=payload.keep_previous_setup,
+        transfer_status="intent_recorded",
+        owner_updated=False,
     )
 

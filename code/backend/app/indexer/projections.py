@@ -36,6 +36,13 @@ class MachineAssetView:
 
 
 @dataclass(frozen=True)
+class MachineOwnershipView:
+    machine_id: str
+    chain_owner: str
+    last_event_id: str
+
+
+@dataclass(frozen=True)
 class RevenueView:
     account: str
     total_claimed_wei: int
@@ -64,6 +71,9 @@ class ProjectionStore(Protocol):
     def get_machine_asset(self, machine_id: str) -> MachineAssetView:
         ...
 
+    def get_machine_ownership(self, machine_id: str) -> MachineOwnershipView:
+        ...
+
     def get_revenue(self, account: str) -> RevenueView:
         ...
 
@@ -75,6 +85,7 @@ class InMemoryProjectionStore:
     def __init__(self) -> None:
         self._orders: dict[str, OrderView] = {}
         self._machine_assets: dict[str, MachineAssetView] = {}
+        self._machine_ownership: dict[str, MachineOwnershipView] = {}
         self._revenue: dict[str, RevenueView] = {}
         self._transfer_eligibility: dict[str, TransferEligibilityView] = {}
         self.applied_event_ids: list[str] = []
@@ -98,6 +109,11 @@ class InMemoryProjectionStore:
                     if payload.pwr_quota is not None
                     else (existing.pwr_quota if existing is not None else None)
                 ),
+                last_event_id=event.event_id,
+            )
+            self._machine_ownership[payload.machine_id] = MachineOwnershipView(
+                machine_id=payload.machine_id,
+                chain_owner=payload.owner,
                 last_event_id=event.event_id,
             )
         elif isinstance(payload, OrderLifecycleEvent):
@@ -187,6 +203,9 @@ class InMemoryProjectionStore:
 
     def get_machine_asset(self, machine_id: str) -> MachineAssetView:
         return self._machine_assets[machine_id]
+
+    def get_machine_ownership(self, machine_id: str) -> MachineOwnershipView:
+        return self._machine_ownership[machine_id]
 
     def get_revenue(self, account: str) -> RevenueView:
         return self._revenue[account]
