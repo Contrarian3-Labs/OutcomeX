@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from app.integrations.onchain_broadcaster import OnchainBroadcaster
+from app.onchain.event_decoder import ORDER_CREATED_TOPIC0
 from app.onchain.order_writer import OrderWriteResult
 from app.onchain.receipts import ChainReceipt
 
@@ -26,6 +27,15 @@ def _write_result() -> OrderWriteResult:
     )
 
 
+def _order_created_log(order_id: int) -> dict[str, object]:
+    return {
+        "address": "0x0000000000000000000000000000000000000134",
+        "topics": [ORDER_CREATED_TOPIC0, hex(order_id)],
+        "transactionHash": "0xabc123",
+        "logIndex": "0x1",
+    }
+
+
 def test_broadcaster_uses_live_receipt_when_available() -> None:
     broadcaster = OnchainBroadcaster(
         receipt_reader=StubReceiptReader(
@@ -36,6 +46,7 @@ def test_broadcaster_uses_live_receipt_when_available() -> None:
                 to_address="0x0000000000000000000000000000000000000134",
                 block_number=777,
                 event_id="receipt:0xabc123:777",
+                metadata={"logs": [_order_created_log(42)]},
             )
         )
     )
@@ -43,9 +54,9 @@ def test_broadcaster_uses_live_receipt_when_available() -> None:
     receipt = broadcaster.broadcast_create_paid_order(write_result=_write_result())
 
     assert receipt.tx_hash == "0xabc123"
-    assert receipt.event_id == "receipt:0xabc123:777"
+    assert receipt.event_id == "OrderCreated:42:0xabc123"
     assert receipt.block_number == 777
-    assert receipt.onchain_order_id.startswith("oc_")
+    assert receipt.onchain_order_id == "42"
 
 
 def test_broadcaster_falls_back_to_deterministic_receipt_without_live_rpc() -> None:

@@ -1,12 +1,10 @@
-import json
-import subprocess
 from datetime import datetime, timezone
 
 import pytest
 
 from app.onchain.contracts_registry import ContractsRegistry
 from app.onchain.order_writer import OrderWriteResult
-from app.onchain.tx_sender import CastTransactionSender
+from app.onchain.tx_sender import PythonTransactionSender
 
 
 def _write_result() -> OrderWriteResult:
@@ -27,42 +25,72 @@ def _write_result() -> OrderWriteResult:
     )
 
 
-def test_cast_sender_replaces_tx_hash_from_cast_output() -> None:
-    captured = {}
+class FakeRpcClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[object]]] = []
 
-    def fake_runner(command, capture_output, text, check):
-        captured["command"] = command
-        return subprocess.CompletedProcess(
-            args=command,
-            returncode=0,
-            stdout=json.dumps({"transactionHash": "0xLiveHash"}),
-            stderr="",
-        )
+    def call(self, method: str, params: list[object]) -> object:
+        self.calls.append((method, params))
+        responses = {
+            "eth_chainId": "0x85",
+            "eth_getTransactionCount": "0x3",
+            "eth_gasPrice": "0x4a817c800",
+            "eth_estimateGas": "0x5208",
+            "eth_sendRawTransaction": "0xLiveHash",
+        }
+        return responses[method]
 
-    sender = CastTransactionSender(
+
+class FakeSignedTx:
+    raw_transaction = bytes.fromhex("deadbeef")
+
+
+class FakeAccount:
+    def __init__(self) -> None:
+        self.address = "0x9999999999999999999999999999999999999999"
+        self.signed_txs: list[dict[str, object]] = []
+
+    def sign_transaction(self, tx: dict[str, object]) -> FakeSignedTx:
+        self.signed_txs.append(tx)
+        return FakeSignedTx()
+
+
+def test_python_sender_replaces_tx_hash_from_rpc_output() -> None:
+    rpc_client = FakeRpcClient()
+    account = FakeAccount()
+    sender = PythonTransactionSender(
         rpc_url="https://rpc.local",
         private_key="0xabc",
         contracts_registry=ContractsRegistry(),
-        runner=fake_runner,
+        rpc_client=rpc_client,
+        account_factory=lambda private_key: account,
     )
 
     result = sender.send(_write_result())
 
-    assert captured["command"][:4] == [
-        "cast",
-        "send",
-        "0x0000000000000000000000000000000000000134",
-        "createPaidOrderByAdapter(address,uint256,uint256,address)",
+    assert [method for method, _ in rpc_client.calls] == [
+        "eth_chainId",
+        "eth_getTransactionCount",
+        "eth_gasPrice",
+        "eth_estimateGas",
+        "eth_sendRawTransaction",
     ]
+    estimated_tx = rpc_client.calls[3][1][0]
+    assert isinstance(estimated_tx, dict)
+    assert estimated_tx["to"] == "0x0000000000000000000000000000000000000134"
+    assert estimated_tx["from"] == "0x9999999999999999999999999999999999999999"
+    assert str(estimated_tx["data"]).startswith("0xcaf5331f")
+    assert account.signed_txs[0]["gas"] == 21000
     assert result.tx_hash == "0xlivehash"
 
 
-def test_cast_sender_leaves_non_hsp_methods_unchanged() -> None:
-    sender = CastTransactionSender(
+def test_python_sender_leaves_non_hsp_methods_unchanged() -> None:
+    sender = PythonTransactionSender(
         rpc_url="https://rpc.local",
         private_key="0xabc",
         contracts_registry=ContractsRegistry(),
-        runner=lambda *args, **kwargs: pytest.fail("runner should not be called"),
+        rpc_client=FakeRpcClient(),
+        account_factory=lambda private_key: pytest.fail("account factory should not be called"),
     )
     write_result = _write_result()
     write_result = OrderWriteResult(

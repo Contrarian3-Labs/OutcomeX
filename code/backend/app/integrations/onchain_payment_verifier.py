@@ -7,6 +7,7 @@ import hashlib
 from app.domain.enums import PaymentState
 from app.domain.models import Order, Payment
 from app.onchain.contracts_registry import ContractsRegistry
+from app.onchain.event_decoder import decode_order_created_event
 from app.onchain.receipts import ReceiptReader, get_receipt_reader
 
 
@@ -61,12 +62,25 @@ class OnchainPaymentVerifier:
             if normalized_wallet is not None and receipt.from_address is not None and receipt.from_address != normalized_wallet:
                 return self._failure(tx_hash=tx_hash_normalized, reason="wallet_mismatch", wallet_address=wallet_address)
 
-            evidence_order_id = self._derive_onchain_order_id(seed=f"{receipt.tx_hash}:{receipt.event_id}:{order.id}")
+            decoded_event = decode_order_created_event(
+                receipt=receipt,
+                contract_address=expected_target,
+            )
+            evidence_order_id = (
+                str(decoded_event["order_id"])
+                if decoded_event is not None
+                else self._derive_onchain_order_id(seed=f"{receipt.tx_hash}:{receipt.event_id}:{order.id}")
+            )
+            evidence_event_id = (
+                f"OrderCreated:{evidence_order_id}:{str(decoded_event['transaction_hash']).lower()}"
+                if decoded_event is not None
+                else receipt.event_id
+            )
             return OnchainPaymentVerificationResult(
                 matched=True,
                 state=PaymentState.SUCCEEDED,
                 tx_hash=receipt.tx_hash,
-                event_id=receipt.event_id,
+                event_id=evidence_event_id,
                 reason=None,
                 evidence_order_id=evidence_order_id,
                 evidence_amount_cents=payment.amount_cents,

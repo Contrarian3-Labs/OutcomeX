@@ -1,6 +1,7 @@
 from app.domain.enums import ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
 from app.domain.models import Order, Payment
 from app.integrations.onchain_payment_verifier import OnchainPaymentVerifier
+from app.onchain.event_decoder import ORDER_CREATED_TOPIC0
 from app.onchain.receipts import ChainReceipt
 
 
@@ -85,6 +86,15 @@ class StubReceiptReader:
         return self._receipt
 
 
+def _order_created_log(order_id: int) -> dict[str, object]:
+    return {
+        "address": "0x0000000000000000000000000000000000000134",
+        "topics": [ORDER_CREATED_TOPIC0, hex(order_id)],
+        "transactionHash": "0xabc123",
+        "logIndex": "0x2",
+    }
+
+
 def test_verifier_prefers_live_receipt_when_available() -> None:
     order = _build_order()
     payment = _build_payment(order.id)
@@ -97,6 +107,7 @@ def test_verifier_prefers_live_receipt_when_available() -> None:
                 to_address="0x0000000000000000000000000000000000000134",
                 block_number=888,
                 event_id="receipt:0xabc123:888",
+                metadata={"logs": [_order_created_log(42)]},
             )
         )
     )
@@ -109,8 +120,10 @@ def test_verifier_prefers_live_receipt_when_available() -> None:
     )
 
     assert verification.matched is True
-    assert verification.event_id == "receipt:0xabc123:888"
+    assert verification.event_id == "OrderCreated:42:0xabc123"
+    assert verification.evidence_order_id == "42"
     assert verification.evidence_create_order_tx_hash == "0xabc123"
+    assert verification.evidence_create_order_event_id == "OrderCreated:42:0xabc123"
     assert verification.evidence_create_order_block_number == 888
 
 
@@ -126,6 +139,7 @@ def test_verifier_rejects_wallet_mismatch_from_live_receipt() -> None:
                 to_address="0x0000000000000000000000000000000000000134",
                 block_number=888,
                 event_id="receipt:0xabc123:888",
+                metadata={"logs": [_order_created_log(42)]},
             )
         )
     )

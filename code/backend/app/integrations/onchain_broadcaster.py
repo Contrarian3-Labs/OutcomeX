@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
 
+from app.onchain.event_decoder import decode_order_created_event
 from app.onchain.order_writer import OrderWriteResult
 from app.onchain.receipts import ReceiptReader, get_receipt_reader
 
@@ -31,6 +32,19 @@ class OnchainBroadcaster:
     def _build_receipt(self, *, write_result: OrderWriteResult, fallback_seed: str) -> OnchainCreateOrderReceipt:
         receipt = self._receipt_reader.get_receipt(write_result.tx_hash)
         if receipt is not None:
+            decoded_event = decode_order_created_event(
+                receipt=receipt,
+                contract_address=write_result.contract_address,
+            )
+            if decoded_event is not None:
+                tx_hash = str(decoded_event["transaction_hash"]).lower()
+                order_id = str(decoded_event["order_id"])
+                return OnchainCreateOrderReceipt(
+                    onchain_order_id=order_id,
+                    tx_hash=tx_hash,
+                    event_id=f"OrderCreated:{order_id}:{tx_hash}",
+                    block_number=receipt.block_number,
+                )
             onchain_order_id = self._derive_onchain_order_id(seed=f"{receipt.tx_hash}:{receipt.event_id}")
             return OnchainCreateOrderReceipt(
                 onchain_order_id=onchain_order_id,

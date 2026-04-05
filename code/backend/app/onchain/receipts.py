@@ -60,7 +60,7 @@ class JsonRpcReceiptReader:
             to_address=_normalize_address(result.get("to")),
             block_number=block_number,
             event_id=event_id,
-            metadata={},
+            metadata={"logs": list(result.get("logs", []))},
         )
 
 
