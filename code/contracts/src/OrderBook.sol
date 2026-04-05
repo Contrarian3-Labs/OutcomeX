@@ -86,7 +86,20 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
     }
 
     function createOrder(uint256 machineId, uint256 grossAmount) external returns (uint256 orderId) {
+        orderId = _createOrder(msg.sender, machineId, grossAmount);
+    }
+
+    function createOrderForBuyer(address buyer, uint256 machineId, uint256 grossAmount)
+        external
+        onlyPaymentAdapter
+        returns (uint256 orderId)
+    {
+        orderId = _createOrder(buyer, machineId, grossAmount);
+    }
+
+    function _createOrder(address buyer, uint256 machineId, uint256 grossAmount) internal returns (uint256 orderId) {
         require(grossAmount > 0, "ZERO_AMOUNT");
+        require(buyer != address(0), "ZERO_BUYER");
 
         address machineOwner = machineAsset.ownerOf(machineId);
 
@@ -96,7 +109,7 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
         _orders[orderId] = OrderRecord({
             id: orderId,
             machineId: machineId,
-            buyer: msg.sender,
+            buyer: buyer,
             grossAmount: grossAmount,
             status: OrderStatus.Created,
             previewValid: false,
@@ -108,7 +121,7 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
 
         settlementBeneficiaryByOrder[orderId] = machineOwner;
 
-        emit OrderCreated(orderId, machineId, msg.sender, grossAmount, machineOwner);
+        emit OrderCreated(orderId, machineId, buyer, grossAmount, machineOwner);
     }
 
     function markOrderPaid(

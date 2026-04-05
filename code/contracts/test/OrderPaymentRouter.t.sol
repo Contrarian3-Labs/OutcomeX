@@ -133,6 +133,92 @@ contract OrderPaymentRouterTest is TestBase {
         assertEq(usdc.balanceOf(address(settlement)), 0, "settlement escrow should be empty");
     }
 
+    function testCreateAndPayWithUSDCRecordsBuyerAsCaller() public {
+        vm.prank(BUYER);
+        uint256 orderId = router.createOrderAndPayWithUSDC(
+            machineId, 1_000_000, block.timestamp - 1, block.timestamp + 1 days, keccak256("nonce-create-pay-1"), 0, bytes32(0), bytes32(0)
+        );
+
+        OrderRecord memory order = orderBook.getOrder(orderId);
+        assertEq(order.buyer, BUYER, "buyer should be external caller");
+        assertEq(uint256(order.status), uint256(OrderStatus.Paid), "order should be paid");
+        assertEq(usdc.balanceOf(address(settlement)), 1_000_000, "settlement should escrow usdc");
+    }
+
+    function testCreateAndPayWithUSDTRecordsBuyerAsCaller() public {
+        vm.prank(BUYER);
+        usdt.approve(address(permit2), 1_000_000);
+
+        vm.prank(BUYER);
+        uint256 orderId = router.createOrderAndPayWithUSDT(machineId, 1_000_000, 1, block.timestamp + 1 days, hex"BEEF");
+
+        OrderRecord memory order = orderBook.getOrder(orderId);
+        assertEq(order.buyer, BUYER, "buyer should be external caller");
+        assertEq(uint256(order.status), uint256(OrderStatus.Paid), "order should be paid");
+        assertEq(usdt.balanceOf(address(settlement)), 1_000_000, "settlement should escrow usdt");
+    }
+
+    function testCreateAndPayWithPWRRecordsBuyerAsCaller() public {
+        vm.startPrank(ADMIN);
+        pwr.setMinter(ADMIN, true);
+        pwr.mint(BUYER, 1_000);
+        vm.stopPrank();
+
+        vm.prank(BUYER);
+        pwr.approve(address(router), 1_000);
+
+        vm.prank(BUYER);
+        uint256 orderId = router.createOrderAndPayWithPWR(machineId, 1_000);
+
+        OrderRecord memory order = orderBook.getOrder(orderId);
+        assertEq(order.buyer, BUYER, "buyer should be external caller");
+        assertEq(uint256(order.status), uint256(OrderStatus.Paid), "order should be paid");
+        assertEq(pwr.balanceOf(address(settlement)), 1_000, "settlement should escrow pwr");
+    }
+
+    function testCreatePaidOrderByAdapterBlocksTransferImmediately() public {
+        vm.prank(ADMIN);
+        uint256 orderId = router.createPaidOrderByAdapter(BUYER, machineId, 1_000_000, address(usdc));
+
+        OrderRecord memory order = orderBook.getOrder(orderId);
+        assertEq(order.buyer, BUYER, "buyer should match adapter input");
+        assertEq(uint256(order.status), uint256(OrderStatus.Paid), "order should be paid");
+        assertEq(orderBook.activeTaskCountByMachine(machineId), 1, "active task should be tracked");
+
+        (bool canTransfer, bytes32 reason) = orderBook.canTransfer(machineId, MACHINE_OWNER, address(0xDEAD));
+        assertTrue(!canTransfer, "transfer should be blocked");
+        assertEq(reason, orderBook.REASON_ACTIVE_TASK(), "active task reason mismatch");
+
+        vm.startPrank(MACHINE_OWNER);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                bytes4(keccak256("TransferGuardBlocked(uint256,bytes32)")), machineId, orderBook.REASON_ACTIVE_TASK()
+            )
+        );
+        machineAsset.transferFrom(MACHINE_OWNER, address(0xDEAD), machineId);
+        vm.stopPrank();
+    }
+
+    function testLegacyCreateOrderThenPayWithPWRStillWorks() public {
+        vm.prank(BUYER);
+        uint256 orderId = orderBook.createOrder(machineId, 1_000);
+
+        vm.startPrank(ADMIN);
+        pwr.setMinter(ADMIN, true);
+        pwr.mint(BUYER, 1_000);
+        vm.stopPrank();
+
+        vm.prank(BUYER);
+        pwr.approve(address(router), 1_000);
+
+        vm.prank(BUYER);
+        router.payWithPWR(orderId, 1_000);
+
+        OrderRecord memory order = orderBook.getOrder(orderId);
+        assertEq(order.buyer, BUYER, "legacy path should keep original buyer");
+        assertEq(uint256(order.status), uint256(OrderStatus.Paid), "legacy path should mark paid");
+    }
+
     function testUSDTConfirmedOrderCreatesRealPlatformClaimAndReserve() public {
         vm.prank(BUYER);
         uint256 orderId = orderBook.createOrder(machineId, 1_000_000);

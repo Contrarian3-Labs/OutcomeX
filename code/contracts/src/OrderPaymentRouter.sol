@@ -29,6 +29,7 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
     bytes32 public constant PAYMENT_SOURCE_USDC_EIP3009 = keccak256("USDC_EIP3009");
     bytes32 public constant PAYMENT_SOURCE_USDT_PERMIT2 = keccak256("USDT_PERMIT2");
     bytes32 public constant PAYMENT_SOURCE_PWR = keccak256("PWR_DIRECT");
+    bytes32 public constant PAYMENT_SOURCE_HSP = keccak256("HSP_CONFIRMED");
 
     IOrderLifecycle public immutable orderBook;
     IUSDCWithAuthorization public immutable usdc;
@@ -79,19 +80,19 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
         bytes32 r,
         bytes32 s
     ) external {
-        bool dividendEligible = _validateOrderForPayment(orderId, amount);
+        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender);
         require(validAfter <= block.timestamp, "AUTH_NOT_YET_VALID");
         require(validBefore >= block.timestamp, "AUTH_EXPIRED");
 
         address escrowAddress = _settlementEscrow();
         usdc.receiveWithAuthorization(msg.sender, escrowAddress, amount, validAfter, validBefore, nonce, v, r, s);
-        _markOrderPaid(orderId, amount, address(usdc), PAYMENT_SOURCE_USDC_EIP3009, dividendEligible);
+        _markOrderPaid(orderId, amount, address(usdc), PAYMENT_SOURCE_USDC_EIP3009, dividendEligible, msg.sender);
     }
 
     function payWithUSDT(uint256 orderId, uint256 amount, uint256 nonce, uint256 deadline, bytes calldata signature)
         external
     {
-        bool dividendEligible = _validateOrderForPayment(orderId, amount);
+        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender);
         require(deadline >= block.timestamp, "PERMIT_EXPIRED");
 
         IPermit2.PermitTransferFrom memory permit = IPermit2.PermitTransferFrom({
@@ -103,27 +104,97 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
             IPermit2.SignatureTransferDetails({to: _settlementEscrow(), requestedAmount: amount});
 
         permit2.permitTransferFrom(permit, transferDetails, msg.sender, signature);
-        _markOrderPaid(orderId, amount, address(usdt), PAYMENT_SOURCE_USDT_PERMIT2, dividendEligible);
+        _markOrderPaid(orderId, amount, address(usdt), PAYMENT_SOURCE_USDT_PERMIT2, dividendEligible, msg.sender);
     }
 
     function payWithPWR(uint256 orderId, uint256 amount) external {
-        bool dividendEligible = _validateOrderForPayment(orderId, amount);
+        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender);
 
         bool success = pwr.transferFrom(msg.sender, _settlementEscrow(), amount);
         require(success, "PWR_TRANSFER_FAILED");
 
-        _markOrderPaid(orderId, amount, address(pwr), PAYMENT_SOURCE_PWR, dividendEligible);
+        _markOrderPaid(orderId, amount, address(pwr), PAYMENT_SOURCE_PWR, dividendEligible, msg.sender);
     }
 
-    function _validateOrderForPayment(uint256 orderId, uint256 amount) internal view returns (bool dividendEligible) {
+    function createOrderAndPayWithUSDC(
+        uint256 machineId,
+        uint256 amount,
+        uint256 validAfter,
+        uint256 validBefore,
+        bytes32 nonce,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 orderId) {
+        orderId = orderBook.createOrderForBuyer(msg.sender, machineId, amount);
+        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender);
+        require(validAfter <= block.timestamp, "AUTH_NOT_YET_VALID");
+        require(validBefore >= block.timestamp, "AUTH_EXPIRED");
+
+        address escrowAddress = _settlementEscrow();
+        usdc.receiveWithAuthorization(msg.sender, escrowAddress, amount, validAfter, validBefore, nonce, v, r, s);
+        _markOrderPaid(orderId, amount, address(usdc), PAYMENT_SOURCE_USDC_EIP3009, dividendEligible, msg.sender);
+    }
+
+    function createOrderAndPayWithUSDT(
+        uint256 machineId,
+        uint256 amount,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external returns (uint256 orderId) {
+        orderId = orderBook.createOrderForBuyer(msg.sender, machineId, amount);
+        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender);
+        require(deadline >= block.timestamp, "PERMIT_EXPIRED");
+
+        IPermit2.PermitTransferFrom memory permit = IPermit2.PermitTransferFrom({
+            permitted: IPermit2.TokenPermissions({token: address(usdt), amount: amount}),
+            nonce: nonce,
+            deadline: deadline
+        });
+        IPermit2.SignatureTransferDetails memory transferDetails =
+            IPermit2.SignatureTransferDetails({to: _settlementEscrow(), requestedAmount: amount});
+
+        permit2.permitTransferFrom(permit, transferDetails, msg.sender, signature);
+        _markOrderPaid(orderId, amount, address(usdt), PAYMENT_SOURCE_USDT_PERMIT2, dividendEligible, msg.sender);
+    }
+
+    function createOrderAndPayWithPWR(uint256 machineId, uint256 amount) external returns (uint256 orderId) {
+        orderId = orderBook.createOrderForBuyer(msg.sender, machineId, amount);
+        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender);
+
+        bool success = pwr.transferFrom(msg.sender, _settlementEscrow(), amount);
+        require(success, "PWR_TRANSFER_FAILED");
+
+        _markOrderPaid(orderId, amount, address(pwr), PAYMENT_SOURCE_PWR, dividendEligible, msg.sender);
+    }
+
+    function createPaidOrderByAdapter(address buyer, uint256 machineId, uint256 amount, address paymentToken)
+        external
+        onlyOwner
+        returns (uint256 orderId)
+    {
+        require(buyer != address(0), "ZERO_BUYER");
+        require(paymentToken != address(0), "ZERO_TOKEN");
+
+        orderId = orderBook.createOrderForBuyer(buyer, machineId, amount);
+        bool dividendEligible = _validateOrderForPayment(orderId, amount, buyer);
+        _markOrderPaid(orderId, amount, paymentToken, PAYMENT_SOURCE_HSP, dividendEligible, buyer);
+    }
+
+    function _validateOrderForPayment(uint256 orderId, uint256 amount, address expectedBuyer)
+        internal
+        view
+        returns (bool dividendEligible)
+    {
         OrderRecord memory order = orderBook.getOrder(orderId);
         require(order.status == OrderStatus.Created, "INVALID_STATUS");
-        require(order.buyer == msg.sender, "NOT_BUYER");
+        require(order.buyer == expectedBuyer, "NOT_BUYER");
         require(order.grossAmount == amount, "INVALID_AMOUNT");
         require(paymentSourceByOrder[orderId] == bytes32(0), "ALREADY_PAID");
 
         address settlementBeneficiary = orderBook.settlementBeneficiaryByOrder(orderId);
-        dividendEligible = settlementBeneficiary != msg.sender;
+        dividendEligible = settlementBeneficiary != expectedBuyer;
     }
 
     function _markOrderPaid(
@@ -131,11 +202,12 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
         uint256 amount,
         address token,
         bytes32 paymentSource,
-        bool dividendEligible
+        bool dividendEligible,
+        address payer
     ) internal {
         paymentSourceByOrder[orderId] = paymentSource;
         orderBook.markOrderPaid(orderId, dividendEligible, true, token);
-        emit OrderPaymentReceived(orderId, msg.sender, token, amount, paymentSource);
+        emit OrderPaymentReceived(orderId, payer, token, amount, paymentSource);
     }
 
     function _settlementEscrow() internal view returns (address escrow) {
