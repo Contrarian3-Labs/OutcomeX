@@ -18,6 +18,12 @@ class MediaType(str, Enum):
     VIDEO = "video"
 
 
+class ExecutionStrategy(str, Enum):
+    QUALITY = "quality"
+    EFFICIENCY = "efficiency"
+    SIMPLICITY = "simplicity"
+
+
 class ExecutionRunDispatchStatus(str, Enum):
     QUEUED = "queued"
     PLANNING = "planning"
@@ -51,6 +57,8 @@ class IntentRequest:
 
     intent_id: str
     prompt: str
+    input_files: tuple[str, ...] = ()
+    execution_strategy: ExecutionStrategy = ExecutionStrategy.QUALITY
     desired_outputs: tuple[MediaType, ...] = (MediaType.TEXT,)
     constraints: ExecutionConstraints = field(default_factory=ExecutionConstraints)
     context: dict[str, str] = field(default_factory=dict)

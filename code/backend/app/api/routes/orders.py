@@ -9,7 +9,7 @@ from app.domain.enums import ExecutionRunStatus, ExecutionState, OrderState, Pay
 from app.domain.models import ExecutionRun, Machine, Order, Payment
 from app.domain.planning import summarize_plan_from_chat
 from app.domain.rules import has_sufficient_payment
-from app.execution import IntentRequest
+from app.execution import ExecutionStrategy, IntentRequest
 from app.execution.service import ExecutionEngineService
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
 from app.onchain.order_writer import OrderWriter, get_order_writer
@@ -28,19 +28,15 @@ def _succeeded_payment_total_cents(order_id: str, db: Session) -> int:
     )
 
 
-def _build_execution_metadata(*, intent_id: str, prompt: str) -> dict[str, str]:
-    plan = ExecutionEngineService().plan(IntentRequest(intent_id=intent_id, prompt=prompt))
-    metadata = dict(plan.metadata)
-    metadata.setdefault("requested_outputs", plan.recipe.metadata.get("requested_outputs", ""))
-    metadata.setdefault("primary_output", plan.recipe.metadata.get("primary_output", ""))
-    metadata.setdefault("match_status", plan.match.status.value)
-    if plan.match.selected is not None:
-        metadata.setdefault("selected_provider", plan.match.selected.provider)
-        metadata.setdefault("selected_model", plan.match.selected.model_id)
-    else:
-        metadata.setdefault("selected_provider", "")
-        metadata.setdefault("selected_model", "")
-    return metadata
+def _build_execution_plan(*, intent_id: str, prompt: str, input_files: list[str], execution_strategy: ExecutionStrategy):
+    return ExecutionEngineService().plan(
+        IntentRequest(
+            intent_id=intent_id,
+            prompt=prompt,
+            input_files=tuple(input_files),
+            execution_strategy=execution_strategy,
+        )
+    )
 
 
 @router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
@@ -64,10 +60,14 @@ def create_order(
     )
     db.add(order)
     db.flush()
-    order.execution_metadata = _build_execution_metadata(
+    plan = _build_execution_plan(
         intent_id=f"order-{order.id}",
         prompt=payload.user_prompt,
+        input_files=payload.input_files,
+        execution_strategy=payload.execution_strategy,
     )
+    order.execution_request = plan.execution_request
+    order.execution_metadata = plan.metadata
     order_writer.create_order(order)
     db.commit()
     db.refresh(order)
@@ -185,7 +185,12 @@ def start_order_execution(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
 
     dispatch = ExecutionEngineService(execution_service=execution_service).dispatch(
-        IntentRequest(intent_id=order.id, prompt=order.user_prompt)
+        IntentRequest(
+            intent_id=order.id,
+            prompt=order.user_prompt,
+            input_files=tuple((order.execution_request or {}).get("files") or ()),
+            execution_strategy=ExecutionStrategy((order.execution_request or {}).get("execution_strategy", "quality")),
+        )
     )
     if not dispatch.accepted or dispatch.run_id is None or dispatch.run_status is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Execution dispatch rejected")
@@ -196,6 +201,7 @@ def start_order_execution(
         order_id=order.id,
         external_order_id=order.id,
         status=run_status,
+        submission_payload=order.execution_request,
         workspace_path=None,
         run_dir=None,
         preview_manifest=[],

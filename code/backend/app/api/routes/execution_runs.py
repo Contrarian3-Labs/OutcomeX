@@ -12,6 +12,7 @@ router = APIRouter()
 
 def _sync_model_from_snapshot(run: ExecutionRun, snapshot) -> None:
     run.status = snapshot.status
+    run.submission_payload = snapshot.submission_payload
     run.workspace_path = snapshot.workspace_path
     run.run_dir = snapshot.run_dir
     run.preview_manifest = list(snapshot.preview_manifest)

@@ -7,12 +7,20 @@ from fastapi.testclient import TestClient
 from app.core.config import reset_settings_cache
 from app.core.container import reset_container_cache
 from app.domain.enums import ExecutionRunStatus
+from app.execution.contracts import ExecutionStrategy
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
 from app.main import create_app
 
 
 class _ExecutionServiceStub:
-    def submit_task(self, *, external_order_id: str, prompt: str, input_files=()):
+    def submit_task(
+        self,
+        *,
+        external_order_id: str,
+        prompt: str,
+        input_files=(),
+        execution_strategy=ExecutionStrategy.QUALITY,
+    ):
         return type(
             "Snapshot",
             (),
@@ -20,6 +28,11 @@ class _ExecutionServiceStub:
                 "run_id": "aso-run-test",
                 "external_order_id": external_order_id,
                 "status": ExecutionRunStatus.QUEUED,
+                "submission_payload": {
+                    "intent": prompt,
+                    "files": list(input_files),
+                    "execution_strategy": execution_strategy.value,
+                },
                 "workspace_path": None,
                 "run_dir": None,
                 "preview_manifest": (),
@@ -41,6 +54,11 @@ class _ExecutionServiceStub:
                 "run_id": run_id,
                 "external_order_id": "order-1",
                 "status": ExecutionRunStatus.SUCCEEDED,
+                "submission_payload": {
+                    "intent": "Write a report",
+                    "files": ["brief.md"],
+                    "execution_strategy": "quality",
+                },
                 "workspace_path": "/tmp/workspace",
                 "run_dir": "/tmp/run-dir",
                 "preview_manifest": ({"path": "workspace/preview.png", "type": "image", "role": "final"},),
@@ -93,6 +111,8 @@ def _create_paid_order(client: TestClient, machine_id: str) -> dict:
             "chat_session_id": "chat-1",
             "user_prompt": "Write a report",
             "quoted_amount_cents": 1000,
+            "input_files": ["brief.md"],
+            "execution_strategy": "quality",
         },
     )
     assert order.status_code == 201
@@ -122,6 +142,7 @@ def test_start_execution_creates_run_and_run_endpoint_returns_snapshot(client: T
     assert run_response.status_code == 200
     payload = run_response.json()
     assert payload["status"] == "succeeded"
+    assert payload["submission_payload"]["execution_strategy"] == "quality"
     assert payload["artifact_manifest"][0]["path"] == "workspace/report.docx"
     assert payload["skills_manifest"][0]["skill_id"] == "docx"
 

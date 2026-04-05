@@ -26,6 +26,7 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
     mapping(uint256 => OrderRecord) private _orders;
     mapping(uint256 => uint256) public activeTaskCountByMachine;
     mapping(uint256 => address) public settlementBeneficiaryByOrder;
+    mapping(uint256 => address) public paymentTokenByOrder;
     mapping(uint256 => bool) public dividendEligibleByOrder;
     mapping(uint256 => bool) public refundAuthorizedByOrder;
     mapping(uint256 => bool) public settlementClassifiedByOrder;
@@ -110,7 +111,12 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
         emit OrderCreated(orderId, machineId, msg.sender, grossAmount, machineOwner);
     }
 
-    function markOrderPaid(uint256 orderId, bool dividendEligible, bool refundFailedOrNoValidPreviewAuthorized)
+    function markOrderPaid(
+        uint256 orderId,
+        bool dividendEligible,
+        bool refundFailedOrNoValidPreviewAuthorized,
+        address paymentToken
+    )
         external
         onlyPaymentAdapter
     {
@@ -119,6 +125,7 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
 
         order.status = OrderStatus.Paid;
         order.paidAt = uint64(block.timestamp);
+        paymentTokenByOrder[orderId] = paymentToken;
         dividendEligibleByOrder[orderId] = dividendEligible;
         refundAuthorizedByOrder[orderId] = refundFailedOrNoValidPreviewAuthorized;
         settlementClassifiedByOrder[orderId] = true;
@@ -207,6 +214,7 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
             machineId: order.machineId,
             buyer: order.buyer,
             settlementBeneficiary: settlementBeneficiary,
+            paymentToken: paymentTokenByOrder[order.id],
             grossAmount: order.grossAmount,
             dividendEligible: dividendEligibleByOrder[order.id]
         });

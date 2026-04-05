@@ -1,42 +1,71 @@
-# OutcomeX Backend (First Pass)
+# OutcomeX Backend
 
-This directory contains the first-pass Python backend skeleton for OutcomeX.
-It is intentionally lightweight, with extension points ready for future
-execution-engine and on-chain indexer integrations.
+This backend is the OutcomeX control plane.
+It is no longer responsible for AI capability routing, model selection, or solution orchestration.
+
+## Current boundary
+
+OutcomeX backend owns:
+
+- chat-native product APIs
+- order, payment, settlement, and revenue state
+- machine transfer guards and control-plane projections
+- the thin submission boundary into AgentSkillOS
+- deterministic write-chain payload generation
+
+AgentSkillOS owns:
+
+- capability understanding
+- skill retrieval
+- orchestration and planning
+- model/script/tool invocation
+- delivery artifacts
+
+The thin execution contract persisted by OutcomeX is:
+
+```json
+{
+  "intent": "user outcome request",
+  "files": ["input files"],
+  "execution_strategy": "quality | efficiency | simplicity"
+}
+```
 
 ## Stack
 
 - FastAPI for API surface
 - SQLAlchemy 2.0 for ORM models/session
 - Alembic-ready migration scaffolding
-- Pytest for basic API/domain verification
+- Pytest for backend verification
 
 ## Structure
 
 ```text
 code/backend
-├── alembic/                   # Migration environment and version scripts
+├── alembic/
 ├── app/
-│   ├── api/                   # REST routers and dependency wiring
-│   ├── core/                  # Settings and dependency container
-│   ├── db/                    # ORM base + session integration
-│   ├── domain/                # Enums, models, and domain rules
-│   └── integrations/          # HSP mock adapter + extension boundaries
-├── tests/                     # Small verification suite
+│   ├── api/
+│   ├── core/
+│   ├── db/
+│   ├── domain/
+│   ├── execution/      # Thin execution boundary types/services
+│   ├── integrations/   # AgentSkillOS bridge + HSP adapter boundary
+│   ├── onchain/        # Deterministic write-chain payload layer
+│   └── runtime/
+├── tests/
 ├── alembic.ini
 └── pyproject.toml
 ```
 
-## Product Constraints Captured in This Skeleton
+## Product truths captured here
 
-- Chat-native product surface (`/chat/plans`)
-- Orders expose recommended plans only, not workflow internals
-- Settlement can only start after result confirmation
+- Users buy outcomes, not workflow internals
+- Settlement starts only after result confirmation
 - Revenue split is fixed at 10% platform / 90% machine side
-- Self-use revenue is not dividend-eligible
+- Owner self-use is not dividend-eligible
 - Machine transfer is blocked by active tasks or unsettled revenue
 
-## Local Run
+## Local run
 
 ```bash
 cd code/backend
@@ -56,14 +85,5 @@ GET /api/v1/health
 
 ```bash
 cd code/backend
-PYTHONDONTWRITEBYTECODE=1 pytest -p no:cacheprovider
+PYTHONDONTWRITEBYTECODE=1 pytest -p no:cacheprovider tests -q
 ```
-
-## Migrations (Alembic)
-
-```bash
-cd code/backend
-alembic revision --autogenerate -m "init"
-alembic upgrade head
-```
-

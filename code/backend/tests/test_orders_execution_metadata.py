@@ -30,7 +30,7 @@ def _create_machine(client: TestClient) -> dict:
     return response.json()
 
 
-def test_order_creation_persists_execution_metadata(client: TestClient) -> None:
+def test_order_creation_persists_thin_execution_request(client: TestClient) -> None:
     machine = _create_machine(client)
     response = client.post(
         "/api/v1/orders",
@@ -40,17 +40,22 @@ def test_order_creation_persists_execution_metadata(client: TestClient) -> None:
             "chat_session_id": "chat-1",
             "user_prompt": "Summarize this process",
             "quoted_amount_cents": 1000,
+            "input_files": ["brief.md", "diagram.png"],
+            "execution_strategy": "efficiency",
         },
     )
     assert response.status_code == 201
 
     payload = response.json()
-    assert payload["execution_metadata"]["planner"] == "agentskillos_wrapper.v1"
-    assert payload["execution_metadata"]["primary_output"] == "text"
-    assert payload["execution_metadata"]["match_status"] == "matched"
-    assert payload["execution_metadata"]["selected_provider"] == "dashscope"
-    assert payload["execution_metadata"]["selected_model"] == "qwen3.6-plus"
+    assert payload["execution_request"] == {
+        "intent": "Summarize this process",
+        "files": ["brief.md", "diagram.png"],
+        "execution_strategy": "efficiency",
+    }
+    assert payload["execution_metadata"]["gateway"] == "outcomex_agentskillos_thin.v1"
+    assert payload["execution_metadata"]["submission_status"] == "draft"
 
     fetch_response = client.get(f"/api/v1/orders/{payload['id']}")
     assert fetch_response.status_code == 200
+    assert fetch_response.json()["execution_request"] == payload["execution_request"]
     assert fetch_response.json()["execution_metadata"] == payload["execution_metadata"]

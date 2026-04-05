@@ -62,7 +62,8 @@ class Order(Base):
     settlement_beneficiary_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     settlement_is_self_use: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     settlement_is_dividend_eligible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    execution_metadata: Mapped[dict[str, str] | None] = mapped_column(JSON, nullable=True)
+    execution_request: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    execution_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     result_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
@@ -84,6 +85,7 @@ class ExecutionRun(Base):
         default=ExecutionRunStatus.QUEUED,
         nullable=False,
     )
+    submission_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     workspace_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     run_dir: Mapped[str | None] = mapped_column(Text, nullable=True)
     preview_manifest: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)

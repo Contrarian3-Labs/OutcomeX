@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from ..core.config import Settings, get_settings
 from ..domain.enums import ExecutionRunStatus
+from ..execution.contracts import ExecutionStrategy
 from .agentskillos_bridge import AgentSkillOSBridge
 
 _EXECUTION_SCRIPT = """
@@ -31,6 +32,7 @@ task_prompt = sys.argv[5]
 mode = sys.argv[6]
 skill_group = sys.argv[7]
 files = json.loads(sys.argv[8])
+execution_strategy = sys.argv[9]
 
 sys.path.insert(0, str(repo_root))
 sys.path.insert(0, str(repo_root / "src"))
@@ -167,6 +169,11 @@ async def main():
             "status": "succeeded" if result.get("status") == "completed" else "failed",
             "run_dir": str(run_dir),
             "workspace_path": str(workspace_dir),
+            "submission_payload": {
+                "intent": task_prompt,
+                "files": files,
+                "execution_strategy": execution_strategy,
+            },
             "artifact_manifest": artifacts,
             "preview_manifest": choose_preview(artifacts),
             "skills_manifest": skills,
@@ -189,6 +196,7 @@ class ExecutionRunSnapshot:
     external_order_id: str
     status: ExecutionRunStatus
     record_path: str
+    submission_payload: dict | None = None
     workspace_path: str | None = None
     run_dir: str | None = None
     preview_manifest: tuple[dict, ...] = ()
@@ -220,6 +228,7 @@ class AgentSkillOSExecutionService:
         external_order_id: str,
         prompt: str,
         input_files: tuple[str, ...] = (),
+        execution_strategy: ExecutionStrategy = ExecutionStrategy.QUALITY,
     ) -> ExecutionRunSnapshot:
         repo_root = self._bridge.resolve_repo_root()
         if repo_root is None:
@@ -238,6 +247,11 @@ class AgentSkillOSExecutionService:
             "external_order_id": external_order_id,
             "status": ExecutionRunStatus.QUEUED.value,
             "record_path": str(record_path),
+            "submission_payload": {
+                "intent": prompt,
+                "files": list(input_files),
+                "execution_strategy": execution_strategy.value,
+            },
             "workspace_path": None,
             "run_dir": None,
             "preview_manifest": [],
@@ -265,11 +279,15 @@ class AgentSkillOSExecutionService:
             self._settings.agentskillos_execution_mode,
             self._settings.agentskillos_skill_group,
             json.dumps(list(input_files)),
+            execution_strategy.value,
         ]
         process_id = self._launcher(
             command,
             cwd=str(repo_root),
-            env=self._bridge.build_execution_env(),
+            env={
+                **self._bridge.build_execution_env(),
+                "OUTCOMEX_EXECUTION_STRATEGY": execution_strategy.value,
+            },
         )
         latest_payload = json.loads(record_path.read_text(encoding="utf-8"))
         latest_payload["pid"] = process_id
@@ -286,6 +304,7 @@ class AgentSkillOSExecutionService:
             external_order_id=payload["external_order_id"],
             status=ExecutionRunStatus(payload["status"]),
             record_path=str(record_path),
+            submission_payload=payload.get("submission_payload"),
             workspace_path=payload.get("workspace_path"),
             run_dir=payload.get("run_dir"),
             preview_manifest=tuple(payload.get("preview_manifest") or ()),

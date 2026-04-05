@@ -10,6 +10,7 @@ class ExecutionRunResponse(BaseModel):
     order_id: str
     external_order_id: str
     status: ExecutionRunStatus
+    submission_payload: dict | None = None
     workspace_path: str | None = None
     run_dir: str | None = None
     preview_manifest: list[dict] = Field(default_factory=list)

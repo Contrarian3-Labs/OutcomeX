@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.domain.enums import ExecutionState, OrderState, PreviewState, SettlementState
+from app.execution.contracts import ExecutionStrategy
 
 
 class OrderCreateRequest(BaseModel):
@@ -11,6 +12,8 @@ class OrderCreateRequest(BaseModel):
     chat_session_id: str = Field(min_length=1, max_length=64)
     user_prompt: str = Field(min_length=1)
     quoted_amount_cents: int = Field(gt=0)
+    input_files: list[str] = Field(default_factory=list)
+    execution_strategy: ExecutionStrategy = ExecutionStrategy.QUALITY
 
 
 class OrderResponse(BaseModel):
@@ -28,7 +31,8 @@ class OrderResponse(BaseModel):
     settlement_beneficiary_user_id: str | None
     settlement_is_self_use: bool | None
     settlement_is_dividend_eligible: bool | None
-    execution_metadata: dict[str, str] | None
+    execution_request: dict | None
+    execution_metadata: dict | None
     result_confirmed_at: datetime | None
     created_at: datetime
 
