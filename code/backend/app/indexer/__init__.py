@@ -1,6 +1,6 @@
 """OutcomeX on-chain indexer package."""
 
-from .cursor import CursorState, InMemoryCursorStore, InMemoryProcessedEventStore
+from .cursor import CursorState, InMemoryCursorStore, InMemoryProcessedEventStore, SqlCursorStore, SqlProcessedEventStore
 from .events import (
     MachineAssetEvent,
     NormalizedEvent,
@@ -19,6 +19,8 @@ __all__ = [
     "CursorState",
     "InMemoryCursorStore",
     "InMemoryProcessedEventStore",
+    "SqlCursorStore",
+    "SqlProcessedEventStore",
     "MachineAssetEvent",
     "NormalizedEvent",
     "OrderLifecycleEvent",

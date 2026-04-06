@@ -6,7 +6,7 @@ from typing import Protocol
 
 from sqlalchemy.orm import sessionmaker
 
-from app.indexer.cursor import InMemoryCursorStore, InMemoryProcessedEventStore
+from app.indexer.cursor import SqlCursorStore, SqlProcessedEventStore
 from app.indexer.evm_runtime import (
     Web3AbiEventDecoder,
     build_subscriptions_from_env,
@@ -86,8 +86,8 @@ def create_onchain_indexer(*, session_factory: sessionmaker, owner_resolver=None
     replay_indexer = ReplayIndexer(
         adapter=adapter,
         projection_store=SqlProjectionStore(session_factory=session_factory, owner_resolver=owner_resolver),
-        cursor_store=InMemoryCursorStore(),
-        processed_event_store=InMemoryProcessedEventStore(),
+        cursor_store=SqlCursorStore(session_factory=session_factory),
+        processed_event_store=SqlProcessedEventStore(session_factory=session_factory),
         config=IndexerConfig(
             confirmation_depth=max(0, runtime.confirmation_depth),
             bootstrap_block=max(0, runtime.bootstrap_block),

@@ -188,3 +188,19 @@ class ChatPlan(Base):
     recommended_plan_summary: Mapped[str] = mapped_column(Text, nullable=False)
     preview_state: Mapped[PreviewState] = mapped_column(Enum(PreviewState), default=PreviewState.READY)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+
+class OnchainIndexerCursor(Base):
+    __tablename__ = "onchain_indexer_cursor"
+
+    chain_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_indexed_block: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class OnchainProcessedEvent(Base):
+    __tablename__ = "onchain_processed_events"
+
+    event_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)

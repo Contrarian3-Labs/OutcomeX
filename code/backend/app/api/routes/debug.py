@@ -89,3 +89,12 @@ def smoke_reset(
         'cancelled_execution_runs': cancelled_execution_runs,
         'cleared_output_root': cleared_output_root,
     }
+
+
+@router.get("/onchain-health")
+def get_onchain_health(
+    container: Container = Depends(get_dependency_container),
+) -> dict:
+    report = container.onchain_health_checker.run()
+    container.onchain_health_report = report
+    return report.to_dict()

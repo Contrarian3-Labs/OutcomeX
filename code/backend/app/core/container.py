@@ -10,6 +10,7 @@ from app.integrations.hsp_adapter import HSPAdapter
 from app.integrations.onchain_indexer import create_onchain_indexer
 from app.integrations.user_signer_registry import UserSignerRegistry
 from app.onchain.contracts_registry import ContractsRegistry
+from app.onchain.healthcheck import OnchainHealthChecker
 from app.runtime.hardware_simulator import get_shared_hardware_simulator, reset_shared_hardware_simulator
 
 
@@ -50,6 +51,8 @@ class Container:
         self.execution_gateway = NullExecutionGateway()
         self.hardware_simulator = get_shared_hardware_simulator()
         self.contracts_registry = ContractsRegistry(settings=settings)
+        self.onchain_health_checker = OnchainHealthChecker(settings=settings)
+        self.onchain_health_report = self.onchain_health_checker.run()
         self.onchain_indexer = create_onchain_indexer(
             session_factory=self.session_factory,
             owner_resolver=self.buyer_address_resolver.resolve_user_id,
