@@ -48,6 +48,8 @@ class Machine(Base):
     orders: Mapped[list["Order"]] = relationship(back_populates="machine")
     revenue_entries: Mapped[list["RevenueEntry"]] = relationship(back_populates="machine")
 
+    claims: Mapped[list["MachineRevenueClaim"]] = relationship(back_populates="machine")
+
 
 class Order(Base):
     __tablename__ = "orders"
@@ -176,6 +178,18 @@ class RevenueEntry(Base):
     order: Mapped["Order"] = relationship(back_populates="revenue_entries")
     settlement: Mapped["SettlementRecord"] = relationship(back_populates="revenue_entries")
     machine: Mapped["Machine"] = relationship(back_populates="revenue_entries")
+
+
+class MachineRevenueClaim(Base):
+    __tablename__ = "machine_revenue_claims"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    machine_id: Mapped[str] = mapped_column(ForeignKey("machines.id"), index=True, nullable=False)
+    amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    machine: Mapped["Machine"] = relationship(back_populates="claims")
 
 
 class ChatPlan(Base):

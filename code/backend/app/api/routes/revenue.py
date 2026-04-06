@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.enums import PaymentState, SettlementState
-from app.domain.models import Machine, Order, Payment, RevenueEntry, SettlementRecord
+from app.domain.models import Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementRecord
 from app.domain.settlement_projection import ensure_confirmed_settlement_projection
 from app.domain.rules import has_sufficient_payment
 from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
@@ -15,6 +15,7 @@ from app.onchain.tx_sender import encode_contract_call
 from app.onchain.order_writer import OrderWriter, get_order_writer
 from app.schemas.revenue import (
     MachineRevenueClaimResponse,
+    RevenueAccountOverviewResponse,
     RevenueDistributionResponse,
     RevenueEntryResponse,
 )
@@ -63,6 +64,78 @@ def _has_other_unsettled_revenue(machine_id: str, current_order_id: str, db: Ses
         )
     )
     return bool(unsettled_count)
+
+
+def _machine_ids_for_owner(owner_user_id: str, db: Session) -> list[str]:
+    return db.scalars(select(Machine.id).where(Machine.owner_user_id == owner_user_id)).all()
+
+
+def _sum_machine_share_cents(*, machine_ids: list[str], db: Session) -> int:
+    if not machine_ids:
+        return 0
+    return (
+        db.scalar(
+            select(func.coalesce(func.sum(RevenueEntry.machine_share_cents), 0)).where(
+                RevenueEntry.machine_id.in_(machine_ids)
+            )
+        )
+        or 0
+    )
+
+
+def _sum_machine_claims_cents(*, machine_ids: list[str], db: Session) -> int:
+    if not machine_ids:
+        return 0
+    return (
+        db.scalar(
+            select(func.coalesce(func.sum(MachineRevenueClaim.amount_cents), 0)).where(
+                MachineRevenueClaim.machine_id.in_(machine_ids)
+            )
+        )
+        or 0
+    )
+
+
+def _user_paid_cents(*, user_id: str, db: Session) -> int:
+    return (
+        db.scalar(
+            select(func.coalesce(func.sum(Payment.amount_cents), 0))
+            .join(Order, Order.id == Payment.order_id)
+            .where(Order.user_id == user_id, Payment.state == PaymentState.SUCCEEDED)
+        )
+        or 0
+    )
+
+
+def _user_primary_currency(*, user_id: str, db: Session) -> str:
+    currency = db.scalar(
+        select(Payment.currency)
+        .join(Order, Order.id == Payment.order_id)
+        .where(Order.user_id == user_id, Payment.state == PaymentState.SUCCEEDED)
+        .order_by(Payment.created_at.desc())
+        .limit(1)
+    )
+    return (currency or "USD").upper()
+
+
+def _machine_claimable_cents(*, machine_id: str, db: Session) -> int:
+    projected = (
+        db.scalar(
+            select(func.coalesce(func.sum(RevenueEntry.machine_share_cents), 0)).where(
+                RevenueEntry.machine_id == machine_id
+            )
+        )
+        or 0
+    )
+    claimed = (
+        db.scalar(
+            select(func.coalesce(func.sum(MachineRevenueClaim.amount_cents), 0)).where(
+                MachineRevenueClaim.machine_id == machine_id
+            )
+        )
+        or 0
+    )
+    return max(0, projected - claimed)
 
 
 @router.post("/orders/{order_id}/distribute", response_model=RevenueDistributionResponse)
@@ -147,6 +220,34 @@ def list_machine_revenue(machine_id: str, db: Session = Depends(get_db)) -> list
     )
 
 
+@router.get("/accounts/{owner_user_id}/overview", response_model=RevenueAccountOverviewResponse)
+def revenue_account_overview(owner_user_id: str, db: Session = Depends(get_db)) -> RevenueAccountOverviewResponse:
+    machine_ids = _machine_ids_for_owner(owner_user_id=owner_user_id, db=db)
+    projected_cents = _sum_machine_share_cents(machine_ids=machine_ids, db=db)
+    claimed_cents = _sum_machine_claims_cents(machine_ids=machine_ids, db=db)
+    claimable_cents = max(0, projected_cents - claimed_cents)
+    withdraw_history = (
+        list(
+            db.scalars(
+                select(MachineRevenueClaim)
+                .where(MachineRevenueClaim.machine_id.in_(machine_ids))
+                .order_by(MachineRevenueClaim.claimed_at.desc())
+            )
+        )
+        if machine_ids
+        else []
+    )
+    return RevenueAccountOverviewResponse(
+        owner_user_id=owner_user_id,
+        paid_cents=_user_paid_cents(user_id=owner_user_id, db=db),
+        projected_cents=projected_cents,
+        claimable_cents=claimable_cents,
+        claimed_cents=claimed_cents,
+        currency=_user_primary_currency(user_id=owner_user_id, db=db),
+        withdraw_history=withdraw_history,
+    )
+
+
 @router.post("/machines/{machine_id}/claim", response_model=MachineRevenueClaimResponse, response_model_exclude_none=True)
 def claim_machine_revenue(
     machine_id: str,
@@ -168,6 +269,8 @@ def claim_machine_revenue(
             detail="Machine has no unsettled revenue to claim",
         )
 
+    claimable_cents = _machine_claimable_cents(machine_id=machine.id, db=db)
+
     action_mode = _normalize_action_mode(mode)
     write_result = order_writer.claim_machine_revenue(machine)
     if action_mode == "user_sign":
@@ -187,6 +290,15 @@ def claim_machine_revenue(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Onchain machine-owner signer is not configured: {exc}",
         ) from exc
+
+    if claimable_cents > 0:
+        claim_record = MachineRevenueClaim(
+            machine_id=machine.id,
+            amount_cents=claimable_cents,
+            tx_hash=broadcast.tx_hash,
+        )
+        db.add(claim_record)
+        db.commit()
 
     return MachineRevenueClaimResponse(
         machine_id=machine.id,

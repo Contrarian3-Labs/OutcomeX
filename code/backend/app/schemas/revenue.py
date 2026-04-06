@@ -45,3 +45,24 @@ class MachineRevenueClaimResponse(BaseModel):
     submit_payload: dict | None = None
     calldata: str | None = None
 
+
+class WithdrawHistoryItem(BaseModel):
+    id: str
+    machine_id: str
+    amount_cents: int
+    tx_hash: str | None
+    claimed_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class RevenueAccountOverviewResponse(BaseModel):
+    owner_user_id: str
+    currency: str
+    paid_cents: int
+    projected_cents: int
+    claimable_cents: int
+    claimed_cents: int
+    withdraw_history: list[WithdrawHistoryItem]
+
+    model_config = {"from_attributes": True}
