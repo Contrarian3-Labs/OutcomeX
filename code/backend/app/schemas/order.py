@@ -45,6 +45,11 @@ class OrderResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class OrderListResponse(BaseModel):
+    items: list[OrderResponse]
+    next_cursor: str | None = None
+
+
 class ResultConfirmResponse(BaseModel):
     order_id: str
     state: OrderState

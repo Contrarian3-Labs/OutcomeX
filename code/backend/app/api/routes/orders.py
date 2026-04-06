@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -25,6 +25,7 @@ from app.schemas.execution_run import ExecutionRunResponse
 from app.schemas.order import (
     OrderAvailableActionsResponse,
     OrderCreateRequest,
+    OrderListResponse,
     OrderResponse,
     OrderSettlementActionResponse,
     ResultConfirmResponse,
@@ -202,6 +203,21 @@ def _build_execution_plan(
     )
 
 
+def _decode_orders_cursor(cursor: str) -> tuple[datetime, str]:
+    try:
+        created_at_raw, order_id = cursor.split("|", 1)
+        if not order_id:
+            raise ValueError("missing order id in cursor")
+        created_at = datetime.fromisoformat(created_at_raw)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid cursor") from exc
+    return created_at, order_id
+
+
+def _encode_orders_cursor(order: Order) -> str:
+    return f"{order.created_at.isoformat()}|{order.id}"
+
+
 @router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
 def create_order(
     payload: OrderCreateRequest,
@@ -264,6 +280,39 @@ def create_order(
     db.commit()
     db.refresh(order)
     return order
+
+
+@router.get("", response_model=OrderListResponse)
+def list_orders(
+    user_id: str = Query(min_length=1, max_length=64),
+    limit: int = Query(default=20, ge=1, le=100),
+    cursor: str | None = Query(default=None),
+    state: OrderState | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> OrderListResponse:
+    statement = select(Order).where(Order.user_id == user_id)
+
+    if state is not None:
+        statement = statement.where(Order.state == state)
+
+    if cursor:
+        cursor_created_at, cursor_order_id = _decode_orders_cursor(cursor)
+        statement = statement.where(
+            or_(
+                Order.created_at < cursor_created_at,
+                and_(Order.created_at == cursor_created_at, Order.id < cursor_order_id),
+            )
+        )
+
+    orders = list(
+        db.scalars(
+            statement.order_by(Order.created_at.desc(), Order.id.desc()).limit(limit + 1),
+        )
+    )
+    has_more = len(orders) > limit
+    items = orders[:limit]
+    next_cursor = _encode_orders_cursor(items[-1]) if has_more and items else None
+    return OrderListResponse(items=items, next_cursor=next_cursor)
 
 
 @router.get("/{order_id}/available-actions", response_model=OrderAvailableActionsResponse)
