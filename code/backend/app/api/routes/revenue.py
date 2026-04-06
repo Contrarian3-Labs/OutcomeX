@@ -1,16 +1,47 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.domain.accounting import effective_paid_amount_cents
 from app.domain.enums import PaymentState, SettlementState
 from app.domain.models import Machine, Order, Payment, RevenueEntry, SettlementRecord
+from app.domain.settlement_projection import ensure_confirmed_settlement_projection
 from app.domain.rules import has_sufficient_payment
-from app.schemas.revenue import RevenueDistributionResponse, RevenueEntryResponse
+from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
+from app.onchain.tx_sender import encode_contract_call
+from app.onchain.order_writer import OrderWriter, get_order_writer
+from app.schemas.revenue import (
+    MachineRevenueClaimResponse,
+    RevenueDistributionResponse,
+    RevenueEntryResponse,
+)
 
 router = APIRouter()
+
+
+def _normalize_action_mode(mode: str) -> str:
+    normalized = mode.strip().lower()
+    if normalized not in {"server_broadcast", "user_sign"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported action mode")
+    return normalized
+
+
+def _user_sign_claim_response(*, machine: Machine, claimant_user_id: str, write_result) -> MachineRevenueClaimResponse:
+    return MachineRevenueClaimResponse(
+        machine_id=machine.id,
+        onchain_machine_id=machine.onchain_machine_id,
+        claimant_user_id=claimant_user_id,
+        mode="user_sign",
+        chain_id=write_result.chain_id,
+        contract_address=write_result.contract_address,
+        contract_name=write_result.contract_name,
+        method_name=write_result.method_name,
+        submit_payload=write_result.payload,
+        calldata=encode_contract_call(write_result),
+    )
 
 
 def _succeeded_payment_total_cents(order_id: str, db: Session) -> int:
@@ -41,13 +72,10 @@ def distribute_revenue(order_id: str, db: Session = Depends(get_db)) -> RevenueD
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
 
     settlement = db.query(SettlementRecord).filter(SettlementRecord.order_id == order.id).first()
-    if settlement is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Settlement not found")
-    if settlement.state != SettlementState.LOCKED:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Settlement is not locked")
 
     paid_cents = _succeeded_payment_total_cents(order.id, db)
-    if not has_sufficient_payment(order.quoted_amount_cents, paid_cents):
+    effective_paid_cents = effective_paid_amount_cents(order=order, paid_amount_cents=paid_cents)
+    if not has_sufficient_payment(order.quoted_amount_cents, effective_paid_cents):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Distribution requires full successful payment",
@@ -71,39 +99,40 @@ def distribute_revenue(order_id: str, db: Session = Depends(get_db)) -> RevenueD
     self_use = order.settlement_is_self_use
     now = datetime.now(timezone.utc)
 
-    entry = RevenueEntry(
-        order_id=order.id,
-        settlement_id=settlement.id,
-        machine_id=machine.id,
-        beneficiary_user_id=order.settlement_beneficiary_user_id,
-        gross_amount_cents=settlement.gross_amount_cents,
-        platform_fee_cents=settlement.platform_fee_cents,
-        machine_share_cents=settlement.machine_share_cents,
-        is_self_use=self_use,
-        is_dividend_eligible=dividend_eligible,
-    )
-    settlement.state = SettlementState.DISTRIBUTED
-    settlement.distributed_at = now
     order.settlement_state = SettlementState.DISTRIBUTED
-    machine.has_unsettled_revenue = _has_other_unsettled_revenue(machine.id, order.id, db)
+    if settlement is None:
+        settlement, entry = ensure_confirmed_settlement_projection(
+            db=db,
+            order=order,
+            machine=machine,
+            gross_amount_cents=effective_paid_cents,
+            distributed_at=now,
+        )
+    else:
+        settlement, entry = ensure_confirmed_settlement_projection(
+            db=db,
+            order=order,
+            machine=machine,
+            gross_amount_cents=settlement.gross_amount_cents,
+            distributed_at=settlement.distributed_at or now,
+        )
+        machine.has_unsettled_revenue = _has_other_unsettled_revenue(machine.id, order.id, db)
+        db.add(machine)
 
-    db.add(entry)
-    db.add(settlement)
     db.add(order)
-    db.add(machine)
     db.commit()
 
     return RevenueDistributionResponse(
         order_id=order.id,
         settlement_id=settlement.id,
         machine_id=machine.id,
-        beneficiary_user_id=order.settlement_beneficiary_user_id,
-        gross_amount_cents=settlement.gross_amount_cents,
-        platform_fee_cents=settlement.platform_fee_cents,
-        machine_share_cents=settlement.machine_share_cents,
+        beneficiary_user_id=entry.beneficiary_user_id,
+        gross_amount_cents=entry.gross_amount_cents,
+        platform_fee_cents=entry.platform_fee_cents,
+        machine_share_cents=entry.machine_share_cents,
         is_self_use=self_use,
         is_dividend_eligible=dividend_eligible,
-        distributed_at=now,
+        distributed_at=settlement.distributed_at or now,
     )
 
 
@@ -115,4 +144,55 @@ def list_machine_revenue(machine_id: str, db: Session = Depends(get_db)) -> list
             .where(RevenueEntry.machine_id == machine_id)
             .order_by(RevenueEntry.created_at.desc())
         )
+    )
+
+
+@router.post("/machines/{machine_id}/claim", response_model=MachineRevenueClaimResponse, response_model_exclude_none=True)
+def claim_machine_revenue(
+    machine_id: str,
+    mode: str = Query(default="server_broadcast"),
+    db: Session = Depends(get_db),
+    order_writer: OrderWriter = Depends(get_order_writer),
+    onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
+) -> MachineRevenueClaimResponse:
+    machine = db.get(Machine, machine_id)
+    if machine is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
+    if not onchain_lifecycle.enabled():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Onchain runtime is not enabled")
+    if not machine.onchain_machine_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Machine is not anchored onchain")
+    if not machine.has_unsettled_revenue:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Machine has no unsettled revenue to claim",
+        )
+
+    action_mode = _normalize_action_mode(mode)
+    write_result = order_writer.claim_machine_revenue(machine)
+    if action_mode == "user_sign":
+        return _user_sign_claim_response(
+            machine=machine,
+            claimant_user_id=machine.owner_user_id,
+            write_result=write_result,
+        )
+
+    try:
+        broadcast = onchain_lifecycle.send_as_user(
+            user_id=machine.owner_user_id,
+            write_result=write_result,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Onchain machine-owner signer is not configured: {exc}",
+        ) from exc
+
+    return MachineRevenueClaimResponse(
+        machine_id=machine.id,
+        onchain_machine_id=machine.onchain_machine_id,
+        claimant_user_id=machine.owner_user_id,
+        tx_hash=broadcast.tx_hash,
+        contract_name="RevenueVault",
+        method_name="claimMachineRevenue",
     )

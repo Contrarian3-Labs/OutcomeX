@@ -33,7 +33,7 @@ def _build_payment(order_id: str) -> Payment:
     )
 
 
-def test_verifier_stub_returns_order_aligned_evidence() -> None:
+def test_verifier_rejects_missing_receipt_when_live_receipt_unavailable() -> None:
     verifier = OnchainPaymentVerifier()
     order = _build_order()
     payment = _build_payment(order.id)
@@ -45,17 +45,16 @@ def test_verifier_stub_returns_order_aligned_evidence() -> None:
         payment=payment,
     )
 
-    assert verification.matched is True
-    assert verification.state == PaymentState.SUCCEEDED
+    assert verification.matched is False
+    assert verification.state == PaymentState.FAILED
+    assert verification.reason == "receipt_not_found"
     assert verification.event_id == "onchain:0xabc123"
-    assert verification.evidence_order_id.startswith("oc_")
-    assert verification.evidence_amount_cents == 1000
-    assert verification.evidence_currency == "USDC"
-    assert verification.evidence_create_order_tx_hash == "0xabc123"
-    assert verification.evidence_create_order_event_id == (
-        f"OrderCreated:{verification.evidence_order_id}:0xabc123"
-    )
-    assert verification.evidence_create_order_block_number is not None
+    assert verification.evidence_order_id is None
+    assert verification.evidence_amount_cents is None
+    assert verification.evidence_currency is None
+    assert verification.evidence_create_order_tx_hash is None
+    assert verification.evidence_create_order_event_id is None
+    assert verification.evidence_create_order_block_number is None
 
 
 def test_verifier_stub_rejects_invalid_tx_hash() -> None:
@@ -88,7 +87,7 @@ class StubReceiptReader:
 
 def _order_created_log(order_id: int) -> dict[str, object]:
     return {
-        "address": "0x0000000000000000000000000000000000000134",
+        "address": "0x0000000000000000000000000000000000000133",
         "topics": [ORDER_CREATED_TOPIC0, hex(order_id)],
         "transactionHash": "0xabc123",
         "logIndex": "0x2",

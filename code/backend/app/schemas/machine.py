@@ -6,10 +6,12 @@ from pydantic import BaseModel, Field
 class MachineCreateRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=128)
     owner_user_id: str = Field(min_length=1, max_length=64)
+    onchain_machine_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class MachineResponse(BaseModel):
     id: str
+    onchain_machine_id: str | None
     display_name: str
     owner_user_id: str
     ownership_source: str

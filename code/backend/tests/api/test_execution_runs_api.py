@@ -13,6 +13,9 @@ from app.main import create_app
 
 
 class _ExecutionServiceStub:
+    def __init__(self) -> None:
+        self.submit_calls = 0
+
     def submit_task(
         self,
         *,
@@ -21,6 +24,7 @@ class _ExecutionServiceStub:
         input_files=(),
         execution_strategy=ExecutionStrategy.QUALITY,
     ):
+        self.submit_calls += 1
         return type(
             "Snapshot",
             (),
@@ -32,7 +36,9 @@ class _ExecutionServiceStub:
                     "intent": prompt,
                     "files": list(input_files),
                     "execution_strategy": execution_strategy.value,
+                    "selected_plan_index": 0,
                 },
+                "selected_plan": {"name": "Quality-First", "description": "Deep validation path", "nodes": [{"id": "n1", "name": "docx"}]},
                 "workspace_path": None,
                 "run_dir": None,
                 "preview_manifest": (),
@@ -58,7 +64,9 @@ class _ExecutionServiceStub:
                     "intent": "Write a report",
                     "files": ["brief.md"],
                     "execution_strategy": "quality",
+                    "selected_plan_index": 0,
                 },
+                "selected_plan": {"name": "Quality-First", "description": "Deep validation path", "nodes": [{"id": "n1", "name": "docx"}]},
                 "workspace_path": "/tmp/workspace",
                 "run_dir": "/tmp/run-dir",
                 "preview_manifest": ({"path": "workspace/preview.png", "type": "image", "role": "final"},),
@@ -79,16 +87,17 @@ class _ExecutionServiceStub:
 
 
 @pytest.fixture
-def client(tmp_path) -> TestClient:
+def client(tmp_path) -> tuple[TestClient, _ExecutionServiceStub]:
     db_path = tmp_path / "execution-runs.db"
     os.environ["OUTCOMEX_DATABASE_URL"] = f"sqlite+pysqlite:///{db_path.as_posix()}"
     os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
     reset_settings_cache()
     reset_container_cache()
     app = create_app()
-    app.dependency_overrides[get_agentskillos_execution_service] = lambda: _ExecutionServiceStub()
+    stub = _ExecutionServiceStub()
+    app.dependency_overrides[get_agentskillos_execution_service] = lambda: stub
     with TestClient(app) as test_client:
-        yield test_client
+        yield test_client, stub
     reset_settings_cache()
     reset_container_cache()
 
@@ -129,24 +138,72 @@ def _create_paid_order(client: TestClient, machine_id: str) -> dict:
     return order.json()
 
 
-def test_start_execution_creates_run_and_run_endpoint_returns_snapshot(client: TestClient) -> None:
-    machine = _create_machine(client)
-    order = _create_paid_order(client, machine["id"])
+def test_start_execution_creates_run_and_run_endpoint_returns_snapshot(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order(test_client, machine["id"])
 
-    start = client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
     assert start.status_code == 200
     assert start.json()["id"] == "aso-run-test"
     assert start.json()["status"] == "queued"
+    assert start.json()["selected_plan"]["index"] == 0
+    assert start.json()["selected_plan"]["name"] == "Quality-First"
+    assert start.json()["selected_plan"]["description"] == "Deep validation path"
+    assert start.json()["selected_plan_binding"] == {
+        "submission_payload_selected_plan_index": 0,
+        "selected_plan_index": 0,
+        "is_consistent": True,
+    }
 
-    run_response = client.get("/api/v1/execution-runs/aso-run-test")
+    run_response = test_client.get("/api/v1/execution-runs/aso-run-test")
     assert run_response.status_code == 200
     payload = run_response.json()
     assert payload["status"] == "succeeded"
     assert payload["submission_payload"]["execution_strategy"] == "quality"
+    assert payload["submission_payload"]["selected_plan_index"] == 0
+    assert payload["selected_plan"]["index"] == 0
+    assert payload["selected_plan"]["name"] == "Quality-First"
+    assert payload["selected_plan"]["description"] == "Deep validation path"
+    assert payload["selected_plan"]["nodes"][0]["name"] == "docx"
+    assert payload["selected_plan_binding"] == {
+        "submission_payload_selected_plan_index": 0,
+        "selected_plan_index": 0,
+        "is_consistent": True,
+    }
     assert payload["artifact_manifest"][0]["path"] == "workspace/report.docx"
     assert payload["skills_manifest"][0]["skill_id"] == "docx"
 
-    order_fetch = client.get(f"/api/v1/orders/{order['id']}")
+    order_fetch = test_client.get(f"/api/v1/orders/{order['id']}")
     assert order_fetch.status_code == 200
     assert order_fetch.json()["execution_metadata"]["run_id"] == "aso-run-test"
     assert order_fetch.json()["execution_metadata"]["run_status"] == "succeeded"
+    assert order_fetch.json()["state"] == "result_pending_confirmation"
+
+    confirm = test_client.post(f"/api/v1/orders/{order['id']}/confirm-result")
+    assert confirm.status_code == 200
+    assert confirm.json()["state"] == "result_confirmed"
+    assert confirm.json()["settlement_state"] == "ready"
+
+    polled_again = test_client.get("/api/v1/execution-runs/aso-run-test")
+    assert polled_again.status_code == 200
+
+    order_after_confirm_poll = test_client.get(f"/api/v1/orders/{order['id']}")
+    assert order_after_confirm_poll.status_code == 200
+    assert order_after_confirm_poll.json()["state"] == "result_confirmed"
+    assert order_after_confirm_poll.json()["settlement_state"] == "ready"
+
+
+def test_start_execution_rejects_duplicate_active_run(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order(test_client, machine["id"])
+
+    first = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert first.status_code == 200
+    assert stub.submit_calls == 1
+
+    second = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert second.status_code == 409
+    assert second.json()["detail"] == "Execution already in progress for this order"
+    assert stub.submit_calls == 1

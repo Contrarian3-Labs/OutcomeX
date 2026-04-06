@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
 
+from app.core.config import get_settings
+from app.onchain.contracts_registry import ContractsRegistry
 from app.onchain.event_decoder import decode_order_created_event
 from app.onchain.order_writer import OrderWriteResult
 from app.onchain.receipts import ReceiptReader, get_receipt_reader
@@ -20,8 +22,16 @@ class OnchainCreateOrderReceipt:
 class OnchainBroadcaster:
     """Create-order receipt boundary with optional live receipt awareness."""
 
-    def __init__(self, *, receipt_reader: ReceiptReader | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        receipt_reader: ReceiptReader | None = None,
+        require_live_receipt: bool = False,
+        contracts_registry: ContractsRegistry | None = None,
+    ) -> None:
         self._receipt_reader = receipt_reader or get_receipt_reader()
+        self._require_live_receipt = require_live_receipt
+        self._contracts_registry = contracts_registry or ContractsRegistry()
 
     def broadcast_create_order(self, *, write_result: OrderWriteResult) -> OnchainCreateOrderReceipt:
         return self._build_receipt(write_result=write_result, fallback_seed=write_result.idempotency_key)
@@ -32,10 +42,17 @@ class OnchainBroadcaster:
     def _build_receipt(self, *, write_result: OrderWriteResult, fallback_seed: str) -> OnchainCreateOrderReceipt:
         receipt = self._receipt_reader.get_receipt(write_result.tx_hash)
         if receipt is not None:
-            decoded_event = decode_order_created_event(
-                receipt=receipt,
-                contract_address=write_result.contract_address,
-            )
+            decoded_event = None
+            for contract_address in (
+                self._contracts_registry.order_book().contract_address,
+                write_result.contract_address,
+            ):
+                decoded_event = decode_order_created_event(
+                    receipt=receipt,
+                    contract_address=contract_address,
+                )
+                if decoded_event is not None:
+                    break
             if decoded_event is not None:
                 tx_hash = str(decoded_event["transaction_hash"]).lower()
                 order_id = str(decoded_event["order_id"])
@@ -52,6 +69,9 @@ class OnchainBroadcaster:
                 event_id=receipt.event_id,
                 block_number=receipt.block_number,
             )
+
+        if self._require_live_receipt:
+            raise RuntimeError(f"broadcast_receipt_missing:{write_result.tx_hash}")
 
         onchain_order_id = self._derive_onchain_order_id(seed=fallback_seed)
         return OnchainCreateOrderReceipt(
@@ -74,4 +94,5 @@ class OnchainBroadcaster:
 
 @lru_cache
 def get_onchain_broadcaster() -> OnchainBroadcaster:
-    return OnchainBroadcaster()
+    settings = get_settings()
+    return OnchainBroadcaster(require_live_receipt=bool(settings.onchain_rpc_url.strip()))

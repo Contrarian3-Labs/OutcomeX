@@ -88,11 +88,13 @@ def test_payment_and_result_ready_are_required_for_confirm_settlement_and_distri
     no_payment_confirm = client.post(f"/api/v1/orders/{order['id']}/confirm-result")
     assert no_payment_confirm.status_code == 409
 
-    payment_a = _create_and_confirm_payment(client, order_id=order["id"], amount_cents=600)
-    partial_confirm = client.post(f"/api/v1/orders/{order['id']}/confirm-result")
-    assert partial_confirm.status_code == 409
+    mismatched_intent = client.post(
+        f"/api/v1/payments/orders/{order['id']}/intent",
+        json={"amount_cents": 600, "currency": "usd"},
+    )
+    assert mismatched_intent.status_code == 409
 
-    _create_and_confirm_payment(client, order_id=order["id"], amount_cents=400)
+    payment = _create_and_confirm_payment(client, order_id=order["id"], amount_cents=1000)
     before_ready_confirm = client.post(f"/api/v1/orders/{order['id']}/confirm-result")
     assert before_ready_confirm.status_code == 409
 
@@ -104,33 +106,30 @@ def test_payment_and_result_ready_are_required_for_confirm_settlement_and_distri
     assert full_confirm.status_code == 200
     assert full_confirm.json()["settlement_state"] == "ready"
 
-    downgrade_payment = client.post(
-        f"/api/v1/payments/{payment_a['payment_id']}/mock-confirm",
-        json={"state": "failed"},
-    )
-    assert downgrade_payment.status_code == 200
-
-    underpaid_settlement = client.post(f"/api/v1/settlement/orders/{order['id']}/start")
-    assert underpaid_settlement.status_code == 409
-
-    restore_payment = client.post(
-        f"/api/v1/payments/{payment_a['payment_id']}/mock-confirm",
-        json={"state": "succeeded"},
-    )
-    assert restore_payment.status_code == 200
-
     settlement_start = client.post(f"/api/v1/settlement/orders/{order['id']}/start")
     assert settlement_start.status_code == 200
     assert settlement_start.json()["state"] == "locked"
 
-    second_downgrade = client.post(
-        f"/api/v1/payments/{payment_a['payment_id']}/mock-confirm",
+    distribution = client.post(f"/api/v1/revenue/orders/{order['id']}/distribute")
+    assert distribution.status_code == 200
+
+    payment_fetch = client.get(f"/api/v1/orders/{order['id']}")
+    assert payment_fetch.status_code == 200
+    assert payment_fetch.json()["settlement_state"] == "distributed"
+    assert payment["payment_id"]
+
+
+def test_mock_confirm_rejects_terminal_state_downgrade(client: TestClient) -> None:
+    machine = _create_machine(client, owner_user_id="owner-1")
+    order = _create_order(client, machine_id=machine["id"], user_id="user-1", quoted_amount_cents=1000)
+    payment = _create_and_confirm_payment(client, order_id=order["id"], amount_cents=1000)
+
+    downgrade = client.post(
+        f"/api/v1/payments/{payment['payment_id']}/mock-confirm",
         json={"state": "failed"},
     )
-    assert second_downgrade.status_code == 200
-
-    underpaid_distribution = client.post(f"/api/v1/revenue/orders/{order['id']}/distribute")
-    assert underpaid_distribution.status_code == 409
+    assert downgrade.status_code == 409
+    assert downgrade.json()["detail"] == "Payment is already in terminal state"
 
 
 def test_machine_transfer_blocked_until_revenue_distributed(client: TestClient) -> None:
@@ -220,3 +219,20 @@ def test_transfer_remains_blocked_until_all_unsettled_orders_are_distributed(cli
         json={"new_owner_user_id": "owner-2", "keep_previous_setup": True},
     )
     assert unblocked_transfer.status_code == 200
+
+
+def test_confirm_result_rejects_after_settlement_locked(client: TestClient) -> None:
+    machine = _create_machine(client, owner_user_id="owner-1")
+    order = _create_order(client, machine_id=machine["id"], user_id="user-1", quoted_amount_cents=1000)
+    _create_and_confirm_payment(client, order_id=order["id"], amount_cents=1000)
+    _mark_result_ready(client, order_id=order["id"])
+
+    first_confirm = client.post(f"/api/v1/orders/{order['id']}/confirm-result")
+    assert first_confirm.status_code == 200
+
+    settlement_start = client.post(f"/api/v1/settlement/orders/{order['id']}/start")
+    assert settlement_start.status_code == 200
+
+    repeated_confirm = client.post(f"/api/v1/orders/{order['id']}/confirm-result")
+    assert repeated_confirm.status_code == 409
+    assert repeated_confirm.json()["detail"] == "Order result confirmation already finalized for settlement"

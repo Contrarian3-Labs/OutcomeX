@@ -14,11 +14,13 @@ class OrderCreateRequest(BaseModel):
     quoted_amount_cents: int = Field(gt=0)
     input_files: list[str] = Field(default_factory=list)
     execution_strategy: ExecutionStrategy = ExecutionStrategy.QUALITY
+    selected_plan_id: str | None = None
 
 
 class OrderResponse(BaseModel):
     id: str
     onchain_order_id: str | None
+    onchain_machine_id: str | None
     create_order_tx_hash: str | None
     create_order_event_id: str | None
     create_order_block_number: int | None
@@ -47,7 +49,19 @@ class ResultConfirmResponse(BaseModel):
     order_id: str
     state: OrderState
     settlement_state: SettlementState
-    result_confirmed_at: datetime
+    result_confirmed_at: datetime | None = None
+    mode: str | None = None
+    tx_hash: str | None = None
+    chain_id: int | None = None
+    contract_address: str | None = None
+    contract_name: str | None = None
+    method_name: str | None = None
+    submit_payload: dict | None = None
+    calldata: str | None = None
+
+
+class ResultReadyRequest(BaseModel):
+    valid_preview: bool = True
 
 
 class ResultReadyResponse(BaseModel):
@@ -56,3 +70,25 @@ class ResultReadyResponse(BaseModel):
     execution_state: ExecutionState
     preview_state: PreviewState
 
+
+class OrderAvailableActionsResponse(BaseModel):
+    order_id: str
+    preview_valid: bool | None
+    can_confirm_result: bool
+    can_reject_valid_preview: bool
+    can_refund_failed_or_no_valid_preview: bool
+    can_claim_refund: bool
+
+
+class OrderSettlementActionResponse(BaseModel):
+    order_id: str
+    state: OrderState
+    settlement_state: SettlementState
+    mode: str | None = None
+    tx_hash: str | None
+    chain_id: int | None = None
+    contract_address: str | None = None
+    contract_name: str | None
+    method_name: str | None
+    submit_payload: dict | None = None
+    calldata: str | None = None

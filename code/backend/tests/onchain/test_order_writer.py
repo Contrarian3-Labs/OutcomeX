@@ -10,6 +10,7 @@ def _build_order() -> Order:
     order = Order(
         id="order-1",
         onchain_order_id="chain-order-1",
+        onchain_machine_id="7",
         user_id="user-1",
         machine_id="machine-1",
         chat_session_id="chat-1",
@@ -80,9 +81,9 @@ def test_create_order_and_mark_paid_uses_create_paid_router_method() -> None:
     assert write_result.contract_name == "OrderPaymentRouter"
     assert write_result.method_name == "createPaidOrderByAdapter"
     assert write_result.payload["buyer"] == "0x1111111111111111111111111111111111111111"
-    assert write_result.payload["machine_id"] == "machine-1"
+    assert write_result.payload["machine_id"] == "7"
     assert write_result.payload["amount"] == 1000
-    assert write_result.payload["payment_token_address"] == "0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e"
+    assert write_result.payload["payment_token_address"] == "0x79aec4eea31d50792f61d1ca0733c18c89524c9e"
     assert "order_id" not in write_result.payload
 
 
@@ -123,7 +124,7 @@ def test_create_order_uses_per_order_idempotency_scope() -> None:
     second = writer.create_order(order_b)
 
     assert first.payload == second.payload
-    assert first.payload["machine_id"] == "machine-1"
+    assert first.payload["machine_id"] == "7"
     assert first.payload["gross_amount"] == 1000
     assert first.idempotency_key != second.idempotency_key
     assert first.tx_hash != second.tx_hash
@@ -147,7 +148,7 @@ def test_writer_builds_direct_payment_call_spec() -> None:
     assert intent.contract_name == "OrderPaymentRouter"
     assert intent.method_name == "createOrderAndPayWithUSDC"
     assert intent.payload["client_order_id"] == "order-1"
-    assert intent.payload["machine_id"] == "machine-1"
+    assert intent.payload["machine_id"] == "7"
     assert "order_id" not in intent.payload
     assert intent.payload["signing_standard"] == "eip3009"
     assert intent.payload["currency"] == "USDC"

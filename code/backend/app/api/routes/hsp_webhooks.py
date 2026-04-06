@@ -58,10 +58,11 @@ async def ingest_hsp_webhook(
             "duplicate": True,
         }
 
-    payment.callback_event_id = event.event_id
-    payment.callback_state = event.status
-    payment.callback_received_at = utc_now()
-    payment.callback_tx_hash = event.tx_hash
+    if event.amount_cents != payment.amount_cents:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="HSP webhook amount mismatch")
+    if event.currency != payment.currency.upper():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="HSP webhook currency mismatch")
+
     mapped_state = _map_hsp_status(event.status)
     if mapped_state == PaymentState.SUCCEEDED:
         order = db.get(Order, payment.order_id)
@@ -84,6 +85,11 @@ async def ingest_hsp_webhook(
             _backfill_order_chain_anchor_from_receipt(order, create_paid_receipt)
             db.add(order)
     _apply_payment_state(payment, state=mapped_state, db=db, order_writer=order_writer, write_chain=False)
+    payment.callback_event_id = event.event_id
+    payment.callback_state = event.status
+    payment.callback_received_at = utc_now()
+    payment.callback_tx_hash = event.tx_hash
+    db.add(payment)
     db.commit()
     return {
         "payment_id": payment.id,

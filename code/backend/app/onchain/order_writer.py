@@ -7,7 +7,7 @@ import hashlib
 import json
 from typing import Any
 
-from app.domain.models import Order, Payment, SettlementRecord
+from app.domain.models import Machine, Order, Payment, SettlementRecord
 from app.onchain.contracts_registry import ContractsRegistry
 
 
@@ -29,7 +29,7 @@ class OrderWriter:
 
     def create_order(self, order: Order) -> OrderWriteResult:
         payload = {
-            "machine_id": order.machine_id,
+            "machine_id": self._chain_machine_id(order),
             "gross_amount": order.quoted_amount_cents,
         }
         return self._submit(
@@ -57,7 +57,7 @@ class OrderWriter:
         currency = payment.currency.upper()
         payload = {
             "buyer": buyer_wallet_address.lower(),
-            "machine_id": order.machine_id,
+            "machine_id": self._chain_machine_id(order),
             "amount": payment.amount_cents,
             "payment_token_address": self._contracts_registry.payment_token(currency),
         }
@@ -83,7 +83,7 @@ class OrderWriter:
             signing_standard = "eip3009"
             payload = {
                 "client_order_id": order.id,
-                "machine_id": order.machine_id,
+                "machine_id": self._chain_machine_id(order),
                 "payment_id": payment.id,
                 "gross_amount_cents": order.quoted_amount_cents,
                 "currency": currency,
@@ -95,7 +95,7 @@ class OrderWriter:
             signing_standard = "permit2"
             payload = {
                 "client_order_id": order.id,
-                "machine_id": order.machine_id,
+                "machine_id": self._chain_machine_id(order),
                 "payment_id": payment.id,
                 "gross_amount_cents": order.quoted_amount_cents,
                 "currency": currency,
@@ -108,7 +108,7 @@ class OrderWriter:
             method_name = "createOrderAndPayWithPWR"
             payload = {
                 "client_order_id": order.id,
-                "machine_id": order.machine_id,
+                "machine_id": self._chain_machine_id(order),
                 "payment_id": payment.id,
                 "gross_amount_cents": order.quoted_amount_cents,
                 "currency": "PWR",
@@ -123,21 +123,75 @@ class OrderWriter:
 
         return self._submit_to_target(self._contracts_registry.payment_router(), method_name, payload)
 
-    def mark_preview_ready(self, order: Order) -> OrderWriteResult:
+    def mark_preview_ready(self, order: Order, *, valid_preview: bool = True) -> OrderWriteResult:
         payload = {
             "order_id": self._chain_order_id(order),
-            "preview_state": order.preview_state.value,
-            "execution_state": order.execution_state.value,
+            "valid_preview": valid_preview,
         }
         return self._submit("markPreviewReady", payload)
 
     def confirm_result(self, order: Order) -> OrderWriteResult:
         payload = {
             "order_id": self._chain_order_id(order),
-            "result_confirmed_at": order.result_confirmed_at.isoformat() if order.result_confirmed_at else None,
-            "settlement_state": order.settlement_state.value,
         }
         return self._submit("confirmResult", payload)
+
+    def reject_valid_preview(self, order: Order) -> OrderWriteResult:
+        payload = {
+            "order_id": self._chain_order_id(order),
+        }
+        return self._submit("rejectValidPreview", payload)
+
+    def claim_machine_revenue(self, machine: Machine) -> OrderWriteResult:
+        payload = {
+            "machine_id": self._chain_machine_id_from_machine(machine),
+        }
+        return self._submit_to_target(
+            self._contracts_registry.revenue_vault(),
+            "claimMachineRevenue",
+            payload,
+            idempotency_scope={"machine_id": machine.id, "owner_user_id": machine.owner_user_id},
+        )
+
+    def claim_refund(self, *, currency: str, user_id: str, order_id: str) -> OrderWriteResult:
+        payload = {
+            "payment_token_address": self._contracts_registry.payment_token(currency),
+        }
+        return self._submit_to_target(
+            self._contracts_registry.settlement_controller(),
+            "claimRefund",
+            payload,
+            idempotency_scope={"user_id": user_id, "currency": currency.upper(), "order_id": order_id},
+        )
+
+    def claim_platform_revenue(self, *, currency: str) -> OrderWriteResult:
+        payload = {
+            "payment_token_address": self._contracts_registry.payment_token(currency),
+        }
+        return self._submit_to_target(
+            self._contracts_registry.settlement_controller(),
+            "claimPlatformRevenue",
+            payload,
+            idempotency_scope={"currency": currency.upper()},
+        )
+
+    def mint_machine(self, *, owner_wallet_address: str, token_uri: str, owner_user_id: str) -> OrderWriteResult:
+        payload = {
+            "to": owner_wallet_address.lower(),
+            "uri": token_uri,
+        }
+        return self._submit_to_target(
+            self._contracts_registry.machine_asset(),
+            "mintMachine",
+            payload,
+            idempotency_scope={"owner_user_id": owner_user_id, "token_uri": token_uri},
+        )
+
+    def refund_failed_or_no_valid_preview(self, order: Order) -> OrderWriteResult:
+        payload = {
+            "order_id": self._chain_order_id(order),
+        }
+        return self._submit("refundFailedOrNoValidPreview", payload)
 
     def settle_order(self, order: Order, settlement: SettlementRecord) -> OrderWriteResult:
         payload = {
@@ -206,6 +260,14 @@ class OrderWriter:
     @staticmethod
     def _chain_order_id(order: Order) -> str:
         return order.onchain_order_id or order.id
+
+    @staticmethod
+    def _chain_machine_id(order: Order) -> str:
+        return order.onchain_machine_id or order.machine_id
+
+    @staticmethod
+    def _chain_machine_id_from_machine(machine: Machine) -> str:
+        return machine.onchain_machine_id or machine.id
 
 
 @lru_cache

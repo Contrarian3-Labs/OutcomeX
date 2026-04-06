@@ -32,6 +32,18 @@ def _create_machine(client: TestClient) -> dict:
 
 def test_order_creation_persists_thin_execution_request(client: TestClient) -> None:
     machine = _create_machine(client)
+    plan_response = client.post(
+        "/api/v1/chat/plans",
+        json={
+            "user_id": "user-1",
+            "chat_session_id": "chat-1",
+            "user_message": "Summarize this process",
+        },
+    )
+    assert plan_response.status_code == 200
+    selected_plan = next(
+        plan for plan in plan_response.json()["recommended_plans"] if plan["strategy"] == "efficiency"
+    )
     response = client.post(
         "/api/v1/orders",
         json={
@@ -40,8 +52,8 @@ def test_order_creation_persists_thin_execution_request(client: TestClient) -> N
             "chat_session_id": "chat-1",
             "user_prompt": "Summarize this process",
             "quoted_amount_cents": 1000,
+            "selected_plan_id": selected_plan["plan_id"],
             "input_files": ["brief.md", "diagram.png"],
-            "execution_strategy": "efficiency",
         },
     )
     assert response.status_code == 201
@@ -54,6 +66,9 @@ def test_order_creation_persists_thin_execution_request(client: TestClient) -> N
     }
     assert payload["execution_metadata"]["gateway"] == "outcomex_agentskillos_thin.v1"
     assert payload["execution_metadata"]["submission_status"] == "draft"
+    assert payload["execution_metadata"]["selected_plan_id"] == selected_plan["plan_id"]
+    assert payload["execution_metadata"]["selected_plan_strategy"] == "efficiency"
+    assert payload["execution_metadata"]["selected_native_plan_index"] == 1
 
     fetch_response = client.get(f"/api/v1/orders/{payload['id']}")
     assert fetch_response.status_code == 200

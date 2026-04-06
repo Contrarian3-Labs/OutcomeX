@@ -301,3 +301,63 @@ def test_hsp_webhook_rejects_unresolved_buyer_wallet(
     assert spy_writer.create_and_mark_paid_calls == []
     assert spy_broadcaster.create_paid_calls == []
     assert spy_sender.calls == []
+
+
+def test_hsp_payment_intent_requires_exact_quote_and_single_active_intent(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
+) -> None:
+    test_client, _spy_writer, _spy_broadcaster, _spy_sender = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine_id=machine["id"], quoted_amount_cents=500)
+
+    mismatch = test_client.post(
+        f"/api/v1/payments/orders/{order['id']}/intent",
+        json={"amount_cents": 400, "currency": "usdc"},
+    )
+    assert mismatch.status_code == 409
+    assert mismatch.json()["detail"] == "HSP payment amount must match quoted order amount"
+
+    first = _create_payment_intent(test_client, order_id=order["id"], amount_cents=500)
+    second = test_client.post(
+        f"/api/v1/payments/orders/{order['id']}/intent",
+        json={"amount_cents": 500, "currency": "usdc"},
+    )
+    assert second.status_code == 409
+    assert second.json()["detail"] == "An active HSP payment already exists for this order"
+    assert first["payment_id"]
+
+
+def test_hsp_webhook_rejects_terminal_state_downgrade_after_success(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
+) -> None:
+    test_client, _spy_writer, _spy_broadcaster, _spy_sender = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine_id=machine["id"])
+    payment = _create_payment_intent(test_client, order_id=order["id"])
+
+    success_payload = {
+        "event_id": "evt_success",
+        "merchant_order_id": payment["merchant_order_id"],
+        "flow_id": payment["flow_id"],
+        "status": "completed",
+        "amount_cents": 500,
+        "currency": "USDC",
+        "tx_hash": "0xok",
+    }
+    success_body, success_headers = _sign_payload(success_payload)
+    success_response = test_client.post("/api/v1/payments/hsp/webhooks", content=success_body, headers=success_headers)
+    assert success_response.status_code == 200
+
+    failed_payload = {
+        "event_id": "evt_failed_late",
+        "merchant_order_id": payment["merchant_order_id"],
+        "flow_id": payment["flow_id"],
+        "status": "failed",
+        "amount_cents": 500,
+        "currency": "USDC",
+        "tx_hash": "0xfail",
+    }
+    failed_body, failed_headers = _sign_payload(failed_payload)
+    failed_response = test_client.post("/api/v1/payments/hsp/webhooks", content=failed_body, headers=failed_headers)
+    assert failed_response.status_code == 409
+    assert failed_response.json()["detail"] == "Payment is already in terminal state"

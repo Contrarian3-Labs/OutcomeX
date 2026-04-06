@@ -33,6 +33,7 @@ mode = sys.argv[6]
 skill_group = sys.argv[7]
 files = json.loads(sys.argv[8])
 execution_strategy = sys.argv[9]
+selected_plan_index = int(sys.argv[10])
 
 sys.path.insert(0, str(repo_root))
 sys.path.insert(0, str(repo_root / "src"))
@@ -40,8 +41,11 @@ sys.path.insert(0, str(repo_root / "src"))
 import config
 config.Config.reset()
 from constants import resolve_skill_group
+from orchestrator.registry import create_engine
+from orchestrator.visualizers import NullVisualizer
+from workflow.anchor_policy import TaskAnchorIntent, infer_required_skills, merge_skills
 from workflow.models import TaskRequest
-from workflow.service import run_task
+from workflow.service import discover_skills, run_task
 
 
 def utc_now():
@@ -79,6 +83,59 @@ def choose_preview(artifacts):
     return [artifact for artifact in artifacts if artifact["type"] in preferred][:5]
 
 
+def default_plan_index(strategy: str) -> int:
+    if strategy == "efficiency":
+        return 1
+    if strategy == "simplicity":
+        return 2
+    return 0
+
+
+async def execute_with_selected_native_plan():
+    required_skills = infer_required_skills(
+        TaskAnchorIntent(task=task_prompt, files=list(files or []), required_skills=[])
+    )
+    discovered_skills = discover_skills(task_prompt, skill_group=skill_group)
+    skills = merge_skills(required_skills=required_skills, discovered_skills=discovered_skills)
+    skill_group_cfg = resolve_skill_group(skill_group)
+    engine = create_engine(mode, run_context=None, skill_dir=skill_group_cfg["skills_dir"], allowed_tools=None)
+    request = TaskRequest(
+        task=task_prompt,
+        mode=mode,
+        skill_group=skill_group,
+        files=files or None,
+        base_dir=str(base_dir),
+        task_id=external_order_id,
+    )
+    if mode != "dag":
+        await run_task(request)
+        return skills, None
+
+    from orchestrator.runtime.run_context import RunContext
+
+    run_context = RunContext.create(
+        task=task_prompt,
+        mode=mode,
+        task_id=external_order_id,
+        base_dir=str(base_dir),
+    )
+    engine = create_engine(mode, run_context=run_context, skill_dir=skill_group_cfg["skills_dir"], allowed_tools=None)
+    visualizer = NullVisualizer(
+        auto_select_plan=selected_plan_index if selected_plan_index >= 0 else default_plan_index(execution_strategy)
+    )
+    result = await engine.run_with_visualizer(
+        task=task_prompt,
+        skill_names=skills,
+        visualizer=visualizer,
+        files=list(files or []) or None,
+    )
+    plan_payload = None
+    plan_path = run_context.run_dir / "plan.json"
+    if plan_path.exists():
+        plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    return skills, plan_payload
+
+
 async def main():
     initial = json.loads(record_path.read_text(encoding="utf-8"))
     initial["status"] = "running"
@@ -88,17 +145,8 @@ async def main():
     before_dirs = {p.name for p in base_dir.iterdir()} if base_dir.exists() else set()
     base_dir.mkdir(parents=True, exist_ok=True)
 
-    request = TaskRequest(
-        task=task_prompt,
-        mode=mode,
-        skill_group=skill_group,
-        files=files or None,
-        base_dir=str(base_dir),
-        task_id=external_order_id,
-    )
-
     try:
-        await run_task(request)
+        discovered_skills, selected_plan = await execute_with_selected_native_plan()
     except Exception as exc:
         failed = dict(initial)
         failed["status"] = "failed"
@@ -139,7 +187,7 @@ async def main():
             "skill_path": str((skills_dir / skill_id).resolve()),
             "status": "selected",
         }
-        for skill_id in meta.get("skills", [])
+        for skill_id in meta.get("skills", discovered_skills or [])
     ]
 
     llm_model = os.getenv("LLM_MODEL") or os.getenv("OPENAI_MODEL") or os.getenv("ANTHROPIC_MODEL") or ""
@@ -163,17 +211,21 @@ async def main():
         "total_skills_used": len(skills),
     }
 
+    submission_payload = {
+        "intent": task_prompt,
+        "files": files,
+        "execution_strategy": execution_strategy,
+    }
+    if selected_plan_index >= 0:
+        submission_payload["selected_plan_index"] = selected_plan_index
+
     final = dict(initial)
     final.update(
         {
             "status": "succeeded" if result.get("status") == "completed" else "failed",
             "run_dir": str(run_dir),
             "workspace_path": str(workspace_dir),
-            "submission_payload": {
-                "intent": task_prompt,
-                "files": files,
-                "execution_strategy": execution_strategy,
-            },
+            "submission_payload": submission_payload,
             "artifact_manifest": artifacts,
             "preview_manifest": choose_preview(artifacts),
             "skills_manifest": skills,
@@ -183,6 +235,8 @@ async def main():
             "finished_at": utc_now(),
         }
     )
+    if selected_plan is not None:
+        final["selected_plan"] = selected_plan
     write_record(final)
 
 
@@ -229,6 +283,7 @@ class AgentSkillOSExecutionService:
         prompt: str,
         input_files: tuple[str, ...] = (),
         execution_strategy: ExecutionStrategy = ExecutionStrategy.QUALITY,
+        selected_plan_index: int | None = None,
     ) -> ExecutionRunSnapshot:
         repo_root = self._bridge.resolve_repo_root()
         if repo_root is None:
@@ -242,16 +297,19 @@ class AgentSkillOSExecutionService:
         record_path = service_run_dir / "run.json"
         agentskillos_runs_root = service_run_dir / "agentskillos-runs"
         service_run_dir.mkdir(parents=True, exist_ok=True)
+        submission_payload = {
+            "intent": prompt,
+            "files": list(input_files),
+            "execution_strategy": execution_strategy.value,
+        }
+        if selected_plan_index is not None:
+            submission_payload["selected_plan_index"] = selected_plan_index
         initial_payload = {
             "run_id": run_id,
             "external_order_id": external_order_id,
             "status": ExecutionRunStatus.QUEUED.value,
             "record_path": str(record_path),
-            "submission_payload": {
-                "intent": prompt,
-                "files": list(input_files),
-                "execution_strategy": execution_strategy.value,
-            },
+            "submission_payload": submission_payload,
             "workspace_path": None,
             "run_dir": None,
             "preview_manifest": [],
@@ -280,6 +338,7 @@ class AgentSkillOSExecutionService:
             self._settings.agentskillos_skill_group,
             json.dumps(list(input_files)),
             execution_strategy.value,
+            str(selected_plan_index if selected_plan_index is not None else -1),
         ]
         process_id = self._launcher(
             command,

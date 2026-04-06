@@ -31,3 +31,17 @@ class RevenueEntryResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
+
+class MachineRevenueClaimResponse(BaseModel):
+    machine_id: str
+    onchain_machine_id: str
+    claimant_user_id: str
+    tx_hash: str | None = None
+    mode: str | None = None
+    chain_id: int | None = None
+    contract_address: str | None = None
+    contract_name: str | None = None
+    method_name: str | None = None
+    submit_payload: dict | None = None
+    calldata: str | None = None
+

@@ -177,6 +177,9 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
         require(buyer != address(0), "ZERO_BUYER");
         require(paymentToken != address(0), "ZERO_TOKEN");
 
+        bool success = IERC20Like(paymentToken).transferFrom(msg.sender, _settlementEscrow(), amount);
+        require(success, "ADAPTER_TRANSFER_FAILED");
+
         orderId = orderBook.createOrderForBuyer(buyer, machineId, amount);
         bool dividendEligible = _validateOrderForPayment(orderId, amount, buyer);
         _markOrderPaid(orderId, amount, paymentToken, PAYMENT_SOURCE_HSP, dividendEligible, buyer);

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.domain.models import Machine, utc_now
@@ -34,7 +35,9 @@ class MachineOwnershipProjectionIntegrator:
         chain_owner: str,
         event_id: str,
     ) -> MachineOwnershipProjectionResult:
-        machine = db.get(Machine, machine_id)
+        machine = db.query(Machine).filter(
+            or_(Machine.id == machine_id, Machine.onchain_machine_id == machine_id)
+        ).first()
         if machine is None:
             return MachineOwnershipProjectionResult(
                 applied=False,
@@ -64,6 +67,6 @@ class MachineOwnershipProjectionIntegrator:
 
         return MachineOwnershipProjectionResult(
             applied=True,
-            machine_id=machine.id,
+            machine_id=machine_id,
             owner_user_id=machine.owner_user_id,
         )

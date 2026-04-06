@@ -19,3 +19,33 @@ class SettlementStartResponse(BaseModel):
     state: SettlementState
     created_at: datetime
 
+
+class PlatformRevenueClaimRequest(BaseModel):
+    currency: str
+
+
+class RefundClaimResponse(BaseModel):
+    order_id: str
+    claimant_user_id: str
+    currency: str
+    tx_hash: str | None = None
+    mode: str | None = None
+    chain_id: int | None = None
+    contract_address: str | None = None
+    contract_name: str | None = None
+    method_name: str | None = None
+    submit_payload: dict | None = None
+    calldata: str | None = None
+
+
+class PlatformRevenueClaimResponse(BaseModel):
+    currency: str
+    tx_hash: str | None = None
+    mode: str | None = None
+    chain_id: int | None = None
+    contract_address: str | None = None
+    contract_name: str | None = None
+    method_name: str | None = None
+    submit_payload: dict | None = None
+    calldata: str | None = None
+

@@ -74,5 +74,8 @@ def _normalize_address(value: str | None) -> str | None:
 def get_receipt_reader() -> ReceiptReader:
     settings = get_settings()
     if settings.onchain_rpc_url:
-        return JsonRpcReceiptReader(rpc_url=settings.onchain_rpc_url)
+        return JsonRpcReceiptReader(
+            rpc_url=settings.onchain_rpc_url,
+            timeout_seconds=settings.onchain_receipt_timeout_seconds,
+        )
     return NullReceiptReader()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -21,6 +22,7 @@ from .contracts import (
     IntentRequest,
 )
 
+
 @dataclass(frozen=True)
 class ExecutionPlan:
     """Thin submission contract from OutcomeX into AgentSkillOS."""
@@ -38,6 +40,7 @@ class ExecutionDispatchResult:
     run_id: str | None = None
     run_status: ExecutionRunDispatchStatus | None = None
     details: dict[str, str] = field(default_factory=dict)
+    selected_plan: dict | None = None
 
 
 class ExecutionService(Protocol):
@@ -92,30 +95,49 @@ class ExecutionEngineService:
                 details={"reason": admission.reason},
             )
 
-        submitted_run = self._execution_service.submit_task(
-            external_order_id=intent.intent_id,
-            prompt=intent.prompt,
-            input_files=intent.input_files,
-            execution_strategy=intent.execution_strategy,
-        )
+        selected_plan_index = None
+        if intent.context.get("selected_native_plan_index"):
+            selected_plan_index = int(intent.context["selected_native_plan_index"])
+
+        submit_kwargs = {
+            "external_order_id": intent.intent_id,
+            "prompt": intent.prompt,
+            "input_files": intent.input_files,
+            "execution_strategy": intent.execution_strategy,
+        }
+        if selected_plan_index is not None and self._supports_selected_plan_index():
+            submit_kwargs["selected_plan_index"] = selected_plan_index
+
+        submitted_run = self._execution_service.submit_task(**submit_kwargs)
         accepted = submitted_run.status in {
             ExecutionRunStatus.QUEUED,
             ExecutionRunStatus.PLANNING,
             ExecutionRunStatus.RUNNING,
             ExecutionRunStatus.SUCCEEDED,
         }
+        details = {
+            "gateway": str(plan.metadata["gateway"]),
+            "run_id": submitted_run.run_id,
+            "run_status": submitted_run.status.value,
+            "execution_strategy": intent.execution_strategy.value,
+        }
+        if selected_plan_index is not None:
+            details["selected_plan_index"] = str(selected_plan_index)
         return ExecutionDispatchResult(
             accepted=accepted,
             admission=admission,
             run_id=submitted_run.run_id,
             run_status=ExecutionRunDispatchStatus(submitted_run.status.value),
-            details={
-                "gateway": plan.metadata["gateway"],
-                "run_id": submitted_run.run_id,
-                "run_status": submitted_run.status.value,
-                "execution_strategy": intent.execution_strategy.value,
-            },
+            details=details,
+            selected_plan=getattr(submitted_run, "selected_plan", None),
         )
+
+    def _supports_selected_plan_index(self) -> bool:
+        try:
+            signature = inspect.signature(self._execution_service.submit_task)
+        except (TypeError, ValueError):
+            return False
+        return "selected_plan_index" in signature.parameters
 
     @staticmethod
     def _estimate_workload(intent: IntentRequest) -> WorkloadSpec:

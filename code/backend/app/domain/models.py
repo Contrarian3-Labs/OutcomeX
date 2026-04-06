@@ -26,6 +26,7 @@ class Machine(Base):
     __tablename__ = "machines"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    onchain_machine_id: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
     display_name: Mapped[str] = mapped_column(String(128))
     owner_user_id: Mapped[str] = mapped_column(String(64), index=True)
     ownership_source: Mapped[str] = mapped_column(String(32), default="bootstrap", nullable=False)
@@ -53,6 +54,7 @@ class Order(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     onchain_order_id: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
+    onchain_machine_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     create_order_tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     create_order_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     create_order_block_number: Mapped[int | None] = mapped_column(Integer, nullable=True)

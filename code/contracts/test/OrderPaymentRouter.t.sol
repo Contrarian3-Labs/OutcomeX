@@ -7,62 +7,11 @@ import {OrderPaymentRouter} from "../src/OrderPaymentRouter.sol";
 import {PWRToken} from "../src/PWRToken.sol";
 import {RevenueVault} from "../src/RevenueVault.sol";
 import {SettlementController} from "../src/SettlementController.sol";
-import {SimpleERC20} from "../src/common/SimpleERC20.sol";
-import {IPermit2} from "../src/interfaces/IPermit2.sol";
+import {MockPermit2} from "../src/mocks/MockPermit2.sol";
+import {MockUSDCWithAuthorization} from "../src/mocks/MockUSDCWithAuthorization.sol";
+import {MockUSDT} from "../src/mocks/MockUSDT.sol";
 import {OrderRecord, OrderStatus} from "../src/types/OutcomeXTypes.sol";
 import {TestBase} from "./utils/TestBase.sol";
-
-contract MockUSDCWithAuthorization is SimpleERC20 {
-    mapping(address => mapping(bytes32 => bool)) public authorizationUsed;
-
-    constructor() SimpleERC20("USD Coin", "USDC", 6) {}
-
-    function mint(address to, uint256 amount) external {
-        _mint(to, amount);
-    }
-
-    function receiveWithAuthorization(
-        address from,
-        address to,
-        uint256 value,
-        uint256 validAfter,
-        uint256 validBefore,
-        bytes32 nonce,
-        uint8,
-        bytes32,
-        bytes32
-    ) external {
-        require(block.timestamp >= validAfter, "AUTH_NOT_YET_VALID");
-        require(block.timestamp <= validBefore, "AUTH_EXPIRED");
-        require(!authorizationUsed[from][nonce], "AUTH_ALREADY_USED");
-        authorizationUsed[from][nonce] = true;
-        _transfer(from, to, value);
-    }
-}
-
-contract MockUSDT is SimpleERC20 {
-    constructor() SimpleERC20("Tether", "USDT", 6) {}
-
-    function mint(address to, uint256 amount) external {
-        _mint(to, amount);
-    }
-}
-
-contract MockPermit2 is IPermit2 {
-    function permitTransferFrom(
-        PermitTransferFrom calldata permit,
-        SignatureTransferDetails calldata transferDetails,
-        address owner,
-        bytes calldata signature
-    ) external {
-        require(signature.length > 0, "EMPTY_SIGNATURE");
-        require(block.timestamp <= permit.deadline, "PERMIT_EXPIRED");
-        require(transferDetails.requestedAmount <= permit.permitted.amount, "AMOUNT_EXCEEDS_PERMIT");
-        bool success =
-            SimpleERC20(permit.permitted.token).transferFrom(owner, transferDetails.to, transferDetails.requestedAmount);
-        require(success, "TRANSFER_FAILED");
-    }
-}
 
 contract OrderPaymentRouterTest is TestBase {
     address internal constant ADMIN = address(0xA11CE);
@@ -95,6 +44,8 @@ contract OrderPaymentRouterTest is TestBase {
 
         vm.startPrank(ADMIN);
         pwr.setMinter(address(revenueVault), true);
+        usdc.mint(ADMIN, 5_000_000);
+        usdt.mint(ADMIN, 5_000_000);
         usdc.mint(BUYER, 5_000_000);
         usdt.mint(BUYER, 5_000_000);
         revenueVault.setSettlementController(address(settlement));
@@ -177,13 +128,18 @@ contract OrderPaymentRouterTest is TestBase {
     }
 
     function testCreatePaidOrderByAdapterBlocksTransferImmediately() public {
-        vm.prank(ADMIN);
+        uint256 adminBalanceBefore = usdc.balanceOf(ADMIN);
+        vm.startPrank(ADMIN);
+        usdc.approve(address(router), 1_000_000);
         uint256 orderId = router.createPaidOrderByAdapter(BUYER, machineId, 1_000_000, address(usdc));
+        vm.stopPrank();
 
         OrderRecord memory order = orderBook.getOrder(orderId);
         assertEq(order.buyer, BUYER, "buyer should match adapter input");
         assertEq(uint256(order.status), uint256(OrderStatus.Paid), "order should be paid");
         assertEq(orderBook.activeTaskCountByMachine(machineId), 1, "active task should be tracked");
+        assertEq(usdc.balanceOf(address(settlement)), 1_000_000, "settlement should escrow adapter funds");
+        assertEq(usdc.balanceOf(ADMIN), adminBalanceBefore - 1_000_000, "adapter caller should fund escrow");
 
         (bool canTransfer, bytes32 reason) = orderBook.canTransfer(machineId, MACHINE_OWNER, address(0xDEAD));
         assertTrue(!canTransfer, "transfer should be blocked");
@@ -196,6 +152,13 @@ contract OrderPaymentRouterTest is TestBase {
             )
         );
         machineAsset.transferFrom(MACHINE_OWNER, address(0xDEAD), machineId);
+        vm.stopPrank();
+    }
+
+    function testCreatePaidOrderByAdapterRequiresEscrowApproval() public {
+        vm.startPrank(ADMIN);
+        vm.expectRevert(abi.encodeWithSelector(bytes4(keccak256("InsufficientAllowance(uint256,uint256)")), 0, 1_000_000));
+        router.createPaidOrderByAdapter(BUYER, machineId, 1_000_000, address(usdc));
         vm.stopPrank();
     }
 

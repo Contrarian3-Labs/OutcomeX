@@ -43,6 +43,7 @@ def test_machine_ownership_integrator_applies_projected_owner_truth() -> None:
         machine = Machine(
             display_name="GANA node",
             owner_user_id="owner-1",
+            onchain_machine_id="88",
             pending_transfer_new_owner_user_id="owner-2",
             pending_transfer_keep_previous_setup=False,
         )
@@ -58,13 +59,13 @@ def test_machine_ownership_integrator_applies_projected_owner_truth() -> None:
 
         outcome = integrator.apply_machine_owner_projection(
             db=db,
-            machine_id=machine.id,
+            machine_id="88",
             chain_owner="0x2222222222222222222222222222222222222222",
             event_id="177:12:0xowner:1",
         )
 
         assert outcome.applied is True
-        assert outcome.machine_id == machine.id
+        assert outcome.machine_id == "88"
         assert outcome.owner_user_id == "owner-2"
 
         db.refresh(machine)

@@ -44,6 +44,7 @@ def test_execution_service_submit_and_poll_reads_run_record(tmp_path: Path) -> N
         record_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         assert cwd == str(repo_root)
         assert env["LLM_MODEL"] == "openai/qwen3.6-plus"
+        assert command[-1] == "2"
         return 4242
 
     service = AgentSkillOSExecutionService(
@@ -59,6 +60,7 @@ def test_execution_service_submit_and_poll_reads_run_record(tmp_path: Path) -> N
         prompt="Create report",
         input_files=("brief.md",),
         execution_strategy=ExecutionStrategy.SIMPLICITY,
+        selected_plan_index=2,
     )
     assert submitted.run_id.startswith("aso-run-")
     assert submitted.status.value == "succeeded"
@@ -67,6 +69,7 @@ def test_execution_service_submit_and_poll_reads_run_record(tmp_path: Path) -> N
         "intent": "Create report",
         "files": ["brief.md"],
         "execution_strategy": "simplicity",
+        "selected_plan_index": 2,
     }
 
     snapshot = service.get_run(submitted.run_id)

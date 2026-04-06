@@ -6,10 +6,29 @@ from typing import Any, Protocol
 import httpx
 
 from app.core.config import get_settings
-from app.onchain.contracts_registry import ContractsRegistry
 from app.onchain.order_writer import OrderWriteResult
 
 CREATE_PAID_ORDER_SELECTOR = "0xcaf5331f"
+MARK_PREVIEW_READY_SELECTOR = "0x9bd0cb73"
+CONFIRM_RESULT_SELECTOR = "0xeb05cf51"
+REJECT_VALID_PREVIEW_SELECTOR = "0xd5518ff7"
+REFUND_FAILED_OR_NO_VALID_PREVIEW_SELECTOR = "0x8d38c3df"
+MINT_MACHINE_SELECTOR = "0xcafa2ed4"
+CLAIM_MACHINE_REVENUE_SELECTOR = "0x379607f5"
+CLAIM_REFUND_SELECTOR = "0xbffa55d5"
+CLAIM_PLATFORM_REVENUE_SELECTOR = "0x23037e0c"
+
+SUPPORTED_METHODS = {
+    "createPaidOrderByAdapter",
+    "markPreviewReady",
+    "confirmResult",
+    "rejectValidPreview",
+    "refundFailedOrNoValidPreview",
+    "mintMachine",
+    "claimMachineRevenue",
+    "claimRefund",
+    "claimPlatformRevenue",
+}
 
 
 class TransactionSender(Protocol):
@@ -20,6 +39,15 @@ class TransactionSender(Protocol):
 class NullTransactionSender:
     def send(self, write_result: OrderWriteResult) -> OrderWriteResult:
         return write_result
+
+
+def encode_contract_call(write_result: OrderWriteResult) -> str | None:
+    if write_result.method_name not in SUPPORTED_METHODS:
+        return None
+    return PythonTransactionSender._encode_method_call(
+        method_name=write_result.method_name,
+        payload=write_result.payload,
+    )
 
 
 class JsonRpcClient:
@@ -39,37 +67,56 @@ class JsonRpcClient:
 
 
 class PythonTransactionSender:
-    """Pure-Python JSON-RPC sender for `createPaidOrderByAdapter`."""
+    """Pure-Python JSON-RPC sender for selected OutcomeX contract methods."""
 
     def __init__(
         self,
         *,
         rpc_url: str,
-        private_key: str,
-        contracts_registry: ContractsRegistry | None = None,
+        private_key: str | None = None,
+        method_private_keys: dict[str, str] | None = None,
+        rpc_timeout_seconds: float = 10.0,
         rpc_client: JsonRpcClient | Any | None = None,
         account_factory=None,
+        contracts_registry: Any | None = None,
     ) -> None:
-        self._private_key = private_key
-        self._contracts_registry = contracts_registry or ContractsRegistry()
-        self._rpc_client = rpc_client or JsonRpcClient(rpc_url=rpc_url)
+        self._default_private_key = (private_key or "").strip() or None
+        self._method_private_keys = {
+            method_name: key.strip()
+            for method_name, key in (method_private_keys or {}).items()
+            if key.strip()
+        }
+        self._rpc_client = rpc_client or JsonRpcClient(
+            rpc_url=rpc_url,
+            timeout_seconds=rpc_timeout_seconds,
+        )
         self._account_factory = account_factory
+        self._contracts_registry = contracts_registry
 
     def send(self, write_result: OrderWriteResult) -> OrderWriteResult:
-        if write_result.method_name != "createPaidOrderByAdapter":
+        method_name = write_result.method_name
+        if method_name not in SUPPORTED_METHODS:
             return write_result
 
-        account = self._build_account()
-        sender_address = str(account.address).lower()
-        target = self._contracts_registry.payment_router().contract_address
-        data = self._encode_create_paid_call(write_result.payload)
-        chain_id = int(self._rpc_client.call("eth_chainId", []), 16)
-        nonce = int(self._rpc_client.call("eth_getTransactionCount", [sender_address, "pending"]), 16)
-        gas_price = int(self._rpc_client.call("eth_gasPrice", []), 16)
+        private_key = self._resolve_private_key(method_name)
+        if private_key is None:
+            return write_result
 
+        data = self._encode_method_call(method_name=method_name, payload=write_result.payload)
+        account = self._build_account(private_key)
+        sender_address = str(account.address)
+        sender_address_normalized = sender_address.lower()
+        chain_id = int(self._rpc_client.call("eth_chainId", []), 16)
+        if write_result.chain_id and write_result.chain_id != chain_id:
+            raise RuntimeError(
+                f"chain_id_mismatch:write={write_result.chain_id},rpc={chain_id}"
+            )
+
+        nonce = int(self._rpc_client.call("eth_getTransactionCount", [sender_address_normalized, "pending"]), 16)
+        gas_price = int(self._rpc_client.call("eth_gasPrice", []), 16)
         tx = {
-            "to": target,
-            "from": sender_address,
+            "to": self._checksum_address(str(write_result.contract_address)),
+            "from": self._checksum_address(sender_address),
             "data": data,
             "nonce": nonce,
             "chainId": chain_id,
@@ -83,14 +130,28 @@ class PythonTransactionSender:
         tx_hash = str(self._rpc_client.call("eth_sendRawTransaction", [raw_tx])).lower()
         return replace(write_result, tx_hash=tx_hash)
 
-    def _build_account(self):
+    def _resolve_private_key(self, method_name: str) -> str | None:
+        method_key = self._method_private_keys.get(method_name)
+        if method_key:
+            return method_key
+        return self._default_private_key
+
+    def _build_account(self, private_key: str):
         if self._account_factory is not None:
-            return self._account_factory(self._private_key)
+            return self._account_factory(private_key)
         try:
             from eth_account import Account
         except ModuleNotFoundError as exc:
             raise RuntimeError("eth-account is required for PythonTransactionSender") from exc
-        return Account.from_key(self._private_key)
+        return Account.from_key(private_key)
+
+    @staticmethod
+    def _checksum_address(value: str) -> str:
+        try:
+            from eth_utils import to_checksum_address
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("eth-utils is required for PythonTransactionSender") from exc
+        return to_checksum_address(value)
 
     @staticmethod
     def _raw_transaction_hex(signed: Any) -> str:
@@ -101,31 +162,110 @@ class PythonTransactionSender:
             raise RuntimeError("signed_transaction_missing_raw_bytes")
         return raw_tx.hex() if hasattr(raw_tx, "hex") else str(raw_tx)
 
-    @staticmethod
-    def _encode_create_paid_call(payload: dict[str, Any]) -> str:
-        encoded = [
-            PythonTransactionSender._encode_address(payload["buyer"]),
-            PythonTransactionSender._encode_uint256(int(payload["machine_id"])),
-            PythonTransactionSender._encode_uint256(int(payload["amount"])),
-            PythonTransactionSender._encode_address(payload["payment_token_address"]),
-        ]
-        return CREATE_PAID_ORDER_SELECTOR + "".join(encoded)
+    @classmethod
+    def _encode_method_call(cls, *, method_name: str, payload: dict[str, Any]) -> str:
+        if method_name == "createPaidOrderByAdapter":
+            encoded = [
+                cls._encode_address(payload["buyer"]),
+                cls._encode_uint256(payload["machine_id"]),
+                cls._encode_uint256(payload["amount"]),
+                cls._encode_address(payload["payment_token_address"]),
+            ]
+            return CREATE_PAID_ORDER_SELECTOR + "".join(encoded)
+        if method_name == "mintMachine":
+            return (
+                MINT_MACHINE_SELECTOR
+                + cls._encode_address(payload["to"])
+                + cls._encode_uint256(64)
+                + cls._encode_string(payload["uri"])
+            )
+        if method_name == "claimMachineRevenue":
+            return CLAIM_MACHINE_REVENUE_SELECTOR + cls._encode_uint256(payload["machine_id"])
+        if method_name == "claimRefund":
+            return CLAIM_REFUND_SELECTOR + cls._encode_address(payload["payment_token_address"])
+        if method_name == "claimPlatformRevenue":
+            return CLAIM_PLATFORM_REVENUE_SELECTOR + cls._encode_address(payload["payment_token_address"])
+
+        order_id = cls._encode_uint256(payload["order_id"])
+        if method_name == "confirmResult":
+            return CONFIRM_RESULT_SELECTOR + order_id
+        if method_name == "rejectValidPreview":
+            return REJECT_VALID_PREVIEW_SELECTOR + order_id
+        if method_name == "refundFailedOrNoValidPreview":
+            return REFUND_FAILED_OR_NO_VALID_PREVIEW_SELECTOR + order_id
+        if method_name == "markPreviewReady":
+            valid_preview = payload.get("valid_preview")
+            if valid_preview is None:
+                valid_preview = (
+                    str(payload.get("preview_state", "")).lower() == "ready"
+                    and str(payload.get("execution_state", "")).lower() == "succeeded"
+                )
+            return MARK_PREVIEW_READY_SELECTOR + order_id + cls._encode_bool(valid_preview)
+        raise RuntimeError(f"unsupported_method_name:{method_name}")
 
     @staticmethod
-    def _encode_uint256(value: int) -> str:
-        return hex(value)[2:].rjust(64, "0")
+    def _encode_uint256(value: int | str) -> str:
+        if isinstance(value, str):
+            stripped = value.strip().lower()
+            if stripped.startswith("0x"):
+                parsed = int(stripped, 16)
+            else:
+                parsed = int(stripped, 10)
+        else:
+            parsed = int(value)
+        if parsed < 0:
+            raise ValueError("uint256_must_be_non_negative")
+        return hex(parsed)[2:].rjust(64, "0")
 
     @staticmethod
     def _encode_address(value: str) -> str:
-        normalized = value.lower().removeprefix("0x")
+        normalized = str(value).strip().lower().removeprefix("0x")
         return normalized.rjust(64, "0")
+
+    @staticmethod
+    def _encode_string(value: str) -> str:
+        encoded = str(value).encode("utf-8").hex()
+        padded = encoded.ljust(((len(encoded) + 63) // 64) * 64, "0")
+        return PythonTransactionSender._encode_uint256(len(str(value).encode("utf-8"))) + padded
+
+    @staticmethod
+    def _encode_bool(value: bool | str | int) -> str:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1"}:
+                parsed = True
+            elif normalized in {"false", "0"}:
+                parsed = False
+            else:
+                raise ValueError(f"invalid_bool:{value}")
+        else:
+            parsed = bool(value)
+        return ("1" if parsed else "0").rjust(64, "0")
 
 
 def get_onchain_transaction_sender() -> TransactionSender:
     settings = get_settings()
-    if settings.onchain_rpc_url and settings.onchain_broadcaster_private_key:
-        return PythonTransactionSender(
-            rpc_url=settings.onchain_rpc_url,
-            private_key=settings.onchain_broadcaster_private_key,
-        )
-    return NullTransactionSender()
+    if not settings.onchain_rpc_url:
+        return NullTransactionSender()
+
+    method_private_keys = {
+        "createPaidOrderByAdapter": settings.onchain_adapter_private_key or settings.onchain_broadcaster_private_key,
+        "markPreviewReady": settings.onchain_machine_owner_private_key,
+        "confirmResult": settings.onchain_buyer_private_key,
+        "rejectValidPreview": settings.onchain_buyer_private_key,
+        "refundFailedOrNoValidPreview": settings.onchain_buyer_private_key,
+        "mintMachine": settings.onchain_broadcaster_private_key,
+        "claimMachineRevenue": settings.onchain_machine_owner_private_key,
+        "claimRefund": settings.onchain_buyer_private_key,
+        "claimPlatformRevenue": settings.onchain_platform_treasury_private_key,
+    }
+    default_private_key = settings.onchain_adapter_private_key or settings.onchain_broadcaster_private_key
+    if not default_private_key and not any(method_private_keys.values()):
+        return NullTransactionSender()
+
+    return PythonTransactionSender(
+        rpc_url=settings.onchain_rpc_url,
+        private_key=default_private_key,
+        method_private_keys=method_private_keys,
+        rpc_timeout_seconds=settings.onchain_tx_timeout_seconds,
+    )

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_dependency_container
 from app.core.container import Container
+from app.domain.accounting import effective_paid_amount_cents
 from app.domain.enums import PaymentState
 from app.domain.models import Machine, Order, Payment, utc_now
 from app.domain.rules import has_sufficient_payment, is_dividend_eligible
@@ -28,6 +29,19 @@ router = APIRouter()
 PWR_WEI_MULTIPLIER = Decimal("1000000000000000000")
 
 
+TERMINAL_PAYMENT_STATES = {PaymentState.SUCCEEDED, PaymentState.FAILED, PaymentState.REFUNDED}
+
+
+def _existing_active_hsp_payment(order_id: str, db: Session) -> Payment | None:
+    return db.scalar(
+        select(Payment).where(
+            Payment.order_id == order_id,
+            Payment.provider == "hsp",
+            Payment.state.in_((PaymentState.PENDING, PaymentState.SUCCEEDED)),
+        )
+    )
+
+
 def _succeeded_payment_total_cents(order_id: str, db: Session) -> int:
     return db.scalar(
         select(func.coalesce(func.sum(Payment.amount_cents), 0)).where(
@@ -39,7 +53,8 @@ def _succeeded_payment_total_cents(order_id: str, db: Session) -> int:
 
 def _freeze_settlement_policy_if_fully_paid(order: Order, db: Session) -> bool:
     paid_cents = _succeeded_payment_total_cents(order.id, db)
-    if not has_sufficient_payment(order.quoted_amount_cents, paid_cents):
+    effective_paid_cents = effective_paid_amount_cents(order=order, paid_amount_cents=paid_cents)
+    if not has_sufficient_payment(order.quoted_amount_cents, effective_paid_cents):
         return False
 
     machine = db.get(Machine, order.machine_id)
@@ -51,7 +66,7 @@ def _freeze_settlement_policy_if_fully_paid(order: Order, db: Session) -> bool:
         order.settlement_beneficiary_user_id = machine.owner_user_id
         order.settlement_is_self_use = not dividend_eligible
         order.settlement_is_dividend_eligible = dividend_eligible
-    machine.has_unsettled_revenue = True
+    machine.has_active_tasks = True
     db.add(order)
     db.add(machine)
     return True
@@ -69,12 +84,18 @@ def _apply_payment_state(
     order_writer: OrderWriter,
     write_chain: bool = True,
 ) -> Order:
-    payment.state = state
-    db.add(payment)
-    db.flush()
     order = db.get(Order, payment.order_id)
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    if payment.state in TERMINAL_PAYMENT_STATES and payment.state != state:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Payment is already in terminal state")
+    if payment.state == state:
+        return order
+
+    payment.state = state
+    db.add(payment)
+    db.flush()
     if state == PaymentState.SUCCEEDED and _freeze_settlement_policy_if_fully_paid(order, db) and write_chain:
         order_writer.mark_order_paid(order, payment)
     return order
@@ -150,6 +171,19 @@ def create_payment_intent(
     order = db.get(Order, order_id)
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    if payload.amount_cents != order.quoted_amount_cents:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="HSP payment amount must match quoted order amount",
+        )
+
+    existing_payment = _existing_active_hsp_payment(order.id, db)
+    if existing_payment is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An active HSP payment already exists for this order",
+        )
 
     merchant_order = container.hsp_adapter.create_payment_intent(
         order_id=order.id,
@@ -288,12 +322,6 @@ def sync_onchain_payment(
     _backfill_order_chain_anchor_from_verification(order, verification)
     db.add(order)
 
-    payment.callback_event_id = verification.event_id
-    payment.callback_state = verification.state.value
-    payment.callback_received_at = utc_now()
-    payment.callback_tx_hash = verification.tx_hash
-    db.add(payment)
-
     _apply_payment_state(
         payment,
         state=verification.state,
@@ -301,6 +329,12 @@ def sync_onchain_payment(
         order_writer=order_writer,
         write_chain=False,
     )
+
+    payment.callback_event_id = verification.event_id
+    payment.callback_state = verification.state.value
+    payment.callback_received_at = utc_now()
+    payment.callback_tx_hash = verification.tx_hash
+    db.add(payment)
     db.commit()
     return DirectPaymentSyncResponse(
         payment_id=payment.id,

@@ -1,5 +1,9 @@
 from app.core.config import Settings
-from app.integrations.agentskillos_bridge import AgentSkillOSBridge, AgentSkillOSDiscoveryResult
+from app.integrations.agentskillos_bridge import (
+    AgentSkillOSBridge,
+    AgentSkillOSDiscoveryResult,
+    AgentSkillOSPlanningResult,
+)
 from app.execution.agentskillos_wrapper import AgentSkillOSWrapper
 from app.execution.contracts import IntentRequest, MatchStatus, MediaType
 from app.integrations.model_router import ModelRouteRequest, ModelRouteStatus, ModelRouter
@@ -144,3 +148,43 @@ def test_agentskillos_bridge_parses_discovery_output() -> None:
     assert env["LLM_BASE_URL"].endswith("/compatible-mode/v1")
     assert cwd == "/tmp/AgentSkillOS"
     assert timeout_seconds == 120.0
+
+
+def test_agentskillos_bridge_parses_native_plan_output() -> None:
+    class _Runner:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, command, *, env, cwd, timeout_seconds):
+            self.calls.append((command, env, cwd, timeout_seconds))
+            return type(
+                "Result",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": (
+                        '{"skills":["copywriter","image-gen"],"plans":['
+                        '{"name":"Quality-First","description":"Deep validation path","nodes":[{"id":"n1","name":"copywriter"}]},'
+                        '{"name":"Efficiency-First","description":"Parallel path","nodes":[{"id":"n2","name":"copywriter"}]},'
+                        '{"name":"Simplicity-First","description":"Lean path","nodes":[{"id":"n3","name":"image-gen"}]}'
+                        ']}'
+                    ),
+                    "stderr": "",
+                },
+            )()
+
+    runner = _Runner()
+    bridge = AgentSkillOSBridge(settings=Settings(dashscope_api_key="test-key"), runner=runner)
+    bridge.resolve_repo_root = lambda: __import__("pathlib").Path("/tmp/AgentSkillOS")  # type: ignore[method-assign]
+    bridge.resolve_python_executable = lambda _repo_root: __import__("pathlib").Path("/tmp/AgentSkillOS/.venv/bin/python")  # type: ignore[method-assign]
+
+    result = bridge.generate_plans("Make a teaser video", files=("brief.md",))
+
+    assert isinstance(result, AgentSkillOSPlanningResult)
+    assert result.source == "agentskillos_planning"
+    assert result.skill_ids == ("copywriter", "image-gen")
+    assert len(result.plans) == 3
+    assert result.plans[2].plan_index == 2
+    assert result.plans[2].name == "Simplicity-First"
+    assert result.plans[2].description == "Lean path"
+    assert result.plans[2].nodes[0]["name"] == "image-gen"

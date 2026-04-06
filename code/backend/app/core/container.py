@@ -7,7 +7,9 @@ from app.core.config import Settings, get_settings
 from app.integrations.buyer_address_resolver import BuyerAddressResolver
 from app.integrations.execution_gateway import NullExecutionGateway
 from app.integrations.hsp_adapter import HSPAdapter
-from app.integrations.onchain_indexer import NullOnchainIndexer
+from app.integrations.onchain_indexer import create_onchain_indexer
+from app.integrations.user_signer_registry import UserSignerRegistry
+from app.onchain.contracts_registry import ContractsRegistry
 from app.runtime.hardware_simulator import get_shared_hardware_simulator, reset_shared_hardware_simulator
 
 
@@ -43,11 +45,15 @@ class Container:
             api_key=settings.hsp_api_key,
         )
         self.buyer_address_resolver = BuyerAddressResolver.from_json(settings.buyer_wallet_map_json)
+        self.user_signer_registry = UserSignerRegistry.from_json(settings.user_signer_private_keys_json)
         # Extension point: swap with concrete execution integration.
         self.execution_gateway = NullExecutionGateway()
         self.hardware_simulator = get_shared_hardware_simulator()
-        # Extension point: swap with concrete on-chain indexer integration.
-        self.onchain_indexer = NullOnchainIndexer()
+        self.contracts_registry = ContractsRegistry(settings=settings)
+        self.onchain_indexer = create_onchain_indexer(
+            session_factory=self.session_factory,
+            owner_resolver=self.buyer_address_resolver.resolve_user_id,
+        )
 
 
 @lru_cache

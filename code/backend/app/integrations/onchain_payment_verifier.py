@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 import hashlib
+from functools import lru_cache
 
 from app.domain.enums import PaymentState
 from app.domain.models import Order, Payment
@@ -64,7 +64,7 @@ class OnchainPaymentVerifier:
 
             decoded_event = decode_order_created_event(
                 receipt=receipt,
-                contract_address=expected_target,
+                contract_address=self._contracts_registry.order_book().contract_address,
             )
             evidence_order_id = (
                 str(decoded_event["order_id"])
@@ -91,32 +91,12 @@ class OnchainPaymentVerifier:
                 evidence_create_order_block_number=receipt.block_number,
             )
 
-        evidence_order_id = order.onchain_order_id or self._derive_onchain_order_id(seed=f"{order.id}:{payment.id}:{tx_hash_normalized}")
-        evidence_block_number = self._derive_block_number(seed=f"{order.id}:{payment.id}:{tx_hash_normalized}")
-        return OnchainPaymentVerificationResult(
-            matched=True,
-            state=PaymentState.SUCCEEDED,
-            tx_hash=tx_hash_normalized,
-            event_id=f"onchain:{tx_hash_normalized}",
-            reason=None,
-            evidence_order_id=evidence_order_id,
-            evidence_amount_cents=payment.amount_cents,
-            evidence_currency=payment.currency,
-            evidence_wallet_address=wallet_address.lower() if wallet_address is not None else None,
-            evidence_create_order_tx_hash=tx_hash_normalized,
-            evidence_create_order_event_id=f"OrderCreated:{evidence_order_id}:{tx_hash_normalized}",
-            evidence_create_order_block_number=evidence_block_number,
-        )
+        return self._failure(tx_hash=tx_hash_normalized, reason="receipt_not_found", wallet_address=wallet_address)
 
     @staticmethod
     def _derive_onchain_order_id(*, seed: str) -> str:
         digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
         return f"oc_{(int(digest[:16], 16) % 1_000_000_000) + 1}"
-
-    @staticmethod
-    def _derive_block_number(*, seed: str) -> int:
-        digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
-        return (int(digest[16:24], 16) % 9_000_000) + 1_000_000
 
     @staticmethod
     def _failure(*, tx_hash: str, reason: str, wallet_address: str | None) -> OnchainPaymentVerificationResult:

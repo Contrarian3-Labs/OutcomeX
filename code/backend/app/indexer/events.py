@@ -67,6 +67,7 @@ class OrderLifecycleEvent:
 @dataclass(frozen=True)
 class SettlementSplitEvent:
     order_id: str
+    machine_id: str | None
     recipient: str
     role: str | None
     amount_wei: int
@@ -75,6 +76,7 @@ class SettlementSplitEvent:
 
 @dataclass(frozen=True)
 class RevenueClaimedEvent:
+    machine_id: str | None
     account: str
     amount_wei: int
     claim_nonce: int | None
@@ -247,6 +249,11 @@ def _normalize_revenue_payload(event_name: str, args: Mapping[str, Any]) -> Sett
         )
         return SettlementSplitEvent(
             order_id=str(_as_int(_pick(args, "orderId", "order_id"), field_name="order_id")),
+            machine_id=(
+                str(_as_int(_pick(args, "machineId", "machine_id", required=False), field_name="machine_id"))
+                if _pick(args, "machineId", "machine_id", required=False) is not None
+                else None
+            ),
             recipient=_normalize_address(_pick(args, "machineOwner", "recipient", "to")),
             role="MACHINE_OWNER_DIVIDEND" if dividend_eligible else "MACHINE_OWNER_NON_DIVIDEND",
             amount_wei=_as_int(_pick(args, "amount", "amountWei", "amount_wei"), field_name="amount"),
@@ -261,6 +268,11 @@ def _normalize_revenue_payload(event_name: str, args: Mapping[str, Any]) -> Sett
         }
         account_fields = account_field_by_event[event_name]
         return RevenueClaimedEvent(
+            machine_id=(
+                str(_as_int(_pick(args, "machineId", "machine_id", required=False), field_name="machine_id"))
+                if _pick(args, "machineId", "machine_id", required=False) is not None
+                else None
+            ),
             account=_normalize_address(_pick(args, *account_fields)),
             amount_wei=_as_int(_pick(args, "amount", "amountWei", "amount_wei"), field_name="amount"),
             claim_nonce=None,

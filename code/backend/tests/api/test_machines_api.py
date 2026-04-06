@@ -68,3 +68,56 @@ def test_transfer_machine_records_intent_without_mutating_canonical_owner(client
     assert machine_after["owner_user_id"] == "owner-1"
     assert machine_after["pending_transfer_new_owner_user_id"] == "owner-2"
     assert machine_after["ownership_source"] == "bootstrap"
+
+
+class StubOnchainLifecycle:
+    def __init__(self, *, enabled: bool, onchain_machine_id: str | None = None) -> None:
+        self._enabled = enabled
+        self._onchain_machine_id = onchain_machine_id
+        self.mint_calls: list[dict[str, str]] = []
+
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def mint_machine_for_owner(self, *, owner_user_id: str, token_uri: str):
+        self.mint_calls.append({"owner_user_id": owner_user_id, "token_uri": token_uri})
+        class Receipt:
+            def __init__(self, onchain_machine_id: str | None):
+                self.onchain_machine_id = onchain_machine_id
+        return Receipt(self._onchain_machine_id)
+
+
+def test_create_machine_mints_onchain_when_runtime_enabled(client: TestClient) -> None:
+    from app.onchain.lifecycle_service import get_onchain_lifecycle_service
+
+    stub = StubOnchainLifecycle(enabled=True, onchain_machine_id="101")
+    client.app.dependency_overrides[get_onchain_lifecycle_service] = lambda: stub
+
+    response = client.post(
+        "/api/v1/machines",
+        json={"display_name": "GANA node", "owner_user_id": "owner-1"},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["onchain_machine_id"] == "101"
+    assert payload["ownership_source"] == "chain"
+    assert stub.mint_calls[0]["owner_user_id"] == "owner-1"
+
+
+def test_create_machine_skips_mint_when_onchain_machine_id_is_provided(client: TestClient) -> None:
+    from app.onchain.lifecycle_service import get_onchain_lifecycle_service
+
+    stub = StubOnchainLifecycle(enabled=True, onchain_machine_id="999")
+    client.app.dependency_overrides[get_onchain_lifecycle_service] = lambda: stub
+
+    response = client.post(
+        "/api/v1/machines",
+        json={"display_name": "GANA node", "owner_user_id": "owner-1", "onchain_machine_id": "77"},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["onchain_machine_id"] == "77"
+    assert payload["ownership_source"] == "bootstrap"
+    assert stub.mint_calls == []
