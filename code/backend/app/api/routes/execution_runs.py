@@ -2,27 +2,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.domain.enums import ExecutionRunStatus, ExecutionState, OrderState, PreviewState
+from app.domain.enums import ExecutionRunStatus, ExecutionState
 from app.domain.models import ExecutionRun, Order
+from app.indexer.execution_sync import _sync_model_from_snapshot, _sync_order_from_snapshot
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
+from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
+from app.onchain.order_writer import OrderWriter, get_order_writer
 from app.schemas.execution_run import ExecutionRunResponse
 
 router = APIRouter()
 
-
-def _sync_model_from_snapshot(run: ExecutionRun, snapshot) -> None:
-    run.status = snapshot.status
-    run.submission_payload = snapshot.submission_payload
-    run.workspace_path = snapshot.workspace_path
-    run.run_dir = snapshot.run_dir
-    run.preview_manifest = list(snapshot.preview_manifest)
-    run.artifact_manifest = list(snapshot.artifact_manifest)
-    run.skills_manifest = list(snapshot.skills_manifest)
-    run.model_usage_manifest = list(snapshot.model_usage_manifest)
-    run.summary_metrics = snapshot.summary_metrics or {}
-    run.error = snapshot.error
-    run.started_at = snapshot.started_at
-    run.finished_at = snapshot.finished_at
 
 
 def _selected_plan_payload(snapshot, order: Order | None, submission_payload: dict | None = None) -> dict | None:
@@ -74,6 +63,14 @@ def _build_execution_run_response(run: ExecutionRun, snapshot, order: Order | No
         update={
             "selected_plan": selected_plan,
             "selected_plan_binding": _selected_plan_binding(selected_plan, run.submission_payload),
+            "pid": getattr(snapshot, "pid", None),
+            "pid_alive": getattr(snapshot, "pid_alive", None),
+            "stdout_log_path": getattr(snapshot, "stdout_log_path", None),
+            "stderr_log_path": getattr(snapshot, "stderr_log_path", None),
+            "events_log_path": getattr(snapshot, "events_log_path", None),
+            "last_heartbeat_at": getattr(snapshot, "last_heartbeat_at", None),
+            "current_phase": getattr(snapshot, "current_phase", None),
+            "current_step": getattr(snapshot, "current_step", None),
         }
     )
 
@@ -83,6 +80,8 @@ def get_execution_run(
     run_id: str,
     db: Session = Depends(get_db),
     execution_service=Depends(get_agentskillos_execution_service),
+    onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
+    order_writer: OrderWriter = Depends(get_order_writer),
 ) -> ExecutionRunResponse:
     run = db.get(ExecutionRun, run_id)
     if run is None:
@@ -93,18 +92,13 @@ def get_execution_run(
 
     order = db.get(Order, run.order_id)
     if order is not None:
-        metadata = dict(order.execution_metadata or {})
-        metadata["run_id"] = run.id
-        metadata["run_status"] = run.status.value
-        order.execution_metadata = metadata
-        if run.status == ExecutionRunStatus.SUCCEEDED:
-            order.execution_state = ExecutionState.SUCCEEDED
-            order.preview_state = PreviewState.READY
-            if order.state == OrderState.EXECUTING:
-                order.state = OrderState.RESULT_PENDING_CONFIRMATION
-        elif run.status in {ExecutionRunStatus.FAILED, ExecutionRunStatus.CANCELLED}:
-            order.execution_state = ExecutionState.FAILED if run.status == ExecutionRunStatus.FAILED else ExecutionState.CANCELLED
-        db.add(order)
+        _sync_order_from_snapshot(
+            db=db,
+            order=order,
+            run=run,
+            onchain_lifecycle=onchain_lifecycle,
+            order_writer=order_writer,
+        )
 
     db.add(run)
     db.commit()

@@ -44,6 +44,17 @@ class UserSignerRegistry:
     def signer_for_user(self, user_id: str) -> UserSigner | None:
         return self._signers.get(user_id)
 
+    def signer_for_wallet(self, wallet_address: str) -> UserSigner | None:
+        user_id = self.resolve_user_id(wallet_address)
+        if user_id is None:
+            return None
+        return self._signers.get(user_id)
+
+    def with_signer(self, signer: UserSigner) -> "UserSignerRegistry":
+        merged = dict(self._signers)
+        merged[signer.user_id] = signer
+        return UserSignerRegistry(merged)
+
     def resolve_private_key(self, user_id: str) -> str | None:
         signer = self.signer_for_user(user_id)
         return signer.private_key if signer is not None else None

@@ -166,6 +166,10 @@ def _release_machine_active_task(*, db: Session, machine_id: str) -> None:
     db.add(machine)
 
 
+def _is_nonce_too_low_error(exc: RuntimeError) -> bool:
+    return "nonce too low" in str(exc).lower()
+
+
 def _broadcast_preview_ready_if_needed(
     *,
     db: Session,
@@ -184,10 +188,15 @@ def _broadcast_preview_ready_if_needed(
     machine = db.get(Machine, order.machine_id)
     if machine is None:
         return
-    receipt = onchain_lifecycle.send_as_user(
-        user_id=machine.owner_user_id,
-        write_result=order_writer.mark_preview_ready(order, valid_preview=valid_preview),
-    )
+    try:
+        receipt = onchain_lifecycle.send_as_user(
+            user_id=machine.owner_user_id,
+            write_result=order_writer.mark_preview_ready(order, valid_preview=valid_preview),
+        )
+    except RuntimeError as exc:
+        if _is_nonce_too_low_error(exc):
+            return
+        raise
     metadata["onchain_preview_ready_tx_hash"] = receipt.tx_hash
 
 

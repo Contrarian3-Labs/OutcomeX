@@ -9,7 +9,54 @@ from app.core.container import reset_container_cache
 from app.domain.enums import ExecutionRunStatus
 from app.execution.contracts import ExecutionStrategy
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
+from app.onchain.lifecycle_service import BroadcastReceipt, get_onchain_lifecycle_service
+from app.onchain.order_writer import OrderWriteResult, get_order_writer
 from app.main import create_app
+
+
+class _LifecycleSpy:
+    def __init__(self) -> None:
+        self.calls = []
+        self.minted = []
+
+    def enabled(self) -> bool:
+        return True
+
+    def mint_machine_for_owner(self, *, owner_user_id: str, token_uri: str):
+        self.minted.append((owner_user_id, token_uri))
+        return type(
+            "Minted",
+            (),
+            {
+                "tx_hash": "0xmint",
+                "receipt": None,
+                "onchain_machine_id": "1",
+            },
+        )()
+
+    def send_as_user(self, *, user_id: str, write_result: OrderWriteResult) -> BroadcastReceipt:
+        self.calls.append((user_id, write_result.method_name, write_result.payload))
+        return BroadcastReceipt(tx_hash="0xpreview", receipt=None)
+
+
+class _WriterSpy:
+    def __init__(self) -> None:
+        self.paid_calls = []
+
+    def mark_order_paid(self, order, payment) -> None:
+        self.paid_calls.append((order.id, payment.id))
+
+    def mark_preview_ready(self, order, *, valid_preview: bool = True) -> OrderWriteResult:
+        return OrderWriteResult(
+            tx_hash="0xsynthetic-preview",
+            submitted_at=datetime.now(timezone.utc),
+            chain_id=133,
+            contract_name="OrderBook",
+            contract_address="0x0000000000000000000000000000000000000133",
+            method_name="markPreviewReady",
+            idempotency_key="preview",
+            payload={"order_id": order.onchain_order_id, "valid_preview": valid_preview},
+        )
 
 
 class _ExecutionServiceStub:
@@ -49,6 +96,14 @@ class _ExecutionServiceStub:
                 "error": None,
                 "started_at": None,
                 "finished_at": None,
+                "pid": 1234,
+                "pid_alive": True,
+                "stdout_log_path": "/tmp/stdout.log",
+                "stderr_log_path": "/tmp/stderr.log",
+                "events_log_path": "/tmp/events.ndjson",
+                "last_heartbeat_at": datetime.now(timezone.utc),
+                "current_phase": "queued",
+                "current_step": None,
             },
         )()
 
@@ -77,6 +132,14 @@ class _ExecutionServiceStub:
                 "error": None,
                 "started_at": datetime.now(timezone.utc),
                 "finished_at": datetime.now(timezone.utc),
+                "pid": 1234,
+                "pid_alive": True,
+                "stdout_log_path": "/tmp/stdout.log",
+                "stderr_log_path": "/tmp/stderr.log",
+                "events_log_path": "/tmp/events.ndjson",
+                "last_heartbeat_at": datetime.now(timezone.utc),
+                "current_phase": "finished",
+                "current_step": "docx",
             },
         )()
 
@@ -95,7 +158,11 @@ def client(tmp_path) -> tuple[TestClient, _ExecutionServiceStub]:
     reset_container_cache()
     app = create_app()
     stub = _ExecutionServiceStub()
+    lifecycle = _LifecycleSpy()
+    writer = _WriterSpy()
     app.dependency_overrides[get_agentskillos_execution_service] = lambda: stub
+    app.dependency_overrides[get_onchain_lifecycle_service] = lambda: lifecycle
+    app.dependency_overrides[get_order_writer] = lambda: writer
     with TestClient(app) as test_client:
         yield test_client, stub
     reset_settings_cache()
@@ -173,6 +240,14 @@ def test_start_execution_creates_run_and_run_endpoint_returns_snapshot(client: t
     }
     assert payload["artifact_manifest"][0]["path"] == "workspace/report.docx"
     assert payload["skills_manifest"][0]["skill_id"] == "docx"
+    assert payload["pid"] == 1234
+    assert payload["pid_alive"] is True
+    assert payload["stdout_log_path"] == "/tmp/stdout.log"
+    assert payload["stderr_log_path"] == "/tmp/stderr.log"
+    assert payload["events_log_path"] == "/tmp/events.ndjson"
+    assert payload["current_phase"] == "finished"
+    assert payload["current_step"] == "docx"
+    assert payload["last_heartbeat_at"] is not None
 
     order_fetch = test_client.get(f"/api/v1/orders/{order['id']}")
     assert order_fetch.status_code == 200
@@ -207,3 +282,31 @@ def test_start_execution_rejects_duplicate_active_run(client: tuple[TestClient, 
     assert second.status_code == 409
     assert second.json()["detail"] == "Execution already in progress for this order"
     assert stub.submit_calls == 1
+
+
+def test_execution_run_poll_broadcasts_preview_ready_when_onchain_order_exists(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
+    test_client, _ = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order(test_client, machine["id"])
+
+    from app.core.container import get_container
+    container = get_container()
+    with container.session_factory() as db:
+        db_order = db.get(__import__("app.domain.models", fromlist=["Order"]).Order, order["id"])
+        db_machine = db.get(__import__("app.domain.models", fromlist=["Machine"]).Machine, machine["id"])
+        db_order.onchain_order_id = "42"
+        db_order.create_order_tx_hash = "0xpaid"
+        db_machine.onchain_machine_id = "7"
+        db_machine.has_active_tasks = True
+        db.commit()
+
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert start.status_code == 200
+
+    run_response = test_client.get("/api/v1/execution-runs/aso-run-test")
+    assert run_response.status_code == 200
+    order_fetch = test_client.get(f"/api/v1/orders/{order['id']}")
+    assert order_fetch.status_code == 200
+    payload = order_fetch.json()
+    assert payload["execution_metadata"]["onchain_preview_ready_tx_hash"] == "0xpreview"
+    assert payload["state"] == "result_pending_confirmation"

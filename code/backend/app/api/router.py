@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.routes.chat_plans import router as chat_plans_router
+from app.api.routes.debug import router as debug_router
 from app.api.routes.execution_runs import router as execution_runs_router
 from app.api.routes.health import router as health_router
 from app.api.routes.hsp_webhooks import router as hsp_webhooks_router
@@ -20,3 +21,5 @@ api_router.include_router(settlement_router, prefix="/settlement", tags=["settle
 api_router.include_router(revenue_router, prefix="/revenue", tags=["revenue"])
 api_router.include_router(payments_router, prefix="/payments", tags=["payments"])
 api_router.include_router(hsp_webhooks_router, prefix="/payments/hsp", tags=["payments", "webhooks"])
+
+api_router.include_router(debug_router, prefix="/debug", tags=["debug"])

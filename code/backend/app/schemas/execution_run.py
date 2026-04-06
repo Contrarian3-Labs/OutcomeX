@@ -23,6 +23,14 @@ class ExecutionRunResponse(BaseModel):
     error: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    pid: int | None = None
+    pid_alive: bool | None = None
+    stdout_log_path: str | None = None
+    stderr_log_path: str | None = None
+    events_log_path: str | None = None
+    last_heartbeat_at: datetime | None = None
+    current_phase: str | None = None
+    current_step: str | None = None
     created_at: datetime
     updated_at: datetime
 

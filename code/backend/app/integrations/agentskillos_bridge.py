@@ -28,6 +28,24 @@ sys.path.insert(0, str(repo_root / "src"))
 
 import config
 config.Config.reset()
+
+
+def apply_runtime_model_override():
+    runtime_model = (
+        os.getenv("AGENTSKILLOS_RUNTIME_MODEL", "").strip()
+        or os.getenv("LLM_MODEL", "").strip()
+        or os.getenv("OPENAI_MODEL", "").strip()
+        or os.getenv("ANTHROPIC_MODEL", "").strip()
+    )
+    if not runtime_model:
+        return
+    cfg = config.get_config()
+    orchestrators = config.Config._yaml_cache.setdefault("orchestrators", {})
+    for name in ("dag", "free-style", "no-skill"):
+        orchestrators.setdefault(name, {}).setdefault("runtime", {})["model"] = runtime_model
+
+
+apply_runtime_model_override()
 from workflow.service import discover_skills
 
 skills = discover_skills(task, skill_group=skill_group)
@@ -38,6 +56,7 @@ _PLANNING_SCRIPT = """
 import asyncio
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 repo_root = Path(sys.argv[1])
@@ -49,8 +68,27 @@ sys.path.insert(0, str(repo_root / "src"))
 
 import config
 config.Config.reset()
+
+
+def apply_runtime_model_override():
+    runtime_model = (
+        os.getenv("AGENTSKILLOS_RUNTIME_MODEL", "").strip()
+        or os.getenv("LLM_MODEL", "").strip()
+        or os.getenv("OPENAI_MODEL", "").strip()
+        or os.getenv("ANTHROPIC_MODEL", "").strip()
+    )
+    if not runtime_model:
+        return
+    cfg = config.get_config()
+    orchestrators = config.Config._yaml_cache.setdefault("orchestrators", {})
+    for name in ("dag", "free-style", "no-skill"):
+        orchestrators.setdefault(name, {}).setdefault("runtime", {})["model"] = runtime_model
+
+
+apply_runtime_model_override()
 from constants import resolve_skill_group
 from orchestrator.registry import create_engine
+from orchestrator.runtime.run_context import RunContext
 from orchestrator.visualizers import NullVisualizer
 from workflow.anchor_policy import TaskAnchorIntent, infer_required_skills, merge_skills
 from workflow.service import discover_skills
@@ -63,7 +101,14 @@ async def main():
     discovered_skills = discover_skills(task, skill_group=skill_group)
     skills = merge_skills(required_skills=required_skills, discovered_skills=discovered_skills)
     skill_group_cfg = resolve_skill_group(skill_group)
-    engine = create_engine("dag", run_context=None, skill_dir=skill_group_cfg["skills_dir"], allowed_tools=None)
+    planning_root = Path(tempfile.mkdtemp(prefix="outcomex-plan-"))
+    run_context = RunContext.create(
+        task=task,
+        mode="dag",
+        task_id="planning",
+        base_dir=str(planning_root),
+    )
+    engine = create_engine("dag", run_context=run_context, skill_dir=skill_group_cfg["skills_dir"], allowed_tools=None)
     result = await engine.run_with_visualizer(
         task=task,
         skill_names=skills,

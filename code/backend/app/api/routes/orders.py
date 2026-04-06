@@ -9,8 +9,12 @@ from app.domain.accounting import effective_paid_amount_cents
 from app.domain.enums import ExecutionRunStatus, ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
 from app.domain.models import ExecutionRun, Machine, Order, Payment
 from app.domain.planning import build_recommended_plans, select_recommended_plan
-from app.domain.settlement_projection import ensure_confirmed_settlement_projection
-from app.domain.rules import has_sufficient_payment
+from app.domain.settlement_projection import ensure_confirmed_settlement_projection, ensure_settlement_projection
+from app.domain.rules import (
+    calculate_failed_or_no_valid_preview_breakdown,
+    calculate_rejected_valid_preview_breakdown,
+    has_sufficient_payment,
+)
 from app.execution import ExecutionStrategy, IntentRequest
 from app.execution.service import ExecutionEngineService
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
@@ -439,8 +443,9 @@ def mock_mark_result_ready(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Onchain machine-owner signer is not configured: {exc}",
             ) from exc
-        metadata["onchain_preview_ready_tx_hash"] = broadcast.tx_hash
-        order.execution_metadata = metadata
+        metadata_with_tx = dict(metadata)
+        metadata_with_tx["onchain_preview_ready_tx_hash"] = broadcast.tx_hash
+        order.execution_metadata = metadata_with_tx
         db.add(order)
     else:
         order_writer.mark_preview_ready(order, valid_preview=valid_preview)
@@ -478,11 +483,18 @@ def reject_valid_preview(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Order is not anchored for onchain action")
         return _user_sign_action_response(order=order, write_result=order_writer.reject_valid_preview(order))
 
+    paid_cents = _succeeded_payment_total_cents(order.id, db)
+    effective_paid_cents = effective_paid_amount_cents(order=order, paid_amount_cents=paid_cents)
+    machine = db.get(Machine, order.machine_id)
+    if machine is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
+
     tx_hash = None
     contract_name = None
     method_name = None
     metadata = dict(order.execution_metadata or {})
-    if _onchain_settlement_enabled(order, onchain_lifecycle):
+    onchain_settlement_enabled = _onchain_settlement_enabled(order, onchain_lifecycle)
+    if onchain_settlement_enabled:
         try:
             write_result = order_writer.reject_valid_preview(order)
             broadcast = onchain_lifecycle.send_as_user(user_id=order.user_id, write_result=write_result)
@@ -497,7 +509,17 @@ def reject_valid_preview(
         metadata["reject_valid_preview_tx_hash"] = tx_hash
 
     order.state = OrderState.CANCELLED
-    order.settlement_state = SettlementState.DISTRIBUTED if _onchain_settlement_enabled(order, onchain_lifecycle) else SettlementState.READY
+    order.settlement_state = SettlementState.DISTRIBUTED if onchain_settlement_enabled else SettlementState.READY
+    if onchain_settlement_enabled:
+        breakdown = calculate_rejected_valid_preview_breakdown(effective_paid_cents)
+        ensure_settlement_projection(
+            db=db,
+            order=order,
+            machine=machine,
+            gross_amount_cents=breakdown.gross_amount_cents,
+            platform_fee_cents=breakdown.platform_fee_cents,
+            machine_share_cents=breakdown.machine_share_cents,
+        )
     order.execution_metadata = metadata
     db.add(order)
     db.commit()
@@ -542,11 +564,18 @@ def refund_failed_or_no_valid_preview(
             write_result=order_writer.refund_failed_or_no_valid_preview(order),
         )
 
+    paid_cents = _succeeded_payment_total_cents(order.id, db)
+    effective_paid_cents = effective_paid_amount_cents(order=order, paid_amount_cents=paid_cents)
+    machine = db.get(Machine, order.machine_id)
+    if machine is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
+
     tx_hash = None
     contract_name = None
     method_name = None
     metadata = dict(order.execution_metadata or {})
-    if _onchain_settlement_enabled(order, onchain_lifecycle):
+    onchain_settlement_enabled = _onchain_settlement_enabled(order, onchain_lifecycle)
+    if onchain_settlement_enabled:
         try:
             write_result = order_writer.refund_failed_or_no_valid_preview(order)
             broadcast = onchain_lifecycle.send_as_user(user_id=order.user_id, write_result=write_result)
@@ -561,7 +590,17 @@ def refund_failed_or_no_valid_preview(
         metadata["refund_failed_or_no_valid_preview_tx_hash"] = tx_hash
 
     order.state = OrderState.CANCELLED
-    order.settlement_state = SettlementState.DISTRIBUTED if _onchain_settlement_enabled(order, onchain_lifecycle) else SettlementState.READY
+    order.settlement_state = SettlementState.DISTRIBUTED if onchain_settlement_enabled else SettlementState.READY
+    if onchain_settlement_enabled:
+        breakdown = calculate_failed_or_no_valid_preview_breakdown(effective_paid_cents)
+        ensure_settlement_projection(
+            db=db,
+            order=order,
+            machine=machine,
+            gross_amount_cents=breakdown.gross_amount_cents,
+            platform_fee_cents=breakdown.platform_fee_cents,
+            machine_share_cents=breakdown.machine_share_cents,
+        )
     order.execution_metadata = metadata
     db.add(order)
     db.commit()

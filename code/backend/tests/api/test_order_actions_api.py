@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import reset_settings_cache
 from app.core.container import get_container, reset_container_cache
+from app.domain.models import Machine, RevenueEntry, SettlementRecord
 from app.main import create_app
 from app.onchain.tx_sender import (
     CONFIRM_RESULT_SELECTOR,
@@ -110,6 +111,25 @@ def _anchor_order(order_id: str) -> None:
         db.commit()
 
 
+def test_mock_result_ready_persists_onchain_preview_ready_tx_hash(
+    client: tuple[TestClient, StubOnchainLifecycle],
+) -> None:
+    test_client, _stub = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine["id"])
+    _confirm_payment(test_client, order["id"])
+    _anchor_order(order["id"])
+
+    response = test_client.post(f"/api/v1/orders/{order['id']}/mock-result-ready", json={"valid_preview": False})
+
+    assert response.status_code == 200
+    order_fetch = test_client.get(f"/api/v1/orders/{order['id']}")
+    assert order_fetch.status_code == 200
+    payload = order_fetch.json()
+    assert payload["execution_metadata"]["preview_valid"] is False
+    assert payload["execution_metadata"]["onchain_preview_ready_tx_hash"] == "0xmarkpreviewready"
+
+
 def test_available_actions_show_confirm_and_reject_for_valid_preview(
     client: tuple[TestClient, StubOnchainLifecycle],
 ) -> None:
@@ -190,6 +210,32 @@ def test_confirm_result_user_sign_returns_call_intent_without_broadcast(
     assert stub.user_calls == []
 
 
+def test_reject_valid_preview_creates_local_settlement_projection(
+    client: tuple[TestClient, StubOnchainLifecycle],
+) -> None:
+    test_client, _stub = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine["id"])
+    _confirm_payment(test_client, order["id"])
+    _anchor_order(order["id"])
+    assert test_client.post(f"/api/v1/orders/{order['id']}/mock-result-ready").status_code == 200
+
+    response = test_client.post(f"/api/v1/orders/{order['id']}/reject-valid-preview")
+
+    assert response.status_code == 200
+    with get_container().session_factory() as db:
+        settlement = db.query(SettlementRecord).filter(SettlementRecord.order_id == order["id"]).one()
+        revenue_entry = db.query(RevenueEntry).filter(RevenueEntry.order_id == order["id"]).one()
+        db_machine = db.get(Machine, machine["id"])
+
+        assert settlement.gross_amount_cents == 1000
+        assert settlement.platform_fee_cents == 30
+        assert settlement.machine_share_cents == 270
+        assert revenue_entry.platform_fee_cents == 30
+        assert revenue_entry.machine_share_cents == 270
+        assert db_machine.has_unsettled_revenue is True
+
+
 def test_reject_valid_preview_broadcasts_buyer_onchain_tx(
     client: tuple[TestClient, StubOnchainLifecycle],
 ) -> None:
@@ -245,6 +291,35 @@ def test_reject_valid_preview_user_sign_returns_call_intent_without_broadcast(
     assert payload["calldata"].startswith(REJECT_VALID_PREVIEW_SELECTOR)
     assert "tx_hash" not in payload
     assert stub.user_calls == []
+
+
+def test_refund_failed_or_no_valid_preview_creates_zero_revenue_projection(
+    client: tuple[TestClient, StubOnchainLifecycle],
+) -> None:
+    test_client, _stub = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine["id"])
+    _confirm_payment(test_client, order["id"])
+    _anchor_order(order["id"])
+    assert (
+        test_client.post(f"/api/v1/orders/{order['id']}/mock-result-ready", json={"valid_preview": False}).status_code
+        == 200
+    )
+
+    response = test_client.post(f"/api/v1/orders/{order['id']}/refund-failed-or-no-valid-preview")
+
+    assert response.status_code == 200
+    with get_container().session_factory() as db:
+        settlement = db.query(SettlementRecord).filter(SettlementRecord.order_id == order["id"]).one()
+        revenue_entry = db.query(RevenueEntry).filter(RevenueEntry.order_id == order["id"]).one()
+        db_machine = db.get(Machine, machine["id"])
+
+        assert settlement.gross_amount_cents == 1000
+        assert settlement.platform_fee_cents == 0
+        assert settlement.machine_share_cents == 0
+        assert revenue_entry.platform_fee_cents == 0
+        assert revenue_entry.machine_share_cents == 0
+        assert db_machine.has_unsettled_revenue is False
 
 
 def test_refund_failed_or_no_valid_preview_broadcasts_onchain_tx(

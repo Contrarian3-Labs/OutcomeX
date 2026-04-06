@@ -74,3 +74,42 @@ def test_send_as_treasury_raises_when_receipt_status_is_failed(monkeypatch) -> N
 
     with pytest.raises(RuntimeError, match="transaction_failed:0xsynthetic"):
         service.send_as_treasury(write_result=_write_result())
+
+
+class _CapturingSender(FakeSender):
+    def send(self, write_result: OrderWriteResult) -> OrderWriteResult:
+        self.last_write_result = write_result
+        return write_result
+
+
+def test_send_as_user_prefers_expected_wallet_signer_from_explicit_keys(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def sender_factory(**kwargs):
+        captured.update(kwargs)
+        return FakeSender(**kwargs)
+
+    monkeypatch.setattr("app.onchain.lifecycle_service.PythonTransactionSender", sender_factory)
+    service = OnchainLifecycleService(
+        settings=Settings(
+            onchain_rpc_url="http://127.0.0.1:8545",
+            buyer_wallet_map_json='{"owner-1":"0x70997970c51812dc3a010c7d01b50e0d17dc79c8"}',
+            user_signer_private_keys_json='{"owner-1":"0x59c6995e998f97a5a0044976f8a35f1dcd80e45f5c7b0f0f3a6cce8d7b5a5a6d"}',
+            onchain_machine_owner_private_key="0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+            onchain_tx_timeout_seconds=0.1,
+        )
+    )
+    service._receipt_reader = StubReceiptReader(
+        ChainReceipt(
+            tx_hash="0xsynthetic",
+            status=1,
+            from_address="0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+            to_address="0x0000000000000000000000000000000000000135",
+            block_number=123,
+            event_id="receipt:0xsynthetic:123",
+        )
+    )
+
+    service.send_as_user(user_id="owner-1", write_result=_write_result())
+
+    assert captured["private_key"] == "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"

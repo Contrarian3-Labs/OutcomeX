@@ -40,6 +40,24 @@ sys.path.insert(0, str(repo_root / "src"))
 
 import config
 config.Config.reset()
+
+
+def apply_runtime_model_override():
+    runtime_model = (
+        os.getenv("AGENTSKILLOS_RUNTIME_MODEL", "").strip()
+        or os.getenv("LLM_MODEL", "").strip()
+        or os.getenv("OPENAI_MODEL", "").strip()
+        or os.getenv("ANTHROPIC_MODEL", "").strip()
+    )
+    if not runtime_model:
+        return
+    cfg = config.get_config()
+    orchestrators = config.Config._yaml_cache.setdefault("orchestrators", {})
+    for name in ("dag", "free-style", "no-skill"):
+        orchestrators.setdefault(name, {}).setdefault("runtime", {})["model"] = runtime_model
+
+
+apply_runtime_model_override()
 from constants import resolve_skill_group
 from orchestrator.registry import create_engine
 from orchestrator.visualizers import NullVisualizer
@@ -55,6 +73,22 @@ def utc_now():
 def write_record(payload):
     record_path.parent.mkdir(parents=True, exist_ok=True)
     record_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def append_event(event_type, **fields):
+    events_path = Path(initial.get("events_log_path") or (record_path.parent / "events.ndjson"))
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    event = {"timestamp": utc_now(), "event": event_type, **fields}
+    with events_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, ensure_ascii=False) + "\\n")
+
+
+def heartbeat(payload, *, phase, step=None):
+    payload["last_heartbeat_at"] = utc_now()
+    payload["current_phase"] = phase
+    payload["current_step"] = step
+    write_record(payload)
+    append_event("heartbeat", phase=phase, step=step)
 
 
 def classify_artifact(path: Path) -> str:
@@ -98,7 +132,6 @@ async def execute_with_selected_native_plan():
     discovered_skills = discover_skills(task_prompt, skill_group=skill_group)
     skills = merge_skills(required_skills=required_skills, discovered_skills=discovered_skills)
     skill_group_cfg = resolve_skill_group(skill_group)
-    engine = create_engine(mode, run_context=None, skill_dir=skill_group_cfg["skills_dir"], allowed_tools=None)
     request = TaskRequest(
         task=task_prompt,
         mode=mode,
@@ -137,22 +170,29 @@ async def execute_with_selected_native_plan():
 
 
 async def main():
+    global initial
     initial = json.loads(record_path.read_text(encoding="utf-8"))
     initial["status"] = "running"
     initial["started_at"] = utc_now()
-    write_record(initial)
+    heartbeat(initial, phase="starting")
+    append_event("run_started", external_order_id=external_order_id, execution_strategy=execution_strategy)
 
     before_dirs = {p.name for p in base_dir.iterdir()} if base_dir.exists() else set()
     base_dir.mkdir(parents=True, exist_ok=True)
 
     try:
+        heartbeat(initial, phase="planning")
         discovered_skills, selected_plan = await execute_with_selected_native_plan()
+        heartbeat(initial, phase="collecting_artifacts")
     except Exception as exc:
         failed = dict(initial)
         failed["status"] = "failed"
         failed["error"] = f"{exc.__class__.__name__}: {exc}"
         failed["finished_at"] = utc_now()
+        failed["current_phase"] = "failed"
+        failed["last_heartbeat_at"] = utc_now()
         write_record(failed)
+        append_event("run_failed", error=failed["error"])
         raise
 
     candidates = [p for p in base_dir.iterdir() if p.is_dir() and p.name not in before_dirs]
@@ -233,11 +273,15 @@ async def main():
             "summary_metrics": summary_metrics,
             "error": result.get("error"),
             "finished_at": utc_now(),
+            "last_heartbeat_at": utc_now(),
+            "current_phase": "finished" if result.get("status") == "completed" else "failed",
+            "current_step": None,
         }
     )
     if selected_plan is not None:
         final["selected_plan"] = selected_plan
     write_record(final)
+    append_event("run_finished", status=final["status"], error=final.get("error"))
 
 
 asyncio.run(main())
@@ -262,6 +306,13 @@ class ExecutionRunSnapshot:
     started_at: datetime | None = None
     finished_at: datetime | None = None
     pid: int | None = None
+    pid_alive: bool | None = None
+    stdout_log_path: str | None = None
+    stderr_log_path: str | None = None
+    events_log_path: str | None = None
+    last_heartbeat_at: datetime | None = None
+    current_phase: str | None = None
+    current_step: str | None = None
 
 
 class AgentSkillOSExecutionService:
@@ -322,6 +373,12 @@ class AgentSkillOSExecutionService:
             "finished_at": None,
             "created_at": _utc_now().isoformat(),
             "pid": None,
+            "stdout_log_path": str(service_run_dir / "stdout.log"),
+            "stderr_log_path": str(service_run_dir / "stderr.log"),
+            "events_log_path": str(service_run_dir / "events.ndjson"),
+            "last_heartbeat_at": None,
+            "current_phase": "queued",
+            "current_step": None,
         }
         record_path.write_text(json.dumps(initial_payload, indent=2), encoding="utf-8")
 
@@ -358,6 +415,9 @@ class AgentSkillOSExecutionService:
         if not record_path.exists():
             raise FileNotFoundError(run_id)
         payload = json.loads(record_path.read_text(encoding="utf-8"))
+        payload = self._reconcile_stale_process(payload, record_path=record_path)
+        pid = payload.get("pid")
+        pid_alive = self._process_exists(int(pid)) if pid else None
         return ExecutionRunSnapshot(
             run_id=payload["run_id"],
             external_order_id=payload["external_order_id"],
@@ -374,8 +434,55 @@ class AgentSkillOSExecutionService:
             error=payload.get("error"),
             started_at=_parse_datetime(payload.get("started_at")),
             finished_at=_parse_datetime(payload.get("finished_at")),
-            pid=payload.get("pid"),
+            pid=pid,
+            pid_alive=pid_alive,
+            stdout_log_path=payload.get("stdout_log_path"),
+            stderr_log_path=payload.get("stderr_log_path"),
+            events_log_path=payload.get("events_log_path"),
+            last_heartbeat_at=_parse_datetime(payload.get("last_heartbeat_at")),
+            current_phase=payload.get("current_phase"),
+            current_step=payload.get("current_step"),
         )
+
+    def _reconcile_stale_process(self, payload: dict, *, record_path: Path) -> dict:
+        status = ExecutionRunStatus(payload["status"])
+        pid = payload.get("pid")
+        if status not in {ExecutionRunStatus.QUEUED, ExecutionRunStatus.PLANNING, ExecutionRunStatus.RUNNING}:
+            return payload
+        if not pid:
+            return payload
+        if self._process_exists(int(pid)):
+            return payload
+
+        payload = dict(payload)
+        failure_time = _utc_now().isoformat()
+        payload["status"] = ExecutionRunStatus.FAILED.value
+        payload["error"] = payload.get("error") or "process_exited_before_terminal_status"
+        payload["finished_at"] = failure_time
+        payload["last_heartbeat_at"] = failure_time
+        payload["current_phase"] = "failed"
+        payload["current_step"] = None
+        record_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return payload
+
+    @staticmethod
+    def _read_process_state(pid: int) -> str | None:
+        stat_path = Path(f"/proc/{pid}/stat")
+        try:
+            parts = stat_path.read_text(encoding="utf-8").split()
+        except OSError:
+            return None
+        if len(parts) < 3:
+            return None
+        return parts[2]
+
+    @staticmethod
+    def _process_exists(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return AgentSkillOSExecutionService._read_process_state(pid) != "Z"
 
     def cancel_run(self, run_id: str) -> ExecutionRunSnapshot:
         snapshot = self.get_run(run_id)
@@ -400,14 +507,23 @@ class AgentSkillOSExecutionService:
 
     @staticmethod
     def _launch_background_process(command: list[str], *, cwd: str, env: dict[str, str]) -> int:
-        process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        record_path = Path(command[4])
+        run_dir = record_path.parent
+        run_dir.mkdir(parents=True, exist_ok=True)
+        stdout_handle = open(run_dir / "stdout.log", "a", encoding="utf-8")
+        stderr_handle = open(run_dir / "stderr.log", "a", encoding="utf-8")
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=cwd,
+                env=env,
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                start_new_session=True,
+            )
+        finally:
+            stdout_handle.close()
+            stderr_handle.close()
         return int(process.pid)
 
 

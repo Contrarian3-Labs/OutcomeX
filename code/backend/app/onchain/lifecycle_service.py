@@ -6,7 +6,7 @@ from functools import lru_cache
 
 from app.core.config import Settings, get_settings
 from app.integrations.buyer_address_resolver import BuyerAddressResolver
-from app.integrations.user_signer_registry import UserSignerRegistry
+from app.integrations.user_signer_registry import UserSigner, UserSignerRegistry
 from app.onchain.contracts_registry import ContractsRegistry
 from app.onchain.event_decoder import decode_machine_minted_event
 from app.onchain.order_writer import OrderWriteResult, OrderWriter
@@ -41,9 +41,7 @@ class OnchainLifecycleService:
         self._buyer_address_resolver = buyer_address_resolver or BuyerAddressResolver.from_json(
             self._settings.buyer_wallet_map_json
         )
-        self._user_signer_registry = user_signer_registry or UserSignerRegistry.from_json(
-            self._settings.user_signer_private_keys_json
-        )
+        self._user_signer_registry = user_signer_registry or self._build_user_signer_registry()
         self._receipt_reader = JsonRpcReceiptReader(
             rpc_url=self._settings.onchain_rpc_url,
             timeout_seconds=self._settings.onchain_receipt_timeout_seconds,
@@ -77,9 +75,18 @@ class OnchainLifecycleService:
         )
 
     def send_as_user(self, *, user_id: str, write_result: OrderWriteResult) -> BroadcastReceipt:
+        expected_wallet = self._buyer_address_resolver.resolve_wallet(user_id)
         signer = self._user_signer_registry.signer_for_user(user_id)
+        if signer is not None and expected_wallet and signer.wallet_address != expected_wallet.lower():
+            signer = self._user_signer_registry.signer_for_wallet(expected_wallet)
         if signer is None:
+            if expected_wallet:
+                raise RuntimeError(f"signer_wallet_unresolved:{user_id}:{expected_wallet.lower()}")
             raise RuntimeError(f"signer_missing:{user_id}")
+        if expected_wallet and signer.wallet_address != expected_wallet.lower():
+            raise RuntimeError(
+                f"signer_wallet_mismatch:{user_id}:expected={expected_wallet.lower()}:actual={signer.wallet_address}"
+            )
         return self._send(write_result, private_key=signer.private_key)
 
     def send_as_admin(self, *, write_result: OrderWriteResult) -> BroadcastReceipt:
@@ -90,6 +97,38 @@ class OnchainLifecycleService:
         if not private_key:
             raise RuntimeError("treasury_private_key_missing")
         return self._send(write_result, private_key=private_key)
+
+    def _build_user_signer_registry(self) -> UserSignerRegistry:
+        registry = UserSignerRegistry.from_json(self._settings.user_signer_private_keys_json)
+        for private_key in (
+            self._settings.onchain_buyer_private_key,
+            self._settings.onchain_machine_owner_private_key,
+        ):
+            signer = self._signer_from_private_key(private_key)
+            if signer is None:
+                continue
+            user_id = self._buyer_address_resolver.resolve_user_id(signer.wallet_address)
+            if user_id is None:
+                continue
+            registry = registry.with_signer(
+                UserSigner(
+                    user_id=user_id,
+                    wallet_address=signer.wallet_address,
+                    private_key=signer.private_key,
+                )
+            )
+        return registry
+
+    @staticmethod
+    def _signer_from_private_key(private_key: str) -> UserSigner | None:
+        normalized = private_key.strip()
+        if not normalized:
+            return None
+        wallet_address = UserSignerRegistry._derive_wallet_address(
+            UserSignerRegistry._normalize_private_key(normalized)
+        )
+        normalized_key = UserSignerRegistry._normalize_private_key(normalized)
+        return UserSigner(user_id=wallet_address, wallet_address=wallet_address, private_key=normalized_key)
 
     def _send_as_admin(self, write_result: OrderWriteResult) -> BroadcastReceipt:
         private_key = self._settings.onchain_broadcaster_private_key.strip()

@@ -5,15 +5,17 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.domain.models import Machine, Order, RevenueEntry, SettlementRecord
-from app.domain.rules import calculate_revenue_split
+from app.domain.rules import calculate_confirmed_settlement_breakdown
 
 
-def ensure_confirmed_settlement_projection(
+def ensure_settlement_projection(
     *,
     db: Session,
     order: Order,
     machine: Machine,
     gross_amount_cents: int,
+    platform_fee_cents: int,
+    machine_share_cents: int,
     distributed_at: datetime | None = None,
 ) -> tuple[SettlementRecord, RevenueEntry]:
     if order.settlement_beneficiary_user_id is None:
@@ -24,7 +26,6 @@ def ensure_confirmed_settlement_projection(
         raise ValueError("settlement_dividend_flag_missing")
 
     distributed_at = distributed_at or datetime.now(timezone.utc)
-    platform_fee_cents, machine_share_cents = calculate_revenue_split(gross_amount_cents)
 
     settlement = db.query(SettlementRecord).filter(SettlementRecord.order_id == order.id).first()
     if settlement is None:
@@ -72,3 +73,24 @@ def ensure_confirmed_settlement_projection(
     machine.has_unsettled_revenue = bool(order.settlement_is_dividend_eligible and machine_share_cents > 0)
     db.add(machine)
     return settlement, entry
+
+
+
+def ensure_confirmed_settlement_projection(
+    *,
+    db: Session,
+    order: Order,
+    machine: Machine,
+    gross_amount_cents: int,
+    distributed_at: datetime | None = None,
+) -> tuple[SettlementRecord, RevenueEntry]:
+    breakdown = calculate_confirmed_settlement_breakdown(gross_amount_cents)
+    return ensure_settlement_projection(
+        db=db,
+        order=order,
+        machine=machine,
+        gross_amount_cents=breakdown.gross_amount_cents,
+        platform_fee_cents=breakdown.platform_fee_cents,
+        machine_share_cents=breakdown.machine_share_cents,
+        distributed_at=distributed_at,
+    )
