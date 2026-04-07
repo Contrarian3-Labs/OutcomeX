@@ -6,9 +6,8 @@ but uses deterministic ticks for local policy tests.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from functools import lru_cache
 
 
 class AdmissionStatus(str, Enum):
@@ -192,12 +191,27 @@ def _default_hardware_profile() -> HardwareProfile:
     )
 
 
-@lru_cache(maxsize=1)
-def get_shared_hardware_simulator() -> HardwareSimulator:
-    """Process-wide simulator so admission occupancy survives service re-instantiation."""
-    return HardwareSimulator(_default_hardware_profile())
+_SHARED_SIMULATORS: dict[str, HardwareSimulator] = {}
+_DEFAULT_MACHINE_KEY = "__default__"
 
 
-def reset_shared_hardware_simulator() -> None:
-    get_shared_hardware_simulator.cache_clear()
+def _normalized_machine_key(machine_id: str | None = None) -> str:
+    value = (machine_id or "").strip()
+    return value or _DEFAULT_MACHINE_KEY
 
+
+def get_shared_hardware_simulator(machine_id: str | None = None) -> HardwareSimulator:
+    """Process-wide simulator keyed by machine id so occupancy can be isolated per asset."""
+    key = _normalized_machine_key(machine_id)
+    simulator = _SHARED_SIMULATORS.get(key)
+    if simulator is None:
+        simulator = HardwareSimulator(_default_hardware_profile())
+        _SHARED_SIMULATORS[key] = simulator
+    return simulator
+
+
+def reset_shared_hardware_simulator(machine_id: str | None = None) -> None:
+    if machine_id is None:
+        _SHARED_SIMULATORS.clear()
+        return
+    _SHARED_SIMULATORS.pop(_normalized_machine_key(machine_id), None)

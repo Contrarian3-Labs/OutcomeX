@@ -317,7 +317,7 @@ def test_finalize_usdt_direct_payment_intent_returns_wallet_envelope(
     assert payload["submit_payload"]["value"] == "0x0"
 
 
-def test_sync_onchain_payment_freezes_policy_without_duplicate_write_chain_call(
+def test_sync_onchain_payment_records_correlation_without_route_side_state_mutation(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
 ) -> None:
     test_client, spy_writer, spy_verifier = client
@@ -353,21 +353,21 @@ def test_sync_onchain_payment_freezes_policy_without_duplicate_write_chain_call(
         json={"state": "succeeded", "tx_hash": "0xabc123", "wallet_address": "0xbuyer"},
     )
     assert sync.status_code == 200
-    assert sync.json()["state"] == "succeeded"
+    assert sync.json()["state"] == "pending"
     assert sync.json()["synced_onchain"] is True
 
     order_after = test_client.get(f"/api/v1/orders/{order['id']}")
     assert order_after.status_code == 200
-    assert order_after.json()["onchain_order_id"] == "oc_42001"
+    assert order_after.json()["onchain_order_id"] is None
     assert order_after.json()["create_order_tx_hash"] == "0xabc123"
-    assert order_after.json()["create_order_event_id"] == "OrderCreated:oc_42001:0xabc123"
-    assert order_after.json()["create_order_block_number"] == 2001001
-    assert order_after.json()["settlement_beneficiary_user_id"] == "owner-1"
-    assert order_after.json()["settlement_is_dividend_eligible"] is True
+    assert order_after.json()["create_order_event_id"] is None
+    assert order_after.json()["create_order_block_number"] is None
+    assert order_after.json()["settlement_beneficiary_user_id"] is None
+    assert order_after.json()["settlement_is_dividend_eligible"] is None
     assert spy_writer.mark_paid_calls == []
 
 
-def test_sync_onchain_pwr_payment_freezes_policy_without_duplicate_write_chain_call(
+def test_sync_onchain_pwr_payment_records_correlation_without_route_side_state_mutation(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
 ) -> None:
     test_client, spy_writer, spy_verifier = client
@@ -403,17 +403,17 @@ def test_sync_onchain_pwr_payment_freezes_policy_without_duplicate_write_chain_c
         json={"state": "succeeded", "tx_hash": "0xpwr123", "wallet_address": "0xbuyer"},
     )
     assert sync.status_code == 200
-    assert sync.json()["state"] == "succeeded"
+    assert sync.json()["state"] == "pending"
     assert sync.json()["synced_onchain"] is True
 
     order_after = test_client.get(f"/api/v1/orders/{order['id']}")
     assert order_after.status_code == 200
-    assert order_after.json()["onchain_order_id"] == "oc_53001"
+    assert order_after.json()["onchain_order_id"] is None
     assert order_after.json()["create_order_tx_hash"] == "0xpwr123"
-    assert order_after.json()["create_order_event_id"] == "OrderCreated:oc_53001:0xpwr123"
-    assert order_after.json()["create_order_block_number"] == 2002002
-    assert order_after.json()["settlement_beneficiary_user_id"] == "owner-1"
-    assert order_after.json()["settlement_is_dividend_eligible"] is True
+    assert order_after.json()["create_order_event_id"] is None
+    assert order_after.json()["create_order_block_number"] is None
+    assert order_after.json()["settlement_beneficiary_user_id"] is None
+    assert order_after.json()["settlement_is_dividend_eligible"] is None
     assert spy_writer.mark_paid_calls == []
 
 
@@ -456,7 +456,7 @@ def test_sync_onchain_rejects_unverified_event_mismatch(
     assert sync.json()["detail"] == "Onchain evidence verification failed: order_id_mismatch"
 
 
-def test_sync_onchain_uses_verifier_state_instead_of_caller_state(
+def test_sync_onchain_rejects_non_successful_verified_receipt(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
 ) -> None:
     test_client, _spy_writer, spy_verifier = client
@@ -491,5 +491,5 @@ def test_sync_onchain_uses_verifier_state_instead_of_caller_state(
         f"/api/v1/payments/{payment_id}/sync-onchain",
         json={"state": "succeeded", "tx_hash": "0xfailed", "wallet_address": "0xbuyer"},
     )
-    assert sync.status_code == 200
-    assert sync.json()["state"] == "failed"
+    assert sync.status_code == 409
+    assert sync.json()["detail"] == "Onchain receipt did not confirm a successful payment"

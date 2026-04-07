@@ -34,8 +34,20 @@
 原因：
 
 - `USDC / USDT` 直付仍需要 backend 协助做 intent / finalize / verifier / projection
-- `settlement start` / `revenue distribute` 仍是当前后端账务投影链路的一部分，尚未完全替换成纯事件驱动
+- `settlement/start` 仍保留为一个兼容型 backend 接口，但现在最多只创建 `LOCKED` settlement record
+- `revenue/distribute` 现在只读取既有 projection，不再人工生成 revenue projection
 - `platform claim` 属于 treasury / admin 范畴
+
+## 新的部署前提
+
+- 当 `OUTCOMEX_ENV=prod` 时，backend 启动现在要求真实可用的 onchain runtime
+- 如果 RPC / indexer 不可用，服务会在启动期直接失败，而不是静默降级为 `NullOnchainIndexer`
+- `dev/test` 仍允许空实现，便于本地开发、单元测试与 demo fixture
+
+这意味着：
+
+- live 环境里链上事件投影现在是部署硬依赖
+- 前端不应再把“backend 启动成功”理解成“即使没有链上同步也能正常工作”
 
 ## 重要边界修正
 
@@ -61,7 +73,9 @@
 - backend 不再为 `confirm / reject / refund / claim_refund / machine_claim / transfer` 提供提交入口
 - 这些动作的业务状态应只来自链上事件 / projection
 - backend 仍需继续收敛剩余 demo-only fallback，目标是把非支付状态同步完全收口到 event-driven read model
-- `POST /api/v1/orders/{order_id}/mock-result-ready` 仍是 demo / 测试用途的例外接口，不应被前端当作正式集成边界
+- `GET /api/v1/execution-runs/{run_id}` 现在是只读接口；执行终态落库由后台 execution sync worker 推进
+- `POST /api/v1/payments/{payment_id}/sync-onchain` 现在只做 tx correlation / callback evidence，不再直接推进 payment / settlement 终态
+- `POST /api/v1/orders/{order_id}/mock-result-ready` 与 `POST /api/v1/payments/{payment_id}/mock-confirm` 仍是 demo / 测试用途例外接口，且仅允许 `dev/test` 环境访问，不应被前端当作正式集成边界
 
 ## 验证范围
 

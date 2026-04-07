@@ -2,8 +2,11 @@ import os
 
 import pytest
 from fastapi.testclient import TestClient
+
 from app.core.config import reset_settings_cache
-from app.core.container import reset_container_cache
+from app.core.container import reset_container_cache, get_container
+from app.domain.models import Machine, MachineRevenueClaim, Order, RevenueEntry, SettlementRecord
+from app.runtime.hardware_simulator import WorkloadSpec
 from app.main import create_app
 
 
@@ -50,8 +53,16 @@ def test_create_machine_exposes_bootstrap_ownership_state(client: TestClient) ->
     machine = _create_machine(client)
 
     assert machine["owner_user_id"] == "owner-1"
+    assert machine["owner_chain_address"] is None
     assert machine["ownership_source"] == "bootstrap"
+    assert machine["owner_projection_last_event_id"] is None
+    assert machine["owner_projected_at"] is None
     assert machine["pending_transfer_new_owner_user_id"] is None
+    assert machine["transfer_ready"] is True
+    assert machine["transfer_blocking_reasons"] == []
+    assert machine["projected_cents"] == 0
+    assert machine["claimed_cents"] == 0
+    assert machine["claimable_cents"] == 0
 
 
 class StubOnchainLifecycle:
@@ -65,9 +76,11 @@ class StubOnchainLifecycle:
 
     def mint_machine_for_owner(self, *, owner_user_id: str, token_uri: str):
         self.mint_calls.append({"owner_user_id": owner_user_id, "token_uri": token_uri})
+
         class Receipt:
             def __init__(self, onchain_machine_id: str | None):
                 self.onchain_machine_id = onchain_machine_id
+
         return Receipt(self._onchain_machine_id)
 
 
@@ -105,3 +118,126 @@ def test_create_machine_skips_mint_when_onchain_machine_id_is_provided(client: T
     assert payload["onchain_machine_id"] == "77"
     assert payload["ownership_source"] == "bootstrap"
     assert stub.mint_calls == []
+
+
+def test_list_machines_includes_revenue_summary_and_projection_metadata(client: TestClient) -> None:
+    machine = _create_machine(client)
+    container = get_container()
+    with container.session_factory() as db:
+        db_machine = db.get(Machine, machine["id"])
+        db_machine.owner_chain_address = "0x2222222222222222222222222222222222222222"
+        db_machine.owner_projection_last_event_id = "133:11:0xabc:0"
+        db_machine.has_unsettled_revenue = True
+        db_machine.has_active_tasks = False
+        db.add(db_machine)
+        db.flush()
+
+        order = Order(
+            user_id="buyer-1",
+            machine_id=db_machine.id,
+            chat_session_id="chat-1",
+            user_prompt="deliver",
+            recommended_plan_summary="plan",
+            quoted_amount_cents=1000,
+        )
+        db.add(order)
+        db.flush()
+
+        settlement = SettlementRecord(
+            order_id=order.id,
+            gross_amount_cents=1000,
+            platform_fee_cents=100,
+            machine_share_cents=900,
+        )
+        db.add(settlement)
+        db.flush()
+
+        entry = RevenueEntry(
+            order_id=order.id,
+            settlement_id=settlement.id,
+            machine_id=db_machine.id,
+            beneficiary_user_id="owner-1",
+            gross_amount_cents=1000,
+            platform_fee_cents=100,
+            machine_share_cents=900,
+            is_self_use=False,
+            is_dividend_eligible=True,
+        )
+        db.add(entry)
+        claim = MachineRevenueClaim(machine_id=db_machine.id, amount_cents=250, tx_hash="0xclaim")
+        db.add(claim)
+        db.commit()
+
+    payload = _get_machine(client, machine["id"])
+    assert payload["owner_chain_address"] == "0x2222222222222222222222222222222222222222"
+    assert payload["owner_projection_last_event_id"] == "133:11:0xabc:0"
+    assert payload["transfer_ready"] is False
+    assert payload["transfer_blocking_reasons"] == ["unsettled_revenue"]
+    assert payload["projected_cents"] == 900
+    assert payload["claimed_cents"] == 250
+    assert payload["claimable_cents"] == 650
+
+
+def test_list_machines_exposes_mock_spec_and_runtime_snapshot(client: TestClient) -> None:
+    from app.runtime.hardware_simulator import get_shared_hardware_simulator
+
+    machine = _create_machine(client)
+    admission = get_shared_hardware_simulator(machine["id"]).submit(
+        WorkloadSpec(
+            workload_id="machine-view-load",
+            capacity_units=6,
+            memory_mb=4096,
+            duration_ticks=3,
+        )
+    )
+    assert admission.status.value == "running"
+
+    payload = _get_machine(client, machine["id"])
+
+    assert payload["profile_label"] == "OutcomeX Hosted Mac Studio"
+    assert payload["gpu_spec"] == "Apple Silicon 96GB Unified Memory"
+    assert payload["hosted_by"] == "OutcomeX Hosted Rack"
+    assert payload["supported_categories"] == [
+        "image_generation",
+        "video_generation",
+        "text_reasoning",
+        "multimodal",
+        "agentic_workflows",
+    ]
+    assert payload["runtime_snapshot"]["used_memory_mb"] == 4096
+    assert payload["runtime_snapshot"]["total_memory_mb"] == 32768
+    assert payload["runtime_snapshot"]["running_count"] == 1
+    assert payload["runtime_snapshot"]["queued_count"] == 0
+    assert payload["runtime_snapshot"]["memory_utilization"] == 0.125
+    assert payload["runtime_snapshot"]["capacity_utilization"] == 0.25
+    assert payload["availability"] == 75
+    assert payload["confirmed_revenue_30d_pwr"] == 0.0
+    assert payload["claimable_pwr"] == 0.0
+    assert payload["indicative_apr"] == 0.0
+
+
+def test_machine_runtime_snapshot_is_isolated_per_machine(client: TestClient) -> None:
+    from app.runtime.hardware_simulator import get_shared_hardware_simulator
+
+    machine_a = _create_machine(client, owner_user_id="owner-a")
+    machine_b = _create_machine(client, owner_user_id="owner-b")
+
+    simulator_a = get_shared_hardware_simulator(machine_a["id"])
+    admission = simulator_a.submit(
+        WorkloadSpec(
+            workload_id="machine-a-load",
+            capacity_units=6,
+            memory_mb=4096,
+            duration_ticks=3,
+        )
+    )
+    assert admission.status.value == "running"
+
+    payload_a = _get_machine(client, machine_a["id"])
+    payload_b = _get_machine(client, machine_b["id"])
+
+    assert payload_a["runtime_snapshot"]["used_memory_mb"] == 4096
+    assert payload_a["availability"] == 75
+    assert payload_b["runtime_snapshot"]["used_memory_mb"] == 0
+    assert payload_b["runtime_snapshot"]["running_count"] == 0
+    assert payload_b["availability"] == 100

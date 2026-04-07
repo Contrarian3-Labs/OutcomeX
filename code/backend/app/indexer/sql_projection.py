@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
-from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from app.domain.accounting import effective_paid_amount_cents
@@ -77,27 +76,15 @@ class SqlProjectionStore:
 
     def _apply_order_event(self, *, event: NormalizedEvent, payload: OrderLifecycleEvent) -> None:
         with self._session_factory() as db:
-            order = db.scalar(
-                select(Order).where(
-                    Order.onchain_order_id == payload.order_id,
-                )
-            )
-            if order is None and payload.status.upper() == "CREATED":
-                order = db.scalar(
-                    select(Order).where(
-                        Order.create_order_tx_hash == event.transaction_hash,
-                    )
-                )
-                if order is not None:
-                    order.onchain_order_id = payload.order_id
-                    order.onchain_machine_id = payload.machine_id or order.onchain_machine_id
-                    db.add(order)
+            order = self._resolve_order_for_event(db=db, event=event, payload=payload)
             if order is None:
                 return
 
             machine = db.get(Machine, order.machine_id)
             order_status = payload.status.upper()
             if order_status == "PAID" and machine is not None:
+                self._mark_direct_payment_succeeded(db=db, order=order, tx_hash=event.transaction_hash)
+                self._freeze_settlement_policy_if_fully_paid(db=db, order=order, machine=machine)
                 machine.has_active_tasks = True
                 db.add(machine)
             elif order_status == "PREVIEW_READY":
@@ -129,11 +116,103 @@ class SqlProjectionStore:
                         settlement.state = SettlementState.DISTRIBUTED
                         db.add(settlement)
                         db.add(entry)
+                elif order_status == "REFUNDED":
+                    self._mark_direct_payment_refunded(db=db, order=order)
                 else:
                     order.state = OrderState.CANCELLED
                 order.settlement_state = SettlementState.DISTRIBUTED
             db.add(order)
             db.commit()
+
+    @staticmethod
+    def _resolve_order_for_event(*, db, event: NormalizedEvent, payload: OrderLifecycleEvent) -> Order | None:
+        order = db.scalar(
+            select(Order).where(
+                Order.onchain_order_id == payload.order_id,
+            )
+        )
+        if order is not None:
+            return order
+
+        if payload.status.upper() in {"CREATED", "PAID"}:
+            order = db.scalar(
+                select(Order).where(
+                    Order.create_order_tx_hash == event.transaction_hash,
+                )
+            )
+            if order is not None and payload.status.upper() == "CREATED":
+                order.onchain_order_id = payload.order_id
+                order.onchain_machine_id = payload.machine_id or order.onchain_machine_id
+                order.create_order_event_id = event.event_id
+                order.create_order_block_number = event.block_number
+                db.add(order)
+        return order
+
+    @staticmethod
+    def _mark_direct_payment_succeeded(*, db, order: Order, tx_hash: str) -> None:
+        payment = db.scalar(
+            select(Payment)
+            .where(
+                Payment.order_id == order.id,
+                Payment.provider == "onchain_router",
+                Payment.callback_tx_hash == tx_hash,
+            )
+            .order_by(Payment.created_at.desc())
+        )
+        if payment is None:
+            payment = db.scalar(
+                select(Payment)
+                .where(
+                    Payment.order_id == order.id,
+                    Payment.provider == "onchain_router",
+                    Payment.state == PaymentState.PENDING,
+                )
+                .order_by(Payment.created_at.desc())
+            )
+        if payment is None or payment.state == PaymentState.SUCCEEDED:
+            return
+
+        payment.state = PaymentState.SUCCEEDED
+        payment.callback_state = PaymentState.SUCCEEDED.value
+        payment.callback_tx_hash = tx_hash
+        payment.callback_received_at = datetime.now(timezone.utc)
+        db.add(payment)
+        db.flush()
+
+    @staticmethod
+    def _freeze_settlement_policy_if_fully_paid(*, db, order: Order, machine: Machine) -> None:
+        paid_cents = db.scalar(
+            select(func.coalesce(func.sum(Payment.amount_cents), 0)).where(
+                Payment.order_id == order.id,
+                Payment.state == PaymentState.SUCCEEDED,
+            )
+        )
+        gross_amount_cents = effective_paid_amount_cents(order=order, paid_amount_cents=paid_cents)
+        if gross_amount_cents < order.quoted_amount_cents:
+            return
+        if order.settlement_beneficiary_user_id is None:
+            order.settlement_beneficiary_user_id = machine.owner_user_id
+            order.settlement_is_self_use = order.user_id == machine.owner_user_id
+            order.settlement_is_dividend_eligible = order.user_id != machine.owner_user_id
+        db.add(order)
+
+    @staticmethod
+    def _mark_direct_payment_refunded(*, db, order: Order) -> None:
+        payment = db.scalar(
+            select(Payment)
+            .where(
+                Payment.order_id == order.id,
+                Payment.provider == "onchain_router",
+                Payment.state == PaymentState.SUCCEEDED,
+            )
+            .order_by(Payment.created_at.desc())
+        )
+        if payment is None:
+            return
+        payment.state = PaymentState.REFUNDED
+        payment.callback_state = PaymentState.REFUNDED.value
+        payment.callback_received_at = datetime.now(timezone.utc)
+        db.add(payment)
 
     def _apply_settlement_split(self, *, payload: SettlementSplitEvent) -> None:
         with self._session_factory() as db:

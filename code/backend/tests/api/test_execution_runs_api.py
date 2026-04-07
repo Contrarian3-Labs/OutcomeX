@@ -154,6 +154,7 @@ def client(tmp_path) -> tuple[TestClient, _ExecutionServiceStub]:
     db_path = tmp_path / "execution-runs.db"
     os.environ["OUTCOMEX_DATABASE_URL"] = f"sqlite+pysqlite:///{db_path.as_posix()}"
     os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
+    os.environ["OUTCOMEX_EXECUTION_SYNC_ENABLED"] = "false"
     reset_settings_cache()
     reset_container_cache()
     app = create_app()
@@ -205,7 +206,9 @@ def _create_paid_order(client: TestClient, machine_id: str) -> dict:
     return order.json()
 
 
-def test_start_execution_creates_run_and_run_endpoint_returns_snapshot(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
+def test_start_execution_creates_run_and_run_endpoint_returns_snapshot_without_mutating_order_state(
+    client: tuple[TestClient, _ExecutionServiceStub]
+) -> None:
     test_client, stub = client
     machine = _create_machine(test_client)
     order = _create_paid_order(test_client, machine["id"])
@@ -252,15 +255,15 @@ def test_start_execution_creates_run_and_run_endpoint_returns_snapshot(client: t
     order_fetch = test_client.get(f"/api/v1/orders/{order['id']}")
     assert order_fetch.status_code == 200
     assert order_fetch.json()["execution_metadata"]["run_id"] == "aso-run-test"
-    assert order_fetch.json()["execution_metadata"]["run_status"] == "succeeded"
-    assert order_fetch.json()["state"] == "result_pending_confirmation"
+    assert order_fetch.json()["execution_metadata"]["run_status"] == "queued"
+    assert order_fetch.json()["state"] == "executing"
 
     polled_again = test_client.get("/api/v1/execution-runs/aso-run-test")
     assert polled_again.status_code == 200
 
     order_after_second_poll = test_client.get(f"/api/v1/orders/{order['id']}")
     assert order_after_second_poll.status_code == 200
-    assert order_after_second_poll.json()["state"] == "result_pending_confirmation"
+    assert order_after_second_poll.json()["state"] == "executing"
     assert order_after_second_poll.json()["settlement_state"] == "not_ready"
 
 
@@ -279,7 +282,9 @@ def test_start_execution_rejects_duplicate_active_run(client: tuple[TestClient, 
     assert stub.submit_calls == 1
 
 
-def test_execution_run_poll_broadcasts_preview_ready_when_onchain_order_exists(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
+def test_execution_run_get_does_not_broadcast_preview_ready_when_onchain_order_exists(
+    client: tuple[TestClient, _ExecutionServiceStub]
+) -> None:
     test_client, _ = client
     machine = _create_machine(test_client)
     order = _create_paid_order(test_client, machine["id"])
@@ -303,5 +308,5 @@ def test_execution_run_poll_broadcasts_preview_ready_when_onchain_order_exists(c
     order_fetch = test_client.get(f"/api/v1/orders/{order['id']}")
     assert order_fetch.status_code == 200
     payload = order_fetch.json()
-    assert payload["execution_metadata"]["onchain_preview_ready_tx_hash"] == "0xpreview"
-    assert payload["state"] == "result_pending_confirmation"
+    assert "onchain_preview_ready_tx_hash" not in payload["execution_metadata"]
+    assert payload["state"] == "executing"

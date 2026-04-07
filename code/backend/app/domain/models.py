@@ -29,6 +29,7 @@ class Machine(Base):
     onchain_machine_id: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
     display_name: Mapped[str] = mapped_column(String(128))
     owner_user_id: Mapped[str] = mapped_column(String(64), index=True)
+    owner_chain_address: Mapped[str | None] = mapped_column(String(42), nullable=True)
     ownership_source: Mapped[str] = mapped_column(String(32), default="bootstrap", nullable=False)
     owner_projection_last_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     owner_projected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -14,6 +14,7 @@ class MachineOwnershipProjectionResult:
     applied: bool
     machine_id: str
     owner_user_id: str | None
+    chain_owner: str | None = None
     reason: str | None = None
 
 
@@ -43,22 +44,28 @@ class MachineOwnershipProjectionIntegrator:
                 applied=False,
                 machine_id=machine_id,
                 owner_user_id=None,
+                chain_owner=chain_owner,
                 reason="machine_not_found",
             )
 
+        machine.owner_chain_address = chain_owner
+        machine.owner_projection_last_event_id = event_id
+        machine.owner_projected_at = utc_now()
+
         resolved_owner_user_id = self._owner_resolver(chain_owner)
         if resolved_owner_user_id is None:
+            db.add(machine)
+            db.commit()
             return MachineOwnershipProjectionResult(
                 applied=False,
                 machine_id=machine_id,
                 owner_user_id=None,
+                chain_owner=chain_owner,
                 reason="owner_unresolved",
             )
 
         machine.owner_user_id = resolved_owner_user_id
         machine.ownership_source = "chain"
-        machine.owner_projection_last_event_id = event_id
-        machine.owner_projected_at = utc_now()
         machine.pending_transfer_new_owner_user_id = None
         machine.pending_transfer_keep_previous_setup = None
         machine.pending_transfer_requested_at = None
@@ -69,4 +76,5 @@ class MachineOwnershipProjectionIntegrator:
             applied=True,
             machine_id=machine_id,
             owner_user_id=machine.owner_user_id,
+            chain_owner=chain_owner,
         )

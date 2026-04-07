@@ -87,7 +87,7 @@ class ExecutionEngineService:
     def dispatch(self, intent: IntentRequest) -> ExecutionDispatchResult:
         plan = self.plan(intent)
         workload = self._estimate_workload(intent)
-        admission = self._simulator.submit(workload)
+        admission = self._resolve_simulator(intent).submit(workload)
         if admission.status == AdmissionStatus.REJECTED:
             return ExecutionDispatchResult(
                 accepted=False,
@@ -131,6 +131,12 @@ class ExecutionEngineService:
             details=details,
             selected_plan=getattr(submitted_run, "selected_plan", None),
         )
+
+    def _resolve_simulator(self, intent: IntentRequest) -> HardwareSimulator:
+        machine_id = intent.context.get("machine_id")
+        if machine_id:
+            return get_shared_hardware_simulator(machine_id)
+        return self._simulator
 
     def _supports_selected_plan_index(self) -> bool:
         try:

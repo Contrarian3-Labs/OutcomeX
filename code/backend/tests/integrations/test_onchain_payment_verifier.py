@@ -126,6 +126,36 @@ def test_verifier_prefers_live_receipt_when_available() -> None:
     assert verification.evidence_create_order_block_number == 888
 
 
+def test_verifier_rejects_receipt_without_order_created_event() -> None:
+    order = _build_order()
+    payment = _build_payment(order.id)
+    verifier = OnchainPaymentVerifier(
+        receipt_reader=StubReceiptReader(
+            ChainReceipt(
+                tx_hash="0xabc123",
+                status=1,
+                from_address="0xbuyer",
+                to_address="0x0000000000000000000000000000000000000134",
+                block_number=888,
+                event_id="receipt:0xabc123:888",
+                metadata={"logs": []},
+            )
+        )
+    )
+
+    verification = verifier.verify_payment(
+        tx_hash="0xabc123",
+        wallet_address="0xbuyer",
+        order=order,
+        payment=payment,
+    )
+
+    assert verification.matched is False
+    assert verification.reason == "order_created_event_not_found"
+    assert verification.state == PaymentState.FAILED
+    assert verification.evidence_order_id is None
+
+
 def test_verifier_rejects_wallet_mismatch_from_live_receipt() -> None:
     order = _build_order()
     payment = _build_payment(order.id)

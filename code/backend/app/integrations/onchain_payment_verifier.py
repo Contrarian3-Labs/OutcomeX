@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import hashlib
 from functools import lru_cache
 
 from app.domain.enums import PaymentState
@@ -66,16 +65,14 @@ class OnchainPaymentVerifier:
                 receipt=receipt,
                 contract_address=self._contracts_registry.order_book().contract_address,
             )
-            evidence_order_id = (
-                str(decoded_event["order_id"])
-                if decoded_event is not None
-                else self._derive_onchain_order_id(seed=f"{receipt.tx_hash}:{receipt.event_id}:{order.id}")
-            )
-            evidence_event_id = (
-                f"OrderCreated:{evidence_order_id}:{str(decoded_event['transaction_hash']).lower()}"
-                if decoded_event is not None
-                else receipt.event_id
-            )
+            if decoded_event is None:
+                return self._failure(
+                    tx_hash=tx_hash_normalized,
+                    reason="order_created_event_not_found",
+                    wallet_address=wallet_address,
+                )
+            evidence_order_id = str(decoded_event["order_id"])
+            evidence_event_id = f"OrderCreated:{evidence_order_id}:{str(decoded_event['transaction_hash']).lower()}"
             return OnchainPaymentVerificationResult(
                 matched=True,
                 state=PaymentState.SUCCEEDED,
@@ -92,11 +89,6 @@ class OnchainPaymentVerifier:
             )
 
         return self._failure(tx_hash=tx_hash_normalized, reason="receipt_not_found", wallet_address=wallet_address)
-
-    @staticmethod
-    def _derive_onchain_order_id(*, seed: str) -> str:
-        digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
-        return f"oc_{(int(digest[:16], 16) % 1_000_000_000) + 1}"
 
     @staticmethod
     def _failure(*, tx_hash: str, reason: str, wallet_address: str | None) -> OnchainPaymentVerificationResult:

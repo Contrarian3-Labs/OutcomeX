@@ -5,6 +5,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.config import get_settings
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.enums import ExecutionRunStatus, ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
 from app.domain.models import ExecutionRun, Machine, Order, Payment
@@ -34,6 +35,14 @@ def _preview_valid(order: Order) -> bool | None:
     if preview_valid is None:
         return True if order.preview_state == PreviewState.READY and order.execution_state == ExecutionState.SUCCEEDED else None
     return bool(preview_valid)
+
+
+def _ensure_demo_write_allowed() -> None:
+    if get_settings().env not in {"dev", "test"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Mock result-ready is only available in dev/test",
+        )
 
 
 def _is_settlement_policy_frozen(order: Order) -> bool:
@@ -156,9 +165,12 @@ def _build_execution_plan(
     prompt: str,
     input_files: list[str],
     execution_strategy: ExecutionStrategy,
+    machine_id: str | None = None,
     selected_native_plan_index: int | None = None,
 ):
     context = {}
+    if machine_id is not None:
+        context["machine_id"] = machine_id
     if selected_native_plan_index is not None:
         context["selected_native_plan_index"] = str(selected_native_plan_index)
     return ExecutionEngineService().plan(
@@ -229,6 +241,7 @@ def create_order(
         prompt=payload.user_prompt,
         input_files=payload.input_files,
         execution_strategy=selected_plan.strategy,
+        machine_id=machine.id,
         selected_native_plan_index=selected_plan.native_plan_index,
     )
     execution_metadata = dict(execution_plan.metadata)
@@ -317,6 +330,7 @@ def mock_mark_result_ready(
     order_writer: OrderWriter = Depends(get_order_writer),
     onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
 ) -> ResultReadyResponse:
+    _ensure_demo_write_allowed()
     order = db.get(Order, order_id)
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
@@ -389,6 +403,7 @@ def start_order_execution(
 
     intent_context = {}
     selected_native_plan_index = (order.execution_metadata or {}).get("selected_native_plan_index")
+    intent_context["machine_id"] = machine.id
     if selected_native_plan_index is not None:
         intent_context["selected_native_plan_index"] = str(selected_native_plan_index)
 

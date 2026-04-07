@@ -40,6 +40,14 @@ PWR_WEI_MULTIPLIER = Decimal("1000000000000000000")
 TERMINAL_PAYMENT_STATES = {PaymentState.SUCCEEDED, PaymentState.FAILED, PaymentState.REFUNDED}
 
 
+def _ensure_demo_write_allowed(*, detail: str) -> None:
+    if get_settings().env not in {"dev", "test"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=detail,
+        )
+
+
 def _existing_active_hsp_payment(order_id: str, db: Session) -> Payment | None:
     return db.scalar(
         select(Payment).where(
@@ -263,6 +271,15 @@ def _persist_order_chain_anchor(
     order.create_order_tx_hash = create_order_tx_hash
     order.create_order_event_id = create_order_event_id
     order.create_order_block_number = create_order_block_number
+
+
+def _persist_order_tx_correlation(order: Order, *, create_order_tx_hash: str) -> None:
+    if order.create_order_tx_hash is not None and order.create_order_tx_hash != create_order_tx_hash:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Order already correlated with a different payment tx hash",
+        )
+    order.create_order_tx_hash = create_order_tx_hash
 
 
 def _backfill_order_chain_anchor_from_verification(order: Order, verification) -> None:
@@ -527,7 +544,6 @@ def sync_onchain_payment(
     payment_id: str,
     payload: DirectPaymentSyncRequest,
     db: Session = Depends(get_db),
-    order_writer: OrderWriter = Depends(get_order_writer),
     verifier: OnchainPaymentVerifier = Depends(get_onchain_payment_verifier),
 ) -> DirectPaymentSyncResponse:
     payment = db.get(Payment, payment_id)
@@ -553,17 +569,14 @@ def sync_onchain_payment(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Onchain evidence verification failed: {verification.reason or 'mismatch'}",
         )
+    if verification.state != PaymentState.SUCCEEDED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Onchain receipt did not confirm a successful payment",
+        )
 
-    _backfill_order_chain_anchor_from_verification(order, verification)
+    _persist_order_tx_correlation(order, create_order_tx_hash=verification.tx_hash)
     db.add(order)
-
-    _apply_payment_state(
-        payment,
-        state=verification.state,
-        db=db,
-        order_writer=order_writer,
-        write_chain=False,
-    )
 
     payment.callback_event_id = verification.event_id
     payment.callback_state = verification.state.value
@@ -586,6 +599,7 @@ def mock_confirm_payment(
     db: Session = Depends(get_db),
     order_writer: OrderWriter = Depends(get_order_writer),
 ) -> MockPaymentConfirmResponse:
+    _ensure_demo_write_allowed(detail="Mock payment confirmation is only available in dev/test")
     payment = db.get(Payment, payment_id)
     if payment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found")

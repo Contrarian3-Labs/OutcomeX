@@ -4,10 +4,8 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.domain.enums import ExecutionRunStatus, ExecutionState
 from app.domain.models import ExecutionRun, Order
-from app.indexer.execution_sync import _sync_model_from_snapshot, _sync_order_from_snapshot
+from app.indexer.execution_sync import _sync_model_from_snapshot
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
-from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
-from app.onchain.order_writer import OrderWriter, get_order_writer
 from app.schemas.execution_run import ExecutionRunResponse
 
 router = APIRouter()
@@ -57,12 +55,28 @@ def _selected_plan_binding(selected_plan: dict | None, submission_payload: dict 
 
 
 def _build_execution_run_response(run: ExecutionRun, snapshot, order: Order | None) -> ExecutionRunResponse:
-    response = ExecutionRunResponse.model_validate(run)
-    selected_plan = _selected_plan_payload(snapshot, order, run.submission_payload)
+    snapshot_submission_payload = getattr(snapshot, "submission_payload", None)
+    selected_plan = _selected_plan_payload(snapshot, order, snapshot_submission_payload or run.submission_payload)
+    response = ExecutionRunResponse.model_validate(run).model_copy(
+        update={
+            "status": getattr(snapshot, "status", run.status),
+            "submission_payload": snapshot_submission_payload if snapshot_submission_payload is not None else run.submission_payload,
+            "workspace_path": getattr(snapshot, "workspace_path", run.workspace_path),
+            "run_dir": getattr(snapshot, "run_dir", run.run_dir),
+            "preview_manifest": list(getattr(snapshot, "preview_manifest", run.preview_manifest) or []),
+            "artifact_manifest": list(getattr(snapshot, "artifact_manifest", run.artifact_manifest) or []),
+            "skills_manifest": list(getattr(snapshot, "skills_manifest", run.skills_manifest) or []),
+            "model_usage_manifest": list(getattr(snapshot, "model_usage_manifest", run.model_usage_manifest) or []),
+            "summary_metrics": getattr(snapshot, "summary_metrics", run.summary_metrics) or {},
+            "error": getattr(snapshot, "error", run.error),
+            "started_at": getattr(snapshot, "started_at", run.started_at),
+            "finished_at": getattr(snapshot, "finished_at", run.finished_at),
+        }
+    )
     return response.model_copy(
         update={
             "selected_plan": selected_plan,
-            "selected_plan_binding": _selected_plan_binding(selected_plan, run.submission_payload),
+            "selected_plan_binding": _selected_plan_binding(selected_plan, response.submission_payload),
             "pid": getattr(snapshot, "pid", None),
             "pid_alive": getattr(snapshot, "pid_alive", None),
             "stdout_log_path": getattr(snapshot, "stdout_log_path", None),
@@ -80,29 +94,13 @@ def get_execution_run(
     run_id: str,
     db: Session = Depends(get_db),
     execution_service=Depends(get_agentskillos_execution_service),
-    onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
-    order_writer: OrderWriter = Depends(get_order_writer),
 ) -> ExecutionRunResponse:
     run = db.get(ExecutionRun, run_id)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution run not found")
 
     snapshot = execution_service.get_run(run_id)
-    _sync_model_from_snapshot(run, snapshot)
-
     order = db.get(Order, run.order_id)
-    if order is not None:
-        _sync_order_from_snapshot(
-            db=db,
-            order=order,
-            run=run,
-            onchain_lifecycle=onchain_lifecycle,
-            order_writer=order_writer,
-        )
-
-    db.add(run)
-    db.commit()
-    db.refresh(run)
     return _build_execution_run_response(run, snapshot, order)
 
 

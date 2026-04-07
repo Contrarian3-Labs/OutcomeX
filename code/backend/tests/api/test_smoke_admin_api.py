@@ -138,16 +138,15 @@ def test_smoke_reset_clears_backend_state_and_cancels_active_runs(client: tuple[
     assert not output_root.exists()
 
 
-def test_smoke_reset_rejected_outside_dev_or_test(tmp_path) -> None:
+def test_smoke_reset_rejected_outside_dev_or_test(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "prod.db"
-    os.environ["OUTCOMEX_DATABASE_URL"] = f"sqlite+pysqlite:///{db_path.as_posix()}"
-    os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
-    os.environ["OUTCOMEX_ENV"] = "prod"
+    monkeypatch.setenv("OUTCOMEX_DATABASE_URL", f"sqlite+pysqlite:///{db_path.as_posix()}")
+    monkeypatch.setenv("OUTCOMEX_AUTO_CREATE_TABLES", "true")
+    monkeypatch.setenv("OUTCOMEX_ENV", "stage")
     reset_settings_cache()
     reset_container_cache()
 
     with TestClient(create_app()) as test_client:
         response = test_client.post("/api/v1/debug/smoke-reset")
 
-    assert response.status_code == 403
-    assert response.json()["detail"] == "Smoke reset endpoint is only available in dev/test"
+    assert response.status_code == 404

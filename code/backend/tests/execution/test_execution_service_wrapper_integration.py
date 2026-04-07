@@ -121,3 +121,31 @@ def test_dependency_execution_service_shares_admission_state_and_reset_hook() ->
         )
     )
     assert refreshed.admission.status == AdmissionStatus.RUNNING
+
+
+def test_execution_admission_state_is_isolated_per_machine_when_machine_context_is_present() -> None:
+    service = ExecutionEngineService(execution_service=_ExecutionServiceSpy())
+
+    for idx in range(3):
+        result = service.dispatch(
+            IntentRequest(
+                intent_id=f"intent-machine-a-{idx}",
+                prompt="Fill runtime slots on machine A",
+                input_files=(),
+                execution_strategy=ExecutionStrategy.SIMPLICITY,
+                context={"machine_id": "machine-a"},
+            )
+        )
+        assert result.admission.status == AdmissionStatus.RUNNING
+
+    isolated = service.dispatch(
+        IntentRequest(
+            intent_id="intent-machine-b-0",
+            prompt="Machine B should still have fresh capacity",
+            input_files=(),
+            execution_strategy=ExecutionStrategy.SIMPLICITY,
+            context={"machine_id": "machine-b"},
+        )
+    )
+
+    assert isolated.admission.status == AdmissionStatus.RUNNING

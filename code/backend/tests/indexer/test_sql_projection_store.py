@@ -7,16 +7,16 @@ from app.indexer.events import MachineAssetEvent, NormalizedEvent, OrderLifecycl
 from app.indexer.sql_projection import SqlProjectionStore
 
 
-def _event(*, payload, event_name: str) -> NormalizedEvent:
+def _event(*, payload, event_name: str, transaction_hash: str = "0xabc", block_number: int = 10) -> NormalizedEvent:
     return NormalizedEvent(
-        event_id="133:10:0xabc:1",
+        event_id=f"133:{block_number}:{transaction_hash}:1",
         chain_id=133,
         contract_name="OrderBook",
         contract_address="0x3000000000000000000000000000000000000003",
         event_name=event_name,
-        block_number=10,
+        block_number=block_number,
         block_hash="0xblock",
-        transaction_hash="0xabc",
+        transaction_hash=transaction_hash,
         log_index=1,
         payload=payload,
     )
@@ -49,6 +49,7 @@ def test_sql_projection_updates_machine_owner_from_chain_projection() -> None:
     with session_factory() as db:
         machine = db.get(Machine, "88")
         assert machine.owner_user_id == "owner-2"
+        assert machine.owner_chain_address == "0x2222222222222222222222222222222222222222"
         assert machine.ownership_source == "chain"
 
 
@@ -146,3 +147,80 @@ def test_sql_projection_marks_unsettled_revenue_from_settlement_split() -> None:
     with session_factory() as db:
         machine = db.get(Machine, "m-1")
         assert machine.has_unsettled_revenue is True
+
+
+def test_sql_projection_advances_direct_payment_from_created_and_paid_events() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+    with session_factory() as db:
+        machine = Machine(id="m-1", display_name="node", owner_user_id="owner-1")
+        order = Order(
+            id="o-1",
+            create_order_tx_hash="0xpaytx",
+            user_id="u-1",
+            machine_id="m-1",
+            chat_session_id="chat-1",
+            user_prompt="build",
+            recommended_plan_summary="plan",
+            quoted_amount_cents=100,
+        )
+        payment = Payment(
+            id="p-1",
+            order_id="o-1",
+            provider="onchain_router",
+            amount_cents=100,
+            currency="USDC",
+            state=PaymentState.PENDING,
+        )
+        db.add(machine)
+        db.add(order)
+        db.add(payment)
+        db.commit()
+
+    store = SqlProjectionStore(session_factory=session_factory)
+    store.apply(
+        _event(
+            event_name="OrderCreated",
+            transaction_hash="0xpaytx",
+            block_number=22,
+            payload=OrderLifecycleEvent(
+                order_id="42",
+                machine_id="7",
+                buyer="0xbuyer",
+                status="CREATED",
+                amount_wei=100,
+            ),
+        )
+    )
+    store.apply(
+        _event(
+            event_name="OrderPaid",
+            transaction_hash="0xpaytx",
+            block_number=22,
+            payload=OrderLifecycleEvent(
+                order_id="42",
+                machine_id="7",
+                buyer="0xbuyer",
+                status="PAID",
+                amount_wei=100,
+            ),
+        )
+    )
+
+    with session_factory() as db:
+        order = db.get(Order, "o-1")
+        payment = db.get(Payment, "p-1")
+        machine = db.get(Machine, "m-1")
+        assert order.onchain_order_id == "42"
+        assert order.onchain_machine_id == "7"
+        assert order.create_order_event_id == "133:22:0xpaytx:1"
+        assert order.create_order_block_number == 22
+        assert payment.state == PaymentState.SUCCEEDED
+        assert payment.callback_tx_hash == "0xpaytx"
+        assert payment.callback_state == PaymentState.SUCCEEDED.value
+        assert order.settlement_beneficiary_user_id == "owner-1"
+        assert order.settlement_is_self_use is False
+        assert order.settlement_is_dividend_eligible is True
+        assert machine.has_active_tasks is True

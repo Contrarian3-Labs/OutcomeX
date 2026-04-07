@@ -1,5 +1,3 @@
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -8,7 +6,6 @@ from app.api.deps import get_db
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.enums import PaymentState, SettlementState
 from app.domain.models import Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementRecord
-from app.domain.settlement_projection import ensure_confirmed_settlement_projection
 from app.domain.rules import has_sufficient_payment
 from app.schemas.revenue import (
     RevenueAccountOverviewResponse,
@@ -25,18 +22,6 @@ def _succeeded_payment_total_cents(order_id: str, db: Session) -> int:
             Payment.state == PaymentState.SUCCEEDED,
         )
     )
-
-
-def _has_other_unsettled_revenue(machine_id: str, current_order_id: str, db: Session) -> bool:
-    unsettled_count = db.scalar(
-        select(func.count(Order.id)).where(
-            Order.machine_id == machine_id,
-            Order.id != current_order_id,
-            Order.settlement_beneficiary_user_id.is_not(None),
-            Order.settlement_state != SettlementState.DISTRIBUTED,
-        )
-    )
-    return bool(unsettled_count)
 
 
 def _machine_ids_for_owner(owner_user_id: str, db: Session) -> list[str]:
@@ -143,30 +128,12 @@ def distribute_revenue(order_id: str, db: Session = Depends(get_db)) -> RevenueD
 
     dividend_eligible = order.settlement_is_dividend_eligible
     self_use = order.settlement_is_self_use
-    now = datetime.now(timezone.utc)
-
-    order.settlement_state = SettlementState.DISTRIBUTED
-    if settlement is None:
-        settlement, entry = ensure_confirmed_settlement_projection(
-            db=db,
-            order=order,
-            machine=machine,
-            gross_amount_cents=effective_paid_cents,
-            distributed_at=now,
+    entry = db.scalar(select(RevenueEntry).where(RevenueEntry.order_id == order.id))
+    if settlement is None or entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Settlement projection pending from indexed onchain events",
         )
-    else:
-        settlement, entry = ensure_confirmed_settlement_projection(
-            db=db,
-            order=order,
-            machine=machine,
-            gross_amount_cents=settlement.gross_amount_cents,
-            distributed_at=settlement.distributed_at or now,
-        )
-        machine.has_unsettled_revenue = _has_other_unsettled_revenue(machine.id, order.id, db)
-        db.add(machine)
-
-    db.add(order)
-    db.commit()
 
     return RevenueDistributionResponse(
         order_id=order.id,
@@ -178,7 +145,7 @@ def distribute_revenue(order_id: str, db: Session = Depends(get_db)) -> RevenueD
         machine_share_cents=entry.machine_share_cents,
         is_self_use=self_use,
         is_dividend_eligible=dividend_eligible,
-        distributed_at=settlement.distributed_at or now,
+        distributed_at=settlement.distributed_at,
     )
 
 

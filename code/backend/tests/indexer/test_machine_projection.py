@@ -67,9 +67,45 @@ def test_machine_ownership_integrator_applies_projected_owner_truth() -> None:
         assert outcome.applied is True
         assert outcome.machine_id == "88"
         assert outcome.owner_user_id == "owner-2"
+        assert outcome.chain_owner == "0x2222222222222222222222222222222222222222"
 
         db.refresh(machine)
         assert machine.owner_user_id == "owner-2"
+        assert machine.owner_chain_address == "0x2222222222222222222222222222222222222222"
         assert machine.ownership_source == "chain"
         assert machine.owner_projection_last_event_id == "177:12:0xowner:1"
         assert machine.pending_transfer_new_owner_user_id is None
+
+
+def test_machine_ownership_integrator_persists_chain_owner_even_when_user_mapping_is_missing() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+
+    with Session(engine) as db:
+        machine = Machine(
+            display_name="GANA node",
+            owner_user_id="owner-1",
+            onchain_machine_id="88",
+        )
+        db.add(machine)
+        db.commit()
+        db.refresh(machine)
+
+        integrator = MachineOwnershipProjectionIntegrator(owner_resolver=lambda _chain_owner: None)
+
+        outcome = integrator.apply_machine_owner_projection(
+            db=db,
+            machine_id="88",
+            chain_owner="0x3333333333333333333333333333333333333333",
+            event_id="177:13:0xowner:2",
+        )
+
+        assert outcome.applied is False
+        assert outcome.reason == "owner_unresolved"
+        assert outcome.chain_owner == "0x3333333333333333333333333333333333333333"
+
+        db.refresh(machine)
+        assert machine.owner_user_id == "owner-1"
+        assert machine.owner_chain_address == "0x3333333333333333333333333333333333333333"
+        assert machine.owner_projection_last_event_id == "177:13:0xowner:2"
+        assert machine.owner_projected_at is not None

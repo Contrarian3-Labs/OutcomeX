@@ -3,11 +3,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.core.config import get_settings
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.enums import PaymentState, SettlementState
 from app.domain.models import Machine, Order, Payment, SettlementRecord
-from app.domain.settlement_projection import ensure_confirmed_settlement_projection
 from app.domain.rules import calculate_revenue_split, can_start_settlement, has_sufficient_payment
 from app.onchain.claim_state_reader import SettlementClaimStateReader, get_settlement_claim_state_reader
 from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
@@ -118,29 +116,17 @@ def start_settlement(
     gross_amount_cents = effective_paid_amount_cents(order=order, paid_amount_cents=paid_cents)
     platform_fee_cents, machine_share_cents = calculate_revenue_split(gross_amount_cents)
 
-    if get_settings().onchain_rpc_url.strip():
-        order.settlement_state = SettlementState.DISTRIBUTED
-        settlement, _ = ensure_confirmed_settlement_projection(
-            db=db,
-            order=order,
-            machine=machine,
-            gross_amount_cents=gross_amount_cents,
-        )
-    else:
-        order.settlement_state = SettlementState.LOCKED
-        settlement = SettlementRecord(
-            order_id=order.id,
-            gross_amount_cents=gross_amount_cents,
-            platform_fee_cents=platform_fee_cents,
-            machine_share_cents=machine_share_cents,
-            state=SettlementState.LOCKED,
-            distributed_at=None,
-        )
-        machine.has_active_tasks = False
-        machine.has_unsettled_revenue = bool(order.settlement_is_dividend_eligible and machine_share_cents > 0)
-        db.add(machine)
-        db.add(settlement)
-        db.flush()
+    order.settlement_state = SettlementState.LOCKED
+    settlement = SettlementRecord(
+        order_id=order.id,
+        gross_amount_cents=gross_amount_cents,
+        platform_fee_cents=platform_fee_cents,
+        machine_share_cents=machine_share_cents,
+        state=SettlementState.LOCKED,
+        distributed_at=None,
+    )
+    db.add(settlement)
+    db.flush()
 
     db.add(order)
     db.commit()

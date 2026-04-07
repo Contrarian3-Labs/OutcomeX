@@ -1,5 +1,3 @@
-import os
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -9,10 +7,11 @@ from app.main import create_app
 
 
 @pytest.fixture
-def client(tmp_path) -> TestClient:
+def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     db_path = tmp_path / "orders-execution-metadata.db"
-    os.environ["OUTCOMEX_DATABASE_URL"] = f"sqlite+pysqlite:///{db_path.as_posix()}"
-    os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
+    monkeypatch.setenv("OUTCOMEX_DATABASE_URL", f"sqlite+pysqlite:///{db_path.as_posix()}")
+    monkeypatch.setenv("OUTCOMEX_AUTO_CREATE_TABLES", "true")
+    monkeypatch.setenv("OUTCOMEX_ENV", "dev")
     reset_settings_cache()
     reset_container_cache()
     with TestClient(create_app()) as test_client:

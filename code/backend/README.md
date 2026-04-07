@@ -85,14 +85,19 @@ Current PWR anchor behavior:
 - `pwr_quote` and `pwr_anchor_price_cents` are returned together
 - the current anchor is a minimal backend-priced anchor, not a market oracle
 
-Direct onchain payment success freezes settlement policy in backend state, but does not emit a duplicate `markOrderPaid` write because escrow has already happened onchain.
+Direct onchain payment sync is now correlation-only:
+
+- backend verifies the receipt / wallet / router target
+- backend stores tx correlation and callback evidence
+- final paid state and settlement policy are projected from indexed onchain lifecycle events
 
 Additional hardening now in place:
 
 - direct onchain sync uses a verifier boundary instead of trusting caller-reported success
-- backend orders carry a chain-facing `onchain_order_id` for direct-pay addressability
-- machine transfer API records transfer intent; canonical owner comes from chain projection
+- direct-pay success requires a real decodable `OrderCreated` event
+- machine ownership is projected from chain events; transfer intent is no longer a product API boundary
 - runtime admission occupancy is shared across service instances via a container-managed simulator
+- when `OUTCOMEX_ENV=prod`, app startup now fails fast if the onchain runtime/indexer is unavailable or unhealthy
 
 ## Local run
 
@@ -109,6 +114,11 @@ Health endpoint:
 ```text
 GET /api/v1/health
 ```
+
+Production note:
+
+- `prod` no longer silently degrades to `NullOnchainIndexer`
+- deploy with a reachable RPC + valid indexer subscriptions + healthy onchain config, or startup will fail fast
 
 ## Test
 
