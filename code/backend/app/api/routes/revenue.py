@@ -30,6 +30,9 @@ def _normalize_action_mode(mode: str) -> str:
     return normalized
 
 
+DEFAULT_USER_ACTION_MODE = "user_sign"
+
+
 def _user_sign_claim_response(*, machine: Machine, claimant_user_id: str, write_result) -> MachineRevenueClaimResponse:
     return MachineRevenueClaimResponse(
         machine_id=machine.id,
@@ -251,7 +254,7 @@ def revenue_account_overview(owner_user_id: str, db: Session = Depends(get_db)) 
 @router.post("/machines/{machine_id}/claim", response_model=MachineRevenueClaimResponse, response_model_exclude_none=True)
 def claim_machine_revenue(
     machine_id: str,
-    mode: str = Query(default="server_broadcast"),
+    mode: str = Query(default=DEFAULT_USER_ACTION_MODE),
     db: Session = Depends(get_db),
     order_writer: OrderWriter = Depends(get_order_writer),
     onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),

@@ -181,7 +181,7 @@ def test_available_actions_show_refund_for_invalid_preview(
 
 
 
-def test_confirm_result_user_sign_returns_call_intent_without_broadcast(
+def test_confirm_result_defaults_to_user_sign_call_intent(
     client: tuple[TestClient, StubOnchainLifecycle],
 ) -> None:
     test_client, stub = client
@@ -192,7 +192,7 @@ def test_confirm_result_user_sign_returns_call_intent_without_broadcast(
     assert test_client.post(f"/api/v1/orders/{order['id']}/mock-result-ready").status_code == 200
     stub.user_calls.clear()
 
-    response = test_client.post(f"/api/v1/orders/{order['id']}/confirm-result?mode=user_sign")
+    response = test_client.post(f"/api/v1/orders/{order['id']}/confirm-result")
 
     assert response.status_code == 200
     payload = response.json()
@@ -220,7 +220,7 @@ def test_reject_valid_preview_creates_local_settlement_projection(
     _anchor_order(order["id"])
     assert test_client.post(f"/api/v1/orders/{order['id']}/mock-result-ready").status_code == 200
 
-    response = test_client.post(f"/api/v1/orders/{order['id']}/reject-valid-preview")
+    response = test_client.post(f"/api/v1/orders/{order['id']}/reject-valid-preview?mode=server_broadcast")
 
     assert response.status_code == 200
     with get_container().session_factory() as db:
@@ -246,7 +246,7 @@ def test_reject_valid_preview_broadcasts_buyer_onchain_tx(
     _anchor_order(order["id"])
     assert test_client.post(f"/api/v1/orders/{order['id']}/mock-result-ready").status_code == 200
 
-    response = test_client.post(f"/api/v1/orders/{order['id']}/reject-valid-preview")
+    response = test_client.post(f"/api/v1/orders/{order['id']}/reject-valid-preview?mode=server_broadcast")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -264,7 +264,7 @@ def test_reject_valid_preview_broadcasts_buyer_onchain_tx(
     }
 
 
-def test_reject_valid_preview_user_sign_returns_call_intent_without_broadcast(
+def test_reject_valid_preview_defaults_to_user_sign_call_intent(
     client: tuple[TestClient, StubOnchainLifecycle],
 ) -> None:
     test_client, stub = client
@@ -275,7 +275,7 @@ def test_reject_valid_preview_user_sign_returns_call_intent_without_broadcast(
     assert test_client.post(f"/api/v1/orders/{order['id']}/mock-result-ready").status_code == 200
     stub.user_calls.clear()
 
-    response = test_client.post(f"/api/v1/orders/{order['id']}/reject-valid-preview?mode=user_sign")
+    response = test_client.post(f"/api/v1/orders/{order['id']}/reject-valid-preview")
 
     assert response.status_code == 200
     payload = response.json()
@@ -306,7 +306,9 @@ def test_refund_failed_or_no_valid_preview_creates_zero_revenue_projection(
         == 200
     )
 
-    response = test_client.post(f"/api/v1/orders/{order['id']}/refund-failed-or-no-valid-preview")
+    response = test_client.post(
+        f"/api/v1/orders/{order['id']}/refund-failed-or-no-valid-preview?mode=server_broadcast"
+    )
 
     assert response.status_code == 200
     with get_container().session_factory() as db:
@@ -335,7 +337,9 @@ def test_refund_failed_or_no_valid_preview_broadcasts_onchain_tx(
         == 200
     )
 
-    response = test_client.post(f"/api/v1/orders/{order['id']}/refund-failed-or-no-valid-preview")
+    response = test_client.post(
+        f"/api/v1/orders/{order['id']}/refund-failed-or-no-valid-preview?mode=server_broadcast"
+    )
 
     assert response.status_code == 200
     assert response.json() == {
@@ -353,7 +357,7 @@ def test_refund_failed_or_no_valid_preview_broadcasts_onchain_tx(
     }
 
 
-def test_refund_failed_or_no_valid_preview_user_sign_returns_call_intent_without_broadcast(
+def test_refund_failed_or_no_valid_preview_defaults_to_user_sign_call_intent(
     client: tuple[TestClient, StubOnchainLifecycle],
 ) -> None:
     test_client, stub = client
@@ -367,7 +371,7 @@ def test_refund_failed_or_no_valid_preview_user_sign_returns_call_intent_without
     )
     stub.user_calls.clear()
 
-    response = test_client.post(f"/api/v1/orders/{order['id']}/refund-failed-or-no-valid-preview?mode=user_sign")
+    response = test_client.post(f"/api/v1/orders/{order['id']}/refund-failed-or-no-valid-preview")
 
     assert response.status_code == 200
     payload = response.json()

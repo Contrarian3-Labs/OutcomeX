@@ -31,6 +31,9 @@ def _normalize_action_mode(mode: str) -> str:
     return normalized
 
 
+DEFAULT_USER_ACTION_MODE = "user_sign"
+
+
 def _user_sign_refund_claim_response(*, order: Order, currency: str, claimant_user_id: str, write_result) -> RefundClaimResponse:
     return RefundClaimResponse(
         order_id=order.id,
@@ -184,7 +187,7 @@ def _latest_successful_payment(order_id: str, db: Session) -> Payment | None:
 @router.post("/orders/{order_id}/claim-refund", response_model=RefundClaimResponse, response_model_exclude_none=True)
 def claim_order_refund(
     order_id: str,
-    mode: str = Query(default="server_broadcast"),
+    mode: str = Query(default=DEFAULT_USER_ACTION_MODE),
     db: Session = Depends(get_db),
     order_writer: OrderWriter = Depends(get_order_writer),
     claim_state_reader: SettlementClaimStateReader = Depends(get_settlement_claim_state_reader),

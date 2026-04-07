@@ -160,7 +160,7 @@ def test_claim_machine_revenue_broadcasts_real_onchain_method(
     test_client, stub, _claim_reader = client
     machine = _seed_machine(owner_user_id="owner-1", has_unsettled_revenue=True)
 
-    response = test_client.post(f"/api/v1/revenue/machines/{machine.id}/claim")
+    response = test_client.post(f"/api/v1/revenue/machines/{machine.id}/claim?mode=server_broadcast")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -200,7 +200,7 @@ def test_claim_refund_uses_buyer_signer_and_payment_currency(
     machine = _seed_machine(owner_user_id="owner-1", has_unsettled_revenue=False)
     order = _seed_refundable_order(machine_id=machine.id, user_id="buyer-1", currency="USDC")
 
-    response = test_client.post(f"/api/v1/settlement/orders/{order.id}/claim-refund")
+    response = test_client.post(f"/api/v1/settlement/orders/{order.id}/claim-refund?mode=server_broadcast")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -243,14 +243,14 @@ def test_claim_platform_revenue_uses_treasury_signer(
 
 
 
-def test_claim_machine_revenue_user_sign_returns_call_intent_without_broadcast(
+def test_claim_machine_revenue_defaults_to_user_sign_call_intent(
     client: tuple[TestClient, StubOnchainLifecycle, StubSettlementClaimStateReader],
 ) -> None:
     test_client, stub, _claim_reader = client
     machine = _seed_machine(owner_user_id="owner-1", has_unsettled_revenue=True)
     stub.user_calls.clear()
 
-    response = test_client.post(f"/api/v1/revenue/machines/{machine.id}/claim?mode=user_sign")
+    response = test_client.post(f"/api/v1/revenue/machines/{machine.id}/claim")
 
     assert response.status_code == 200
     payload = response.json()
@@ -268,7 +268,7 @@ def test_claim_machine_revenue_user_sign_returns_call_intent_without_broadcast(
     assert stub.user_calls == []
 
 
-def test_claim_refund_user_sign_returns_call_intent_without_broadcast(
+def test_claim_refund_defaults_to_user_sign_call_intent(
     client: tuple[TestClient, StubOnchainLifecycle, StubSettlementClaimStateReader],
 ) -> None:
     test_client, stub, _claim_reader = client
@@ -276,7 +276,7 @@ def test_claim_refund_user_sign_returns_call_intent_without_broadcast(
     order = _seed_refundable_order(machine_id=machine.id, user_id="buyer-1", currency="USDC")
     stub.user_calls.clear()
 
-    response = test_client.post(f"/api/v1/settlement/orders/{order.id}/claim-refund?mode=user_sign")
+    response = test_client.post(f"/api/v1/settlement/orders/{order.id}/claim-refund")
 
     assert response.status_code == 200
     payload = response.json()

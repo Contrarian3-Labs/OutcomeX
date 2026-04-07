@@ -97,6 +97,9 @@ def _normalize_action_mode(mode: str) -> str:
     return normalized
 
 
+DEFAULT_USER_ACTION_MODE = "user_sign"
+
+
 def _user_sign_action_response(*, order: Order, write_result) -> OrderSettlementActionResponse:
     return OrderSettlementActionResponse(
         order_id=order.id,
@@ -343,7 +346,7 @@ def get_order(order_id: str, db: Session = Depends(get_db)) -> Order:
 @router.post("/{order_id}/confirm-result", response_model=ResultConfirmResponse, response_model_exclude_none=True)
 def confirm_order_result(
     order_id: str,
-    mode: str = Query(default="server_broadcast"),
+    mode: str = Query(default=DEFAULT_USER_ACTION_MODE),
     db: Session = Depends(get_db),
     order_writer: OrderWriter = Depends(get_order_writer),
     onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
@@ -515,7 +518,7 @@ def mock_mark_result_ready(
 )
 def reject_valid_preview(
     order_id: str,
-    mode: str = Query(default="server_broadcast"),
+    mode: str = Query(default=DEFAULT_USER_ACTION_MODE),
     db: Session = Depends(get_db),
     order_writer: OrderWriter = Depends(get_order_writer),
     onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
@@ -590,7 +593,7 @@ def reject_valid_preview(
 )
 def refund_failed_or_no_valid_preview(
     order_id: str,
-    mode: str = Query(default="server_broadcast"),
+    mode: str = Query(default=DEFAULT_USER_ACTION_MODE),
     db: Session = Depends(get_db),
     order_writer: OrderWriter = Depends(get_order_writer),
     onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
