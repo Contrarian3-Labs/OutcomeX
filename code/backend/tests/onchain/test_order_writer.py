@@ -4,6 +4,7 @@ from app.domain.enums import ExecutionState, OrderState, PaymentState, PreviewSt
 from app.domain.models import Order, Payment, SettlementRecord
 from app.onchain.contracts_registry import ContractsRegistry
 from app.onchain.order_writer import OrderWriter
+from app.onchain.tx_sender import encode_contract_call
 
 
 def _build_order() -> Order:
@@ -152,6 +153,33 @@ def test_writer_builds_direct_payment_call_spec() -> None:
     assert "order_id" not in intent.payload
     assert intent.payload["signing_standard"] == "eip3009"
     assert intent.payload["currency"] == "USDC"
+    calldata = encode_contract_call(intent)
+    assert calldata is not None
+    assert calldata.startswith("0xc73f27f1")
+
+
+def test_writer_builds_usdt_direct_payment_call_spec() -> None:
+    writer = OrderWriter(ContractsRegistry())
+    order = _build_order()
+    payment = Payment(
+        id="payment-4",
+        order_id=order.id,
+        provider="onchain_router",
+        provider_reference="payWithUSDT",
+        amount_cents=1000,
+        currency="USDT",
+        state=PaymentState.PENDING,
+    )
+
+    intent = writer.build_direct_payment_intent(order, payment)
+
+    assert intent.contract_name == "OrderPaymentRouter"
+    assert intent.method_name == "createOrderAndPayWithUSDT"
+    assert intent.payload["currency"] == "USDT"
+    assert intent.payload["signing_standard"] == "permit2"
+    calldata = encode_contract_call(intent)
+    assert calldata is not None
+    assert calldata.startswith("0x3d961057")
 
 
 def test_writer_builds_pwr_direct_payment_call_spec() -> None:
@@ -180,3 +208,6 @@ def test_writer_builds_pwr_direct_payment_call_spec() -> None:
     assert intent.payload["currency"] == "PWR"
     assert intent.payload["pwr_amount"] == "36000000000000000000"
     assert intent.payload["pricing_version"] == "phase1_v3"
+    calldata = encode_contract_call(intent)
+    assert calldata is not None
+    assert calldata.startswith("0x321a55a2")

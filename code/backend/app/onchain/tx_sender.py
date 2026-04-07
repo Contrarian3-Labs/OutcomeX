@@ -9,6 +9,9 @@ from app.core.config import get_settings
 from app.onchain.order_writer import OrderWriteResult
 
 CREATE_PAID_ORDER_SELECTOR = "0xcaf5331f"
+CREATE_ORDER_AND_PAY_WITH_USDC_SELECTOR = "0xc73f27f1"
+CREATE_ORDER_AND_PAY_WITH_USDT_SELECTOR = "0x3d961057"
+CREATE_ORDER_AND_PAY_WITH_PWR_SELECTOR = "0x321a55a2"
 MARK_PREVIEW_READY_SELECTOR = "0x9bd0cb73"
 CONFIRM_RESULT_SELECTOR = "0xeb05cf51"
 REJECT_VALID_PREVIEW_SELECTOR = "0xd5518ff7"
@@ -18,7 +21,7 @@ CLAIM_MACHINE_REVENUE_SELECTOR = "0x379607f5"
 CLAIM_REFUND_SELECTOR = "0xbffa55d5"
 CLAIM_PLATFORM_REVENUE_SELECTOR = "0x23037e0c"
 
-SUPPORTED_METHODS = {
+TRANSACTION_METHODS = {
     "createPaidOrderByAdapter",
     "markPreviewReady",
     "confirmResult",
@@ -28,6 +31,12 @@ SUPPORTED_METHODS = {
     "claimMachineRevenue",
     "claimRefund",
     "claimPlatformRevenue",
+}
+
+ENCODABLE_METHODS = TRANSACTION_METHODS | {
+    "createOrderAndPayWithUSDC",
+    "createOrderAndPayWithUSDT",
+    "createOrderAndPayWithPWR",
 }
 
 
@@ -42,7 +51,7 @@ class NullTransactionSender:
 
 
 def encode_contract_call(write_result: OrderWriteResult) -> str | None:
-    if write_result.method_name not in SUPPORTED_METHODS:
+    if write_result.method_name not in ENCODABLE_METHODS:
         return None
     return PythonTransactionSender._encode_method_call(
         method_name=write_result.method_name,
@@ -95,7 +104,7 @@ class PythonTransactionSender:
 
     def send(self, write_result: OrderWriteResult) -> OrderWriteResult:
         method_name = write_result.method_name
-        if method_name not in SUPPORTED_METHODS:
+        if method_name not in TRANSACTION_METHODS:
             return write_result
 
         private_key = self._resolve_private_key(method_name)
@@ -164,6 +173,44 @@ class PythonTransactionSender:
 
     @classmethod
     def _encode_method_call(cls, *, method_name: str, payload: dict[str, Any]) -> str:
+        if method_name == "createOrderAndPayWithUSDC":
+            valid_after = payload.get("valid_after", 0)
+            valid_before = payload.get("valid_before", 0)
+            nonce = payload.get("nonce", "0x0")
+            v = payload.get("v", 0)
+            r = payload.get("r", "0x0")
+            s = payload.get("s", "0x0")
+            encoded = [
+                cls._encode_uint256(payload["machine_id"]),
+                cls._encode_uint256(payload["gross_amount_cents"]),
+                cls._encode_uint256(valid_after),
+                cls._encode_uint256(valid_before),
+                cls._encode_bytes32(nonce),
+                cls._encode_uint256(v),
+                cls._encode_bytes32(r),
+                cls._encode_bytes32(s),
+            ]
+            return CREATE_ORDER_AND_PAY_WITH_USDC_SELECTOR + "".join(encoded)
+        if method_name == "createOrderAndPayWithUSDT":
+            permit_nonce = payload.get("permit_nonce", payload.get("nonce", 0))
+            deadline = payload.get("deadline", 0)
+            signature = payload.get("signature", "0x")
+            encoded = [
+                cls._encode_uint256(payload["machine_id"]),
+                cls._encode_uint256(payload["gross_amount_cents"]),
+                cls._encode_uint256(permit_nonce),
+                cls._encode_uint256(deadline),
+                cls._encode_uint256(160),
+                cls._encode_bytes(signature),
+            ]
+            return CREATE_ORDER_AND_PAY_WITH_USDT_SELECTOR + "".join(encoded)
+        if method_name == "createOrderAndPayWithPWR":
+            pwr_amount = payload.get("pwr_amount", payload["gross_amount_cents"])
+            encoded = [
+                cls._encode_uint256(payload["machine_id"]),
+                cls._encode_uint256(pwr_amount),
+            ]
+            return CREATE_ORDER_AND_PAY_WITH_PWR_SELECTOR + "".join(encoded)
         if method_name == "createPaidOrderByAdapter":
             encoded = [
                 cls._encode_address(payload["buyer"]),
@@ -210,12 +257,31 @@ class PythonTransactionSender:
             if stripped.startswith("0x"):
                 parsed = int(stripped, 16)
             else:
-                parsed = int(stripped, 10)
+                try:
+                    parsed = int(stripped, 10)
+                except ValueError:
+                    if stripped.startswith("-"):
+                        parsed = int(stripped, 10)
+                    else:
+                        compact = stripped.replace("-", "")
+                        parsed = int(compact, 16)
         else:
             parsed = int(value)
         if parsed < 0:
             raise ValueError("uint256_must_be_non_negative")
         return hex(parsed)[2:].rjust(64, "0")
+
+    @staticmethod
+    def _encode_bytes32(value: str | int) -> str:
+        if isinstance(value, int):
+            return PythonTransactionSender._encode_uint256(value)
+
+        normalized = str(value).strip().lower()
+        if normalized.startswith("0x"):
+            normalized = normalized[2:]
+        if not normalized:
+            normalized = "0"
+        return normalized.rjust(64, "0")[-64:]
 
     @staticmethod
     def _encode_address(value: str) -> str:
@@ -227,6 +293,19 @@ class PythonTransactionSender:
         encoded = str(value).encode("utf-8").hex()
         padded = encoded.ljust(((len(encoded) + 63) // 64) * 64, "0")
         return PythonTransactionSender._encode_uint256(len(str(value).encode("utf-8"))) + padded
+
+    @staticmethod
+    def _encode_bytes(value: str | bytes) -> str:
+        if isinstance(value, bytes):
+            encoded = value.hex()
+        else:
+            normalized = str(value).strip()
+            if normalized.startswith("0x"):
+                encoded = normalized[2:]
+            else:
+                encoded = normalized.encode("utf-8").hex()
+        padded = encoded.ljust(((len(encoded) + 63) // 64) * 64, "0")
+        return PythonTransactionSender._encode_uint256(len(encoded) // 2) + padded
 
     @staticmethod
     def _encode_bool(value: bool | str | int) -> str:

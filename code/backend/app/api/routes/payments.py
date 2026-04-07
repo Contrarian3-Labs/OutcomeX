@@ -13,6 +13,7 @@ from app.domain.rules import has_sufficient_payment, is_dividend_eligible
 from app.integrations.onchain_broadcaster import OnchainCreateOrderReceipt
 from app.integrations.onchain_payment_verifier import OnchainPaymentVerifier, get_onchain_payment_verifier
 from app.onchain.order_writer import OrderWriter, get_order_writer
+from app.onchain.tx_sender import encode_contract_call
 from app.runtime.cost_service import RuntimeCostService, get_runtime_cost_service
 from app.schemas.payment import (
     DirectPaymentIntentRequest,
@@ -270,6 +271,18 @@ def create_direct_payment_intent(
     db.add(payment)
     db.commit()
     db.refresh(payment)
+    calldata = encode_contract_call(direct_intent)
+    if calldata is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unsupported direct intent method: {direct_intent.method_name}",
+        )
+    wallet_submit_payload = {
+        "to": direct_intent.contract_address,
+        "data": calldata,
+        "value": "0x0",
+        **direct_intent.payload,
+    }
 
     return DirectPaymentIntentResponse(
         payment_id=payment.id,
@@ -280,7 +293,8 @@ def create_direct_payment_intent(
         chain_id=direct_intent.chain_id,
         method_name=direct_intent.method_name,
         signing_standard=str(direct_intent.payload["signing_standard"]),
-        submit_payload=direct_intent.payload,
+        submit_payload=wallet_submit_payload,
+        calldata=calldata,
         state=payment.state,
         quote=quote,
         created_at=payment.created_at,

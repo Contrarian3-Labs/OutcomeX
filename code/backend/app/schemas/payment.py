@@ -48,6 +48,7 @@ class DirectPaymentIntentResponse(BaseModel):
     method_name: str
     signing_standard: str
     submit_payload: dict
+    calldata: str
     state: PaymentState
     quote: QuoteResponse | None = None
     created_at: datetime
