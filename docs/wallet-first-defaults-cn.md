@@ -27,11 +27,14 @@
 - `POST /api/v1/payments/{payment_id}/sync-onchain`
 - `POST /api/v1/payments/orders/{order_id}/intent`
 - `POST /api/v1/payments/hsp/webhooks`
+- `POST /api/v1/settlement/orders/{order_id}/start`
+- `POST /api/v1/revenue/orders/{order_id}/distribute`
 - `POST /api/v1/settlement/platform/claim`
 
 原因：
 
 - `USDC / USDT` 直付仍需要 backend 协助做 intent / finalize / verifier / projection
+- `settlement start` / `revenue distribute` 仍是当前后端账务投影链路的一部分，尚未完全替换成纯事件驱动
 - `platform claim` 属于 treasury / admin 范畴
 
 ## 重要边界修正
@@ -42,6 +45,7 @@
 - `PWR` direct pay：应由前端直接调用合约
 - `confirm / reject / refund / claim_refund / machine_claim / transfer`：应由前端直接调用合约
 - backend 对这些非支付动作的职责应逐步收敛为：监听链上事件、更新 projection、提供读取接口
+- 但当前仍保留少量过渡中的后端写入口，用于结算投影推进与 demo 演示
 
 ## 对前端的含义
 
@@ -50,12 +54,14 @@
 - `USDC / USDT` 直付：继续走 backend `intent / finalize`
 - `PWR` 与非支付类用户动作：优先直接调合约
 - 不再依赖 backend 非支付 submit route，因为这些 route 已不存在
+- `settlement/start`、`revenue/distribute` 与 `platform/claim` 目前仍由 backend 提供，不属于前端钱包直调替代范围
 
 ## 对 backend 的边界含义
 
 - backend 不再为 `confirm / reject / refund / claim_refund / machine_claim / transfer` 提供提交入口
 - 这些动作的业务状态应只来自链上事件 / projection
 - backend 仍需继续收敛剩余 demo-only fallback，目标是把非支付状态同步完全收口到 event-driven read model
+- `POST /api/v1/orders/{order_id}/mock-result-ready` 仍是 demo / 测试用途的例外接口，不应被前端当作正式集成边界
 
 ## 验证范围
 
