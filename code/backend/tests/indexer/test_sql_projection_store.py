@@ -2,8 +2,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.domain.enums import OrderState, PaymentState, SettlementState
-from app.domain.models import Base, Machine, Order, Payment
-from app.indexer.events import MachineAssetEvent, NormalizedEvent, OrderLifecycleEvent, SettlementSplitEvent
+from app.domain.models import Base, Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementRecord
+from app.indexer.events import (
+    MachineAssetEvent,
+    NormalizedEvent,
+    OrderLifecycleEvent,
+    RevenueClaimedEvent,
+    SettlementSplitEvent,
+)
 from app.indexer.sql_projection import SqlProjectionStore
 
 
@@ -224,3 +230,76 @@ def test_sql_projection_advances_direct_payment_from_created_and_paid_events() -
         assert order.settlement_is_self_use is False
         assert order.settlement_is_dividend_eligible is True
         assert machine.has_active_tasks is True
+
+
+def test_sql_projection_records_machine_claim_from_revenue_claimed_event() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+    with session_factory() as db:
+        machine = Machine(
+            id="m-1",
+            onchain_machine_id="7",
+            display_name="node",
+            owner_user_id="owner-1",
+            has_unsettled_revenue=True,
+        )
+        order = Order(
+            id="o-1",
+            onchain_order_id="42",
+            user_id="u-1",
+            machine_id="m-1",
+            chat_session_id="chat-1",
+            user_prompt="build",
+            recommended_plan_summary="plan",
+            quoted_amount_cents=1000,
+            state=OrderState.RESULT_CONFIRMED,
+            settlement_state=SettlementState.DISTRIBUTED,
+        )
+        settlement = SettlementRecord(
+            order_id="o-1",
+            gross_amount_cents=1000,
+            platform_fee_cents=100,
+            machine_share_cents=900,
+            state=SettlementState.DISTRIBUTED,
+        )
+        db.add_all([machine, order, settlement])
+        db.flush()
+        db.add(
+            RevenueEntry(
+                order_id="o-1",
+                settlement_id=settlement.id,
+                machine_id="m-1",
+                beneficiary_user_id="owner-1",
+                gross_amount_cents=1000,
+                platform_fee_cents=100,
+                machine_share_cents=900,
+                is_self_use=False,
+                is_dividend_eligible=True,
+            )
+        )
+        db.commit()
+
+    store = SqlProjectionStore(session_factory=session_factory)
+    store.apply(
+        _event(
+            event_name="RevenueClaimed",
+            transaction_hash="0xclaimtx",
+            block_number=23,
+            payload=RevenueClaimedEvent(
+                machine_id="7",
+                account="0xowner",
+                amount_wei=123,
+                claim_nonce=None,
+            ),
+        )
+    )
+
+    with session_factory() as db:
+        machine = db.get(Machine, "m-1")
+        claims = db.query(MachineRevenueClaim).filter(MachineRevenueClaim.machine_id == "m-1").all()
+        assert machine.has_unsettled_revenue is False
+        assert len(claims) == 1
+        assert claims[0].amount_cents == 900
+        assert claims[0].tx_hash == "0xclaimtx"

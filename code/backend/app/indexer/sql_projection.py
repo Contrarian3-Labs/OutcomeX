@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.enums import OrderState, PaymentState, PreviewState, SettlementState
-from app.domain.models import Machine, Order, Payment, RevenueEntry, SettlementRecord
+from app.domain.models import Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementRecord
 from app.domain.settlement_projection import ensure_confirmed_settlement_projection
 from app.indexer.events import (
     MachineAssetEvent,
@@ -48,7 +48,7 @@ class SqlProjectionStore:
             self._apply_settlement_split(payload=payload)
             return
         if isinstance(payload, RevenueClaimedEvent):
-            self._apply_revenue_claim(payload=payload)
+            self._apply_revenue_claim(event=event, payload=payload)
 
     def get_order(self, order_id: str):
         return self._mirror.get_order(order_id)
@@ -230,13 +230,44 @@ class SqlProjectionStore:
             db.add(machine)
             db.commit()
 
-    def _apply_revenue_claim(self, *, payload: RevenueClaimedEvent) -> None:
+    def _apply_revenue_claim(self, *, event: NormalizedEvent, payload: RevenueClaimedEvent) -> None:
         if payload.machine_id is None:
             return
         with self._session_factory() as db:
             machine = db.scalar(select(Machine).where(Machine.onchain_machine_id == payload.machine_id))
             if machine is None:
                 return
+            existing_claim = db.scalar(
+                select(MachineRevenueClaim).where(
+                    MachineRevenueClaim.machine_id == machine.id,
+                    MachineRevenueClaim.tx_hash == event.transaction_hash,
+                )
+            )
+            if existing_claim is None:
+                projected_cents = (
+                    db.scalar(
+                        select(func.coalesce(func.sum(RevenueEntry.machine_share_cents), 0)).where(
+                            RevenueEntry.machine_id == machine.id
+                        )
+                    )
+                    or 0
+                )
+                claimed_cents = (
+                    db.scalar(
+                        select(func.coalesce(func.sum(MachineRevenueClaim.amount_cents), 0)).where(
+                            MachineRevenueClaim.machine_id == machine.id
+                        )
+                    )
+                    or 0
+                )
+                claim_amount_cents = max(0, projected_cents - claimed_cents)
+                db.add(
+                    MachineRevenueClaim(
+                        machine_id=machine.id,
+                        amount_cents=claim_amount_cents,
+                        tx_hash=event.transaction_hash,
+                    )
+                )
             machine.has_unsettled_revenue = False
             db.add(machine)
             db.commit()
