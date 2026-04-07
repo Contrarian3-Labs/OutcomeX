@@ -39,6 +39,7 @@ class OrderResponse(BaseModel):
     settlement_is_dividend_eligible: bool | None
     execution_request: dict | None
     execution_metadata: dict | None
+    latest_success_payment_currency: str | None = None
     result_confirmed_at: datetime | None
     created_at: datetime
 

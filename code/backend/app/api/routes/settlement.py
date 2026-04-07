@@ -16,7 +16,6 @@ from app.onchain.tx_sender import encode_contract_call
 from app.schemas.settlement import (
     PlatformRevenueClaimRequest,
     PlatformRevenueClaimResponse,
-    RefundClaimResponse,
     SettlementPreviewResponse,
     SettlementStartResponse,
 )
@@ -29,24 +28,6 @@ def _normalize_action_mode(mode: str) -> str:
     if normalized not in {"server_broadcast", "user_sign"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported action mode")
     return normalized
-
-
-DEFAULT_USER_ACTION_MODE = "user_sign"
-
-
-def _user_sign_refund_claim_response(*, order: Order, currency: str, claimant_user_id: str, write_result) -> RefundClaimResponse:
-    return RefundClaimResponse(
-        order_id=order.id,
-        claimant_user_id=claimant_user_id,
-        currency=currency.upper(),
-        mode="user_sign",
-        chain_id=write_result.chain_id,
-        contract_address=write_result.contract_address,
-        contract_name=write_result.contract_name,
-        method_name=write_result.method_name,
-        submit_payload=write_result.payload,
-        calldata=encode_contract_call(write_result),
-    )
 
 
 def _user_sign_platform_claim_response(*, currency: str, write_result) -> PlatformRevenueClaimResponse:
@@ -170,89 +151,6 @@ def start_settlement(
         state=settlement.state,
         created_at=settlement.created_at,
     )
-
-
-def _latest_successful_payment(order_id: str, db: Session) -> Payment | None:
-    return db.scalar(
-        select(Payment)
-        .where(
-            Payment.order_id == order_id,
-            Payment.state == PaymentState.SUCCEEDED,
-        )
-        .order_by(Payment.created_at.desc())
-        .limit(1)
-    )
-
-
-@router.post("/orders/{order_id}/claim-refund", response_model=RefundClaimResponse, response_model_exclude_none=True)
-def claim_order_refund(
-    order_id: str,
-    mode: str = Query(default=DEFAULT_USER_ACTION_MODE),
-    db: Session = Depends(get_db),
-    order_writer: OrderWriter = Depends(get_order_writer),
-    claim_state_reader: SettlementClaimStateReader = Depends(get_settlement_claim_state_reader),
-    onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
-) -> RefundClaimResponse:
-    order = db.get(Order, order_id)
-    if order is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
-    if not onchain_lifecycle.enabled():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Onchain runtime is not enabled")
-    if order.state.value not in {"cancelled"}:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Order is not in a refundable terminal state")
-
-    payment = _latest_successful_payment(order.id, db)
-    if payment is None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Order has no successful payment to refund")
-    try:
-        refundable_amount = claim_state_reader.refundable_amount(user_id=order.user_id, currency=payment.currency)
-    except RuntimeError as exc:
-        if str(exc) == "buyer_wallet_unresolved":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Buyer wallet is not configured for onchain refund claim",
-            ) from exc
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Unable to read onchain refund balance: {exc}",
-        ) from exc
-    if refundable_amount <= 0:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Refund has no claimable onchain balance")
-
-    action_mode = _normalize_action_mode(mode)
-    write_result = order_writer.claim_refund(
-        currency=payment.currency,
-        user_id=order.user_id,
-        order_id=order.id,
-    )
-    if action_mode == "user_sign":
-        return _user_sign_refund_claim_response(
-            order=order,
-            currency=payment.currency,
-            claimant_user_id=order.user_id,
-            write_result=write_result,
-        )
-
-    try:
-        broadcast = onchain_lifecycle.send_as_user(
-            user_id=order.user_id,
-            write_result=write_result,
-        )
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Onchain buyer signer is not configured: {exc}",
-        ) from exc
-
-    return RefundClaimResponse(
-        order_id=order.id,
-        claimant_user_id=order.user_id,
-        currency=payment.currency.upper(),
-        tx_hash=broadcast.tx_hash,
-        contract_name="SettlementController",
-        method_name="claimRefund",
-    )
-
 
 @router.post("/platform/claim", response_model=PlatformRevenueClaimResponse, response_model_exclude_none=True)
 def claim_platform_revenue(

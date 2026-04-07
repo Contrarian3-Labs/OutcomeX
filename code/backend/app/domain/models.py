@@ -87,6 +87,14 @@ class Order(Base):
     revenue_entries: Mapped[list["RevenueEntry"]] = relationship(back_populates="order")
     execution_runs: Mapped[list["ExecutionRun"]] = relationship(back_populates="order")
 
+    @property
+    def latest_success_payment_currency(self) -> str | None:
+        successful = [payment for payment in self.payments if payment.state == PaymentState.SUCCEEDED]
+        if not successful:
+            return None
+        latest = max(successful, key=lambda payment: payment.created_at)
+        return latest.currency
+
 
 class ExecutionRun(Base):
     __tablename__ = "execution_runs"

@@ -16,30 +16,6 @@ from app.domain.models import (
     SettlementRecord,
 )
 from app.main import create_app
-from app.onchain.lifecycle_service import get_onchain_lifecycle_service
-
-
-class StubOnchainLifecycle:
-    def __init__(self, *, enabled: bool = True) -> None:
-        self._enabled = enabled
-        self.user_calls: list[dict[str, str]] = []
-
-    def enabled(self) -> bool:
-        return self._enabled
-
-    def send_as_user(self, *, user_id: str, write_result):
-        self.user_calls.append(
-            {
-                "user_id": user_id,
-                "method_name": write_result.method_name,
-                "contract_name": write_result.contract_name,
-            }
-        )
-
-        class Broadcast:
-            tx_hash = "0xclaimmachinerevenue"
-
-        return Broadcast()
 
 
 @pytest.fixture
@@ -189,20 +165,3 @@ def test_revenue_overview_reports_projected_and_claimed_history(client: TestClie
     assert payload["withdraw_history"][1]["tx_hash"] == "0xold"
 
 
-def test_claim_machine_revenue_persists_withdraw_history(client: TestClient) -> None:
-    owner_user_id = "owner-claim"
-    machine = _seed_machine_with_revenue(owner_user_id=owner_user_id, machine_share_cents=800)
-    stub = StubOnchainLifecycle(enabled=True)
-    client.app.dependency_overrides[get_onchain_lifecycle_service] = lambda: stub
-
-    response = client.post(f"/api/v1/revenue/machines/{machine.id}/claim")
-    assert response.status_code == 200
-    assert response.json()["tx_hash"] == "0xclaimmachinerevenue"
-
-    overview = client.get(f"/api/v1/revenue/accounts/{owner_user_id}/overview").json()
-    assert overview["claimed_cents"] == 800
-    assert overview["claimable_cents"] == 0
-    assert overview["withdraw_history"][0]["amount_cents"] == 800
-    assert overview["withdraw_history"][0]["tx_hash"] == "0xclaimmachinerevenue"
-
-    client.app.dependency_overrides.pop(get_onchain_lifecycle_service, None)

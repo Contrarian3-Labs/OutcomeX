@@ -255,18 +255,13 @@ def test_start_execution_creates_run_and_run_endpoint_returns_snapshot(client: t
     assert order_fetch.json()["execution_metadata"]["run_status"] == "succeeded"
     assert order_fetch.json()["state"] == "result_pending_confirmation"
 
-    confirm = test_client.post(f"/api/v1/orders/{order['id']}/confirm-result")
-    assert confirm.status_code == 200
-    assert confirm.json()["state"] == "result_confirmed"
-    assert confirm.json()["settlement_state"] == "ready"
-
     polled_again = test_client.get("/api/v1/execution-runs/aso-run-test")
     assert polled_again.status_code == 200
 
-    order_after_confirm_poll = test_client.get(f"/api/v1/orders/{order['id']}")
-    assert order_after_confirm_poll.status_code == 200
-    assert order_after_confirm_poll.json()["state"] == "result_confirmed"
-    assert order_after_confirm_poll.json()["settlement_state"] == "ready"
+    order_after_second_poll = test_client.get(f"/api/v1/orders/{order['id']}")
+    assert order_after_second_poll.status_code == 200
+    assert order_after_second_poll.json()["state"] == "result_pending_confirmation"
+    assert order_after_second_poll.json()["settlement_state"] == "not_ready"
 
 
 def test_start_execution_rejects_duplicate_active_run(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
