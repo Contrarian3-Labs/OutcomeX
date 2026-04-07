@@ -116,6 +116,26 @@ def _user_sign_action_response(*, order: Order, write_result) -> OrderSettlement
     )
 
 
+def _server_broadcast_action_response(*, order: Order, tx_hash: str, write_result) -> OrderSettlementActionResponse:
+    return OrderSettlementActionResponse(
+        order_id=order.id,
+        state=order.state,
+        settlement_state=order.settlement_state,
+        mode="server_broadcast",
+        tx_hash=tx_hash,
+        chain_id=write_result.chain_id,
+        contract_address=write_result.contract_address,
+        contract_name=write_result.contract_name,
+        method_name=write_result.method_name,
+    )
+
+
+def _persist_execution_metadata_tx_hash(order: Order, *, metadata_key: str, tx_hash: str) -> None:
+    metadata = dict(order.execution_metadata or {})
+    metadata[metadata_key] = tx_hash
+    order.execution_metadata = metadata
+
+
 def _selected_plan_payload_from_order(
     order: Order,
     submission_payload: dict | None = None,
@@ -422,32 +442,45 @@ def confirm_order_result(
         )
 
     confirmed_at = datetime.now(timezone.utc)
-    order.state = OrderState.RESULT_CONFIRMED
-    order.result_confirmed_at = confirmed_at
-    order.settlement_state = SettlementState.DISTRIBUTED if onchain_settlement_enabled else SettlementState.READY
-    metadata = dict(order.execution_metadata or {})
     if onchain_settlement_enabled:
+        write_result = order_writer.confirm_result(order)
         try:
             broadcast = onchain_lifecycle.send_as_user(
                 user_id=order.user_id,
-                write_result=order_writer.confirm_result(order),
+                write_result=write_result,
             )
         except RuntimeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Onchain buyer signer is not configured: {exc}",
             ) from exc
-        metadata["confirm_result_tx_hash"] = broadcast.tx_hash
-        settlement, _ = ensure_confirmed_settlement_projection(
-            db=db,
-            order=order,
-            machine=machine,
-            gross_amount_cents=effective_paid_cents,
-            distributed_at=confirmed_at,
+        _persist_execution_metadata_tx_hash(order, metadata_key="confirm_result_tx_hash", tx_hash=broadcast.tx_hash)
+        db.add(order)
+        db.commit()
+        return ResultConfirmResponse(
+            order_id=order.id,
+            state=order.state,
+            settlement_state=order.settlement_state,
+            result_confirmed_at=order.result_confirmed_at,
+            mode="server_broadcast",
+            tx_hash=broadcast.tx_hash,
+            chain_id=write_result.chain_id,
+            contract_address=write_result.contract_address,
+            contract_name=write_result.contract_name,
+            method_name=write_result.method_name,
         )
-        settlement.state = SettlementState.DISTRIBUTED
-        db.add(settlement)
-    order.execution_metadata = metadata
+    order.state = OrderState.RESULT_CONFIRMED
+    order.result_confirmed_at = confirmed_at
+    order.settlement_state = SettlementState.READY
+    settlement, _ = ensure_confirmed_settlement_projection(
+        db=db,
+        order=order,
+        machine=machine,
+        gross_amount_cents=effective_paid_cents,
+        distributed_at=confirmed_at,
+    )
+    settlement.state = SettlementState.READY
+    db.add(settlement)
     db.add(order)
     db.commit()
 
@@ -456,6 +489,10 @@ def confirm_order_result(
         state=order.state,
         settlement_state=order.settlement_state,
         result_confirmed_at=confirmed_at,
+        mode="server_broadcast",
+        tx_hash=None,
+        contract_name=None,
+        method_name=None,
     )
 
 
@@ -541,48 +578,42 @@ def reject_valid_preview(
     if machine is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
 
-    tx_hash = None
-    contract_name = None
-    method_name = None
-    metadata = dict(order.execution_metadata or {})
     onchain_settlement_enabled = _onchain_settlement_enabled(order, onchain_lifecycle)
     if onchain_settlement_enabled:
+        write_result = order_writer.reject_valid_preview(order)
         try:
-            write_result = order_writer.reject_valid_preview(order)
             broadcast = onchain_lifecycle.send_as_user(user_id=order.user_id, write_result=write_result)
         except RuntimeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Onchain buyer signer is not configured: {exc}",
             ) from exc
-        tx_hash = broadcast.tx_hash
-        contract_name = write_result.contract_name
-        method_name = write_result.method_name
-        metadata["reject_valid_preview_tx_hash"] = tx_hash
+        _persist_execution_metadata_tx_hash(order, metadata_key="reject_valid_preview_tx_hash", tx_hash=broadcast.tx_hash)
+        db.add(order)
+        db.commit()
+        return _server_broadcast_action_response(order=order, tx_hash=broadcast.tx_hash, write_result=write_result)
 
     order.state = OrderState.CANCELLED
-    order.settlement_state = SettlementState.DISTRIBUTED if onchain_settlement_enabled else SettlementState.READY
-    if onchain_settlement_enabled:
-        breakdown = calculate_rejected_valid_preview_breakdown(effective_paid_cents)
-        ensure_settlement_projection(
-            db=db,
-            order=order,
-            machine=machine,
-            gross_amount_cents=breakdown.gross_amount_cents,
-            platform_fee_cents=breakdown.platform_fee_cents,
-            machine_share_cents=breakdown.machine_share_cents,
-        )
-    order.execution_metadata = metadata
+    order.settlement_state = SettlementState.READY
+    breakdown = calculate_rejected_valid_preview_breakdown(effective_paid_cents)
+    ensure_settlement_projection(
+        db=db,
+        order=order,
+        machine=machine,
+        gross_amount_cents=breakdown.gross_amount_cents,
+        platform_fee_cents=breakdown.platform_fee_cents,
+        machine_share_cents=breakdown.machine_share_cents,
+    )
     db.add(order)
     db.commit()
     return OrderSettlementActionResponse(
         order_id=order.id,
         state=order.state,
         settlement_state=order.settlement_state,
-        mode=None,
-        tx_hash=tx_hash,
-        contract_name=contract_name,
-        method_name=method_name,
+        mode="server_broadcast",
+        tx_hash=None,
+        contract_name=None,
+        method_name=None,
     )
 
 
@@ -622,48 +653,46 @@ def refund_failed_or_no_valid_preview(
     if machine is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
 
-    tx_hash = None
-    contract_name = None
-    method_name = None
-    metadata = dict(order.execution_metadata or {})
     onchain_settlement_enabled = _onchain_settlement_enabled(order, onchain_lifecycle)
     if onchain_settlement_enabled:
+        write_result = order_writer.refund_failed_or_no_valid_preview(order)
         try:
-            write_result = order_writer.refund_failed_or_no_valid_preview(order)
             broadcast = onchain_lifecycle.send_as_user(user_id=order.user_id, write_result=write_result)
         except RuntimeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Onchain buyer signer is not configured: {exc}",
             ) from exc
-        tx_hash = broadcast.tx_hash
-        contract_name = write_result.contract_name
-        method_name = write_result.method_name
-        metadata["refund_failed_or_no_valid_preview_tx_hash"] = tx_hash
+        _persist_execution_metadata_tx_hash(
+            order,
+            metadata_key="refund_failed_or_no_valid_preview_tx_hash",
+            tx_hash=broadcast.tx_hash,
+        )
+        db.add(order)
+        db.commit()
+        return _server_broadcast_action_response(order=order, tx_hash=broadcast.tx_hash, write_result=write_result)
 
     order.state = OrderState.CANCELLED
-    order.settlement_state = SettlementState.DISTRIBUTED if onchain_settlement_enabled else SettlementState.READY
-    if onchain_settlement_enabled:
-        breakdown = calculate_failed_or_no_valid_preview_breakdown(effective_paid_cents)
-        ensure_settlement_projection(
-            db=db,
-            order=order,
-            machine=machine,
-            gross_amount_cents=breakdown.gross_amount_cents,
-            platform_fee_cents=breakdown.platform_fee_cents,
-            machine_share_cents=breakdown.machine_share_cents,
-        )
-    order.execution_metadata = metadata
+    order.settlement_state = SettlementState.READY
+    breakdown = calculate_failed_or_no_valid_preview_breakdown(effective_paid_cents)
+    ensure_settlement_projection(
+        db=db,
+        order=order,
+        machine=machine,
+        gross_amount_cents=breakdown.gross_amount_cents,
+        platform_fee_cents=breakdown.platform_fee_cents,
+        machine_share_cents=breakdown.machine_share_cents,
+    )
     db.add(order)
     db.commit()
     return OrderSettlementActionResponse(
         order_id=order.id,
         state=order.state,
         settlement_state=order.settlement_state,
-        mode=None,
-        tx_hash=tx_hash,
-        contract_name=contract_name,
-        method_name=method_name,
+        mode="server_broadcast",
+        tx_hash=None,
+        contract_name=None,
+        method_name=None,
     )
 
 

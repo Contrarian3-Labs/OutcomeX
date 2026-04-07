@@ -53,16 +53,23 @@
 
 ## 对 backend 的边界含义
 
-这次调整只解决了“默认入口”问题，还 **没有** 完成以下更深层的收敛：
+这次调整已经把一部分更深层的 route 语义也收掉了：
 
-- `server_broadcast` 路径仍会直接写部分本地状态
+- 对 **已上链锚定订单** 的 `confirm / reject / refund`，`server_broadcast` 现在只负责广播并记录 `tx_hash`
+- route 不再直接把这些订单写成 `RESULT_CONFIRMED / CANCELLED / DISTRIBUTED`
+- 真正的业务终态继续等待链上事件 / projection 更新
+
+但仍 **没有** 完成以下完全收敛：
+
+- `claim-refund` / `machine claim` 的 `server_broadcast` 仍然保留部分 route-side 本地语义
 - 事件驱动 projection 还不是所有用户经济动作的唯一真相来源
 - `platform claim` 仍默认保留 treasury 广播语义
 
 所以当前状态应准确描述为：
 
 > OutcomeX backend 已把核心用户经济动作的默认入口收敛为 wallet-first，  
-> 但 `server_broadcast` fallback 和部分 route-side state mutation 仍然存在，尚未完全收敛到纯事件驱动终态。
+> 并且已收掉锚定订单在 `confirm / reject / refund` 上的 route-side 终态写入；  
+> 但 claims 与 treasury 相关路径仍未完全收敛到纯事件驱动终态。
 
 ## 验证范围
 

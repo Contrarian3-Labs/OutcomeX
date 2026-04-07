@@ -210,14 +210,51 @@ def test_confirm_result_defaults_to_user_sign_call_intent(
     assert stub.user_calls == []
 
 
-def test_reject_valid_preview_creates_local_settlement_projection(
+def test_confirm_result_server_broadcast_preserves_projection_until_onchain_event(
+    client: tuple[TestClient, StubOnchainLifecycle],
+) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine["id"])
+    _confirm_payment(test_client, order["id"])
+    _anchor_order(order["id"])
+    assert test_client.post(f"/api/v1/orders/{order['id']}/mock-result-ready").status_code == 200
+
+    response = test_client.post(f"/api/v1/orders/{order['id']}/confirm-result?mode=server_broadcast")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "order_id": order["id"],
+        "state": "result_pending_confirmation",
+        "settlement_state": "not_ready",
+        "mode": "server_broadcast",
+        "tx_hash": "0xconfirmresult",
+        "chain_id": 133,
+        "contract_address": "0x0000000000000000000000000000000000000133",
+        "contract_name": "OrderBook",
+        "method_name": "confirmResult",
+    }
+    order_fetch = test_client.get(f"/api/v1/orders/{order['id']}")
+    assert order_fetch.status_code == 200
+    payload = order_fetch.json()
+    assert payload["state"] == "result_pending_confirmation"
+    assert payload["settlement_state"] == "not_ready"
+    assert payload["result_confirmed_at"] is None
+    assert payload["execution_metadata"]["confirm_result_tx_hash"] == "0xconfirmresult"
+    assert stub.user_calls[-1] == {
+        "user_id": "buyer-1",
+        "method_name": "confirmResult",
+        "contract_name": "OrderBook",
+    }
+
+
+def test_reject_valid_preview_creates_local_settlement_projection_for_unanchored_order(
     client: tuple[TestClient, StubOnchainLifecycle],
 ) -> None:
     test_client, _stub = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine["id"])
     _confirm_payment(test_client, order["id"])
-    _anchor_order(order["id"])
     assert test_client.post(f"/api/v1/orders/{order['id']}/mock-result-ready").status_code == 200
 
     response = test_client.post(f"/api/v1/orders/{order['id']}/reject-valid-preview?mode=server_broadcast")
@@ -251,12 +288,21 @@ def test_reject_valid_preview_broadcasts_buyer_onchain_tx(
     assert response.status_code == 200
     assert response.json() == {
         "order_id": order["id"],
-        "state": "cancelled",
-        "settlement_state": "distributed",
+        "state": "result_pending_confirmation",
+        "settlement_state": "not_ready",
+        "mode": "server_broadcast",
         "tx_hash": "0xrejectvalidpreview",
+        "chain_id": 133,
+        "contract_address": "0x0000000000000000000000000000000000000133",
         "contract_name": "OrderBook",
         "method_name": "rejectValidPreview",
     }
+    order_fetch = test_client.get(f"/api/v1/orders/{order['id']}")
+    assert order_fetch.status_code == 200
+    payload = order_fetch.json()
+    assert payload["state"] == "result_pending_confirmation"
+    assert payload["settlement_state"] == "not_ready"
+    assert payload["execution_metadata"]["reject_valid_preview_tx_hash"] == "0xrejectvalidpreview"
     assert stub.user_calls[-1] == {
         "user_id": "buyer-1",
         "method_name": "rejectValidPreview",
@@ -293,14 +339,13 @@ def test_reject_valid_preview_defaults_to_user_sign_call_intent(
     assert stub.user_calls == []
 
 
-def test_refund_failed_or_no_valid_preview_creates_zero_revenue_projection(
+def test_refund_failed_or_no_valid_preview_creates_zero_revenue_projection_for_unanchored_order(
     client: tuple[TestClient, StubOnchainLifecycle],
 ) -> None:
     test_client, _stub = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine["id"])
     _confirm_payment(test_client, order["id"])
-    _anchor_order(order["id"])
     assert (
         test_client.post(f"/api/v1/orders/{order['id']}/mock-result-ready", json={"valid_preview": False}).status_code
         == 200
@@ -344,12 +389,21 @@ def test_refund_failed_or_no_valid_preview_broadcasts_onchain_tx(
     assert response.status_code == 200
     assert response.json() == {
         "order_id": order["id"],
-        "state": "cancelled",
-        "settlement_state": "distributed",
+        "state": "result_pending_confirmation",
+        "settlement_state": "not_ready",
+        "mode": "server_broadcast",
         "tx_hash": "0xrefundfailedornovalidpreview",
+        "chain_id": 133,
+        "contract_address": "0x0000000000000000000000000000000000000133",
         "contract_name": "OrderBook",
         "method_name": "refundFailedOrNoValidPreview",
     }
+    order_fetch = test_client.get(f"/api/v1/orders/{order['id']}")
+    assert order_fetch.status_code == 200
+    payload = order_fetch.json()
+    assert payload["state"] == "result_pending_confirmation"
+    assert payload["settlement_state"] == "not_ready"
+    assert payload["execution_metadata"]["refund_failed_or_no_valid_preview_tx_hash"] == "0xrefundfailedornovalidpreview"
     assert stub.user_calls[-1] == {
         "user_id": "buyer-1",
         "method_name": "refundFailedOrNoValidPreview",
