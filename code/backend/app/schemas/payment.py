@@ -36,6 +36,7 @@ class MockPaymentConfirmResponse(BaseModel):
 class DirectPaymentIntentRequest(BaseModel):
     amount_cents: int = Field(gt=0)
     currency: str = Field(min_length=3, max_length=8)
+    wallet_address: str | None = None
 
 
 class DirectPaymentIntentResponse(BaseModel):
@@ -47,6 +48,30 @@ class DirectPaymentIntentResponse(BaseModel):
     chain_id: int
     method_name: str
     signing_standard: str
+    finalize_required: bool = False
+    signing_request: dict | None = None
+    submit_payload: dict | None = None
+    calldata: str | None = None
+    state: PaymentState
+    quote: QuoteResponse | None = None
+    created_at: datetime
+
+
+class DirectPaymentFinalizeRequest(BaseModel):
+    signature: str = Field(min_length=3)
+
+
+class DirectPaymentFinalizeResponse(BaseModel):
+    payment_id: str
+    order_id: str
+    provider: str
+    contract_name: str
+    contract_address: str
+    chain_id: int
+    method_name: str
+    signing_standard: str
+    finalize_required: bool = False
+    signing_request: dict | None = None
     submit_payload: dict
     calldata: str
     state: PaymentState

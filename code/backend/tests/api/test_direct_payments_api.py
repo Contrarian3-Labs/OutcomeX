@@ -184,7 +184,7 @@ def test_create_direct_payment_intent_returns_router_call_spec(
 
     response = test_client.post(
         f"/api/v1/payments/orders/{order['id']}/direct-intent",
-        json={"amount_cents": 1000, "currency": "USDC"},
+        json={"amount_cents": 1000, "currency": "USDC", "wallet_address": "0x00000000000000000000000000000000000000aa"},
     )
 
     assert response.status_code == 201
@@ -196,14 +196,13 @@ def test_create_direct_payment_intent_returns_router_call_spec(
     assert payload["chain_id"] == 133
     assert payload["method_name"] == "createOrderAndPayWithUSDC"
     assert payload["signing_standard"] == "eip3009"
-    assert payload["calldata"].startswith("0xc73f27f1")
-    assert payload["submit_payload"]["to"] == payload["contract_address"]
-    assert payload["submit_payload"]["data"] == payload["calldata"]
-    assert payload["submit_payload"]["value"] == "0x0"
-    assert payload["submit_payload"]["currency"] == "USDC"
-    assert payload["submit_payload"]["gross_amount_cents"] == 1000
-    assert payload["submit_payload"]["machine_id"] == machine["id"]
-    assert "order_id" not in payload["submit_payload"]
+    assert payload["finalize_required"] is True
+    assert payload["calldata"] is None
+    assert payload["submit_payload"] is None
+    assert payload["signing_request"]["primaryType"] == "ReceiveWithAuthorization"
+    assert payload["signing_request"]["domain"]["name"] == "USD Coin"
+    assert payload["signing_request"]["message"]["to"] == "0x0000000000000000000000000000000000000135"
+    assert payload["signing_request"]["message"]["value"] == "1000"
 
 
 def test_create_direct_payment_intent_supports_pwr_when_anchor_exists(
@@ -223,6 +222,7 @@ def test_create_direct_payment_intent_supports_pwr_when_anchor_exists(
     assert payload["provider"] == "onchain_router"
     assert payload["contract_name"] == "OrderPaymentRouter"
     assert payload["method_name"] == "createOrderAndPayWithPWR"
+    assert payload["finalize_required"] is False
     assert payload["calldata"].startswith("0x321a55a2")
     assert payload["submit_payload"]["to"] == payload["contract_address"]
     assert payload["submit_payload"]["data"] == payload["calldata"]
@@ -248,7 +248,70 @@ def test_create_direct_payment_intent_returns_wallet_envelope_for_usdt(
     payload = response.json()
     assert payload["method_name"] == "createOrderAndPayWithUSDT"
     assert payload["signing_standard"] == "permit2"
+    assert payload["finalize_required"] is True
+    assert payload["calldata"] is None
+    assert payload["submit_payload"] is None
+    assert payload["signing_request"]["primaryType"] == "PermitTransferFrom"
+    assert payload["signing_request"]["domain"]["name"] == "Permit2"
+    assert payload["signing_request"]["message"]["spender"] == payload["contract_address"]
+    assert payload["signing_request"]["message"]["permitted"]["token"] == "0x372325443233febaC1f6998aC750276468c83Cc6".lower()
+
+
+def test_finalize_usdc_direct_payment_intent_returns_wallet_envelope(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
+) -> None:
+    test_client, _spy_writer, _spy_verifier = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine["id"])
+
+    intent = test_client.post(
+        f"/api/v1/payments/orders/{order['id']}/direct-intent",
+        json={"amount_cents": 1000, "currency": "USDC", "wallet_address": "0x00000000000000000000000000000000000000aa"},
+    )
+    assert intent.status_code == 201
+    payment_id = intent.json()["payment_id"]
+
+    response = test_client.post(
+        f"/api/v1/payments/{payment_id}/finalize-intent",
+        json={"signature": "0x" + ("11" * 32) + ("22" * 32) + "1b"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["method_name"] == "createOrderAndPayWithUSDC"
+    assert payload["calldata"].startswith("0xc73f27f1")
+    assert payload["submit_payload"]["to"] == payload["contract_address"]
+    assert payload["submit_payload"]["data"] == payload["calldata"]
+    assert payload["submit_payload"]["value"] == "0x0"
+    assert payload["submit_payload"]["v"] == 27
+    assert payload["submit_payload"]["r"] == "0x" + "11" * 32
+    assert payload["submit_payload"]["s"] == "0x" + "22" * 32
+
+
+def test_finalize_usdt_direct_payment_intent_returns_wallet_envelope(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
+) -> None:
+    test_client, _spy_writer, _spy_verifier = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine["id"])
+
+    intent = test_client.post(
+        f"/api/v1/payments/orders/{order['id']}/direct-intent",
+        json={"amount_cents": 1000, "currency": "USDT"},
+    )
+    assert intent.status_code == 201
+    payment_id = intent.json()["payment_id"]
+
+    response = test_client.post(
+        f"/api/v1/payments/{payment_id}/finalize-intent",
+        json={"signature": "0x" + "22" * 65},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["method_name"] == "createOrderAndPayWithUSDT"
     assert payload["calldata"].startswith("0x3d961057")
+    assert payload["submit_payload"]["signature"] == "0x" + "22" * 65
     assert payload["submit_payload"]["to"] == payload["contract_address"]
     assert payload["submit_payload"]["data"] == payload["calldata"]
     assert payload["submit_payload"]["value"] == "0x0"
@@ -363,7 +426,7 @@ def test_sync_onchain_rejects_unverified_event_mismatch(
 
     intent = test_client.post(
         f"/api/v1/payments/orders/{order['id']}/direct-intent",
-        json={"amount_cents": 1000, "currency": "USDC"},
+        json={"amount_cents": 1000, "currency": "USDC", "wallet_address": "0x00000000000000000000000000000000000000aa"},
     )
     assert intent.status_code == 201
     payment_id = intent.json()["payment_id"]
@@ -402,7 +465,7 @@ def test_sync_onchain_uses_verifier_state_instead_of_caller_state(
 
     intent = test_client.post(
         f"/api/v1/payments/orders/{order['id']}/direct-intent",
-        json={"amount_cents": 1000, "currency": "USDC"},
+        json={"amount_cents": 1000, "currency": "USDC", "wallet_address": "0x00000000000000000000000000000000000000aa"},
     )
     assert intent.status_code == 201
     payment_id = intent.json()["payment_id"]

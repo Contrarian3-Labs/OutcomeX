@@ -131,6 +131,7 @@ class Payment(Base):
     merchant_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     flow_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     checkout_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     currency: Mapped[str] = mapped_column(String(8), default="USD", nullable=False)
     state: Mapped[PaymentState] = mapped_column(Enum(PaymentState), default=PaymentState.CREATED)

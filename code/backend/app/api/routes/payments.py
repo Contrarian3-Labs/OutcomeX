@@ -1,4 +1,7 @@
+import secrets
+from datetime import timedelta
 from decimal import Decimal
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
@@ -6,16 +9,20 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_dependency_container
 from app.core.container import Container
+from app.core.config import get_settings
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.enums import PaymentState
 from app.domain.models import Machine, Order, Payment, utc_now
 from app.domain.rules import has_sufficient_payment, is_dividend_eligible
 from app.integrations.onchain_broadcaster import OnchainCreateOrderReceipt
 from app.integrations.onchain_payment_verifier import OnchainPaymentVerifier, get_onchain_payment_verifier
+from app.onchain.contracts_registry import ContractsRegistry
 from app.onchain.order_writer import OrderWriter, get_order_writer
 from app.onchain.tx_sender import encode_contract_call
 from app.runtime.cost_service import RuntimeCostService, get_runtime_cost_service
 from app.schemas.payment import (
+    DirectPaymentFinalizeRequest,
+    DirectPaymentFinalizeResponse,
     DirectPaymentIntentRequest,
     DirectPaymentIntentResponse,
     DirectPaymentSyncRequest,
@@ -75,6 +82,135 @@ def _freeze_settlement_policy_if_fully_paid(order: Order, db: Session) -> bool:
 
 def _pwr_quote_to_wei_string(pwr_quote: str) -> str:
     return str(int((Decimal(pwr_quote) * PWR_WEI_MULTIPLIER).to_integral_value()))
+
+
+def _normalize_signature(signature: str) -> str:
+    normalized = str(signature).strip().lower()
+    if not normalized.startswith("0x"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Signature must be 0x-prefixed")
+    if len(normalized) != 132:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Signature must be 65 bytes")
+    return normalized
+
+
+def _split_signature(signature: str) -> tuple[int, str, str]:
+    normalized = _normalize_signature(signature)[2:]
+    r = "0x" + normalized[:64]
+    s = "0x" + normalized[64:128]
+    v = int(normalized[128:130], 16)
+    if v in {0, 1}:
+        v += 27
+    return v, r, s
+
+
+def _build_direct_signing_request(
+    *,
+    currency: str,
+    buyer_wallet_address: str | None,
+    amount_cents: int,
+    token_address: str,
+    router_address: str,
+    settlement_escrow: str,
+    chain_id: int,
+    permit2_address: str,
+) -> dict[str, Any] | None:
+    settings = get_settings()
+    if currency == "PWR":
+        return None
+    if currency == "USDC":
+        if not buyer_wallet_address:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="wallet_address is required for USDC direct payment intent",
+            )
+        valid_after = int((utc_now() - timedelta(minutes=1)).timestamp())
+        valid_before = int((utc_now() + timedelta(minutes=30)).timestamp())
+        nonce = "0x" + secrets.token_hex(32)
+        return {
+            "kind": "eip712",
+            "primaryType": "ReceiveWithAuthorization",
+            "domain": {
+                "name": settings.onchain_usdc_eip3009_name,
+                "version": settings.onchain_usdc_eip3009_version,
+                "chainId": chain_id,
+                "verifyingContract": token_address,
+            },
+            "types": {
+                "EIP712Domain": [
+                    {"name": "name", "type": "string"},
+                    {"name": "version", "type": "string"},
+                    {"name": "chainId", "type": "uint256"},
+                    {"name": "verifyingContract", "type": "address"},
+                ],
+                "ReceiveWithAuthorization": [
+                    {"name": "from", "type": "address"},
+                    {"name": "to", "type": "address"},
+                    {"name": "value", "type": "uint256"},
+                    {"name": "validAfter", "type": "uint256"},
+                    {"name": "validBefore", "type": "uint256"},
+                    {"name": "nonce", "type": "bytes32"},
+                ],
+            },
+            "message": {
+                "from": buyer_wallet_address.lower(),
+                "to": settlement_escrow,
+                "value": str(amount_cents),
+                "validAfter": str(valid_after),
+                "validBefore": str(valid_before),
+                "nonce": nonce,
+            },
+        }
+    return {
+        "kind": "eip712",
+        "primaryType": "PermitTransferFrom",
+        "domain": {
+            "name": settings.onchain_permit2_name,
+            "chainId": chain_id,
+            "verifyingContract": permit2_address,
+        },
+        "types": {
+            "EIP712Domain": [
+                {"name": "name", "type": "string"},
+                {"name": "chainId", "type": "uint256"},
+                {"name": "verifyingContract", "type": "address"},
+            ],
+            "PermitTransferFrom": [
+                {"name": "permitted", "type": "TokenPermissions"},
+                {"name": "spender", "type": "address"},
+                {"name": "nonce", "type": "uint256"},
+                {"name": "deadline", "type": "uint256"},
+            ],
+            "TokenPermissions": [
+                {"name": "token", "type": "address"},
+                {"name": "amount", "type": "uint256"},
+            ],
+        },
+        "message": {
+            "permitted": {
+                "token": token_address,
+                "amount": str(amount_cents),
+            },
+            "spender": router_address,
+            "nonce": str(secrets.randbits(128)),
+            "deadline": str(int((utc_now() + timedelta(minutes=30)).timestamp())),
+        },
+    }
+
+
+def _direct_wallet_submit_payload(direct_intent) -> tuple[str, dict[str, Any]]:
+    calldata = encode_contract_call(direct_intent)
+    if calldata is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unsupported direct intent method: {direct_intent.method_name}",
+        )
+    wallet_submit_payload = {
+        "to": direct_intent.contract_address,
+        "data": calldata,
+        "value": "0x0",
+        **direct_intent.payload,
+    }
+    return calldata, wallet_submit_payload
 
 
 def _apply_payment_state(
@@ -268,21 +404,29 @@ def create_direct_payment_intent(
     payment.provider_reference = direct_intent.method_name
     payment.merchant_order_id = order.id
     payment.flow_id = payment.id
+    registry = ContractsRegistry()
+    signing_request = _build_direct_signing_request(
+        currency=currency,
+        buyer_wallet_address=payload.wallet_address,
+        amount_cents=order.quoted_amount_cents,
+        token_address=str(direct_intent.payload.get("token_address") or registry.payment_token(currency)),
+        router_address=direct_intent.contract_address,
+        settlement_escrow=registry.settlement_controller().contract_address,
+        chain_id=direct_intent.chain_id,
+        permit2_address=registry.permit2().contract_address,
+    )
+    finalize_required = signing_request is not None
+    calldata = None
+    wallet_submit_payload = None
+    if not finalize_required:
+        calldata, wallet_submit_payload = _direct_wallet_submit_payload(direct_intent)
+    payment.provider_payload = {
+        "direct_intent_payload": direct_intent.payload,
+        "signing_request": signing_request,
+    }
     db.add(payment)
     db.commit()
     db.refresh(payment)
-    calldata = encode_contract_call(direct_intent)
-    if calldata is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unsupported direct intent method: {direct_intent.method_name}",
-        )
-    wallet_submit_payload = {
-        "to": direct_intent.contract_address,
-        "data": calldata,
-        "value": "0x0",
-        **direct_intent.payload,
-    }
 
     return DirectPaymentIntentResponse(
         payment_id=payment.id,
@@ -293,6 +437,83 @@ def create_direct_payment_intent(
         chain_id=direct_intent.chain_id,
         method_name=direct_intent.method_name,
         signing_standard=str(direct_intent.payload["signing_standard"]),
+        finalize_required=finalize_required,
+        signing_request=signing_request,
+        submit_payload=wallet_submit_payload,
+        calldata=calldata,
+        state=payment.state,
+        quote=quote,
+        created_at=payment.created_at,
+    )
+
+
+@router.post("/{payment_id}/finalize-intent", response_model=DirectPaymentFinalizeResponse)
+def finalize_direct_payment_intent(
+    payment_id: str,
+    payload: DirectPaymentFinalizeRequest,
+    db: Session = Depends(get_db),
+    order_writer: OrderWriter = Depends(get_order_writer),
+    cost_service: RuntimeCostService = Depends(get_runtime_cost_service),
+) -> DirectPaymentFinalizeResponse:
+    payment = db.get(Payment, payment_id)
+    if payment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found")
+    if payment.provider != "onchain_router":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Payment is not an onchain router payment")
+
+    order = db.get(Order, payment.order_id)
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    currency = payment.currency.upper()
+    quote = cost_service.quote_for_order_amount(order.quoted_amount_cents)
+    if currency == "PWR":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="PWR direct payments do not require finalize")
+    direct_intent = order_writer.build_direct_payment_intent(order, payment)
+    if payment.provider_payload and payment.provider_payload.get("direct_intent_payload"):
+        direct_intent.payload.update(dict(payment.provider_payload["direct_intent_payload"]))
+
+    signing_request = payment.provider_payload.get("signing_request") if payment.provider_payload else None
+    if signing_request is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Direct payment signing request not found")
+
+    if currency == "USDC":
+        message = signing_request["message"]
+        v, r, s = _split_signature(payload.signature)
+        direct_intent.payload.update(
+            {
+                "valid_after": message["validAfter"],
+                "valid_before": message["validBefore"],
+                "nonce": message["nonce"],
+                "v": v,
+                "r": r,
+                "s": s,
+            }
+        )
+    elif currency == "USDT":
+        message = signing_request["message"]
+        direct_intent.payload.update(
+            {
+                "permit_nonce": message["nonce"],
+                "deadline": message["deadline"],
+                "signature": _normalize_signature(payload.signature),
+            }
+        )
+    else:  # pragma: no cover
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported direct payment currency")
+
+    calldata, wallet_submit_payload = _direct_wallet_submit_payload(direct_intent)
+    return DirectPaymentFinalizeResponse(
+        payment_id=payment.id,
+        order_id=order.id,
+        provider=payment.provider,
+        contract_name=direct_intent.contract_name,
+        contract_address=direct_intent.contract_address,
+        chain_id=direct_intent.chain_id,
+        method_name=direct_intent.method_name,
+        signing_standard=str(direct_intent.payload["signing_standard"]),
+        finalize_required=False,
+        signing_request=None,
         submit_payload=wallet_submit_payload,
         calldata=calldata,
         state=payment.state,
