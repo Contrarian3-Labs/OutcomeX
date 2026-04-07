@@ -5,6 +5,8 @@ from app.onchain.event_decoder import ORDER_CREATED_TOPIC0
 from app.onchain.order_writer import OrderWriteResult
 from app.onchain.receipts import ChainReceipt
 
+BUYER_ADDRESS = "0x1111111111111111111111111111111111111111"
+
 
 class StubReceiptReader:
     def __init__(self, receipt: ChainReceipt | None) -> None:
@@ -23,14 +25,22 @@ def _write_result() -> OrderWriteResult:
         contract_address="0x0000000000000000000000000000000000000134",
         method_name="createPaidOrderByAdapter",
         idempotency_key="idempotency",
-        payload={"buyer": "0x1111111111111111111111111111111111111111"},
+        payload={"buyer": BUYER_ADDRESS},
     )
 
 
 def _order_created_log(order_id: int) -> dict[str, object]:
     return {
-        "address": "0x0000000000000000000000000000000000000134",
-        "topics": [ORDER_CREATED_TOPIC0, hex(order_id)],
+        "address": "0x0000000000000000000000000000000000000133",
+        "topics": [
+            ORDER_CREATED_TOPIC0,
+            hex(order_id),
+            hex(7),
+            "0x0000000000000000000000001111111111111111111111111111111111111111",
+        ],
+        "data": "0x"
+        + "00000000000000000000000000000000000000000000000000000000000003e8"
+        + "0000000000000000000000000000000000000000000000000000000000000abc",
         "transactionHash": "0xabc123",
         "logIndex": "0x1",
     }

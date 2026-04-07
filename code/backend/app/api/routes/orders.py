@@ -391,6 +391,11 @@ def start_order_execution(
             status_code=status.HTTP_409_CONFLICT,
             detail="Order execution requires full payment",
         )
+    if order.onchain_order_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Order execution requires authoritative paid projection",
+        )
 
     machine = db.get(Machine, order.machine_id)
     if machine is None:

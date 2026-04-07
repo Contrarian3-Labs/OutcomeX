@@ -4,6 +4,11 @@ from app.integrations.onchain_payment_verifier import OnchainPaymentVerifier
 from app.onchain.event_decoder import ORDER_CREATED_TOPIC0
 from app.onchain.receipts import ChainReceipt
 
+BUYER_ADDRESS = "0x00000000000000000000000000000000000000b1"
+OTHER_BUYER_ADDRESS = "0x00000000000000000000000000000000000000b2"
+USDC_ADDRESS = "0x79aec4eea31d50792f61d1ca0733c18c89524c9e"
+USDT_ADDRESS = "0x372325443233febaC1F6998aC750276468c83CC6"
+
 
 def _build_order() -> Order:
     return Order(
@@ -40,7 +45,7 @@ def test_verifier_rejects_missing_receipt_when_live_receipt_unavailable() -> Non
 
     verification = verifier.verify_payment(
         tx_hash="0xabc123",
-        wallet_address="0xbuyer",
+        wallet_address=BUYER_ADDRESS,
         order=order,
         payment=payment,
     )
@@ -94,6 +99,53 @@ def _order_created_log(order_id: int) -> dict[str, object]:
     }
 
 
+def _topic_address(address: str) -> str:
+    normalized = address.lower().replace("0x", "")
+    return "0x" + ("0" * 24) + normalized
+
+
+def _topic_uint256(value: int) -> str:
+    return hex(value)
+
+
+def _encode_word(value: int | str) -> str:
+    if isinstance(value, int):
+        encoded = hex(value)[2:]
+    else:
+        encoded = value.lower().replace("0x", "")
+    return encoded.rjust(64, "0")
+
+
+def _order_created_log_full(*, order_id: int, machine_id: int, buyer: str, gross_amount: int) -> dict[str, object]:
+    return {
+        "address": "0x0000000000000000000000000000000000000133",
+        "topics": [
+            ORDER_CREATED_TOPIC0,
+            _topic_uint256(order_id),
+            _topic_uint256(machine_id),
+            _topic_address(buyer),
+        ],
+        "data": "0x" + _encode_word(gross_amount) + _encode_word("0x0000000000000000000000000000000000000abc"),
+        "transactionHash": "0xabc123",
+        "logIndex": "0x2",
+    }
+
+
+def _order_payment_received_log(*, order_id: int, payer: str, token: str, amount: int) -> dict[str, object]:
+    return {
+        "address": "0x0000000000000000000000000000000000000134",
+        "topics": [
+            "0x108f7e2a0bbfd2535074381616daaa6b78b30921bd6a155acec03ed98ad5792f",
+            _topic_uint256(order_id),
+            _topic_address(payer),
+            _topic_address(token),
+        ],
+        "data": "0x" + _encode_word(amount) + _encode_word("0x" + "11" * 32),
+        "transactionHash": "0xabc123",
+        "logIndex": "0x3",
+    }
+
+
 def test_verifier_prefers_live_receipt_when_available() -> None:
     order = _build_order()
     payment = _build_payment(order.id)
@@ -102,18 +154,28 @@ def test_verifier_prefers_live_receipt_when_available() -> None:
             ChainReceipt(
                 tx_hash="0xabc123",
                 status=1,
-                from_address="0xbuyer",
+                from_address=BUYER_ADDRESS,
                 to_address="0x0000000000000000000000000000000000000134",
                 block_number=888,
                 event_id="receipt:0xabc123:888",
-                metadata={"logs": [_order_created_log(42)]},
+                metadata={
+                    "logs": [
+                        _order_created_log_full(order_id=42, machine_id=7, buyer=BUYER_ADDRESS, gross_amount=1000),
+                        _order_payment_received_log(
+                            order_id=42,
+                            payer=BUYER_ADDRESS,
+                            token=USDC_ADDRESS,
+                            amount=1000,
+                        ),
+                    ]
+                },
             )
         )
     )
 
     verification = verifier.verify_payment(
         tx_hash="0xabc123",
-        wallet_address="0xbuyer",
+        wallet_address=BUYER_ADDRESS,
         order=order,
         payment=payment,
     )
@@ -134,7 +196,7 @@ def test_verifier_rejects_receipt_without_order_created_event() -> None:
             ChainReceipt(
                 tx_hash="0xabc123",
                 status=1,
-                from_address="0xbuyer",
+                from_address=BUYER_ADDRESS,
                 to_address="0x0000000000000000000000000000000000000134",
                 block_number=888,
                 event_id="receipt:0xabc123:888",
@@ -145,7 +207,7 @@ def test_verifier_rejects_receipt_without_order_created_event() -> None:
 
     verification = verifier.verify_payment(
         tx_hash="0xabc123",
-        wallet_address="0xbuyer",
+        wallet_address=BUYER_ADDRESS,
         order=order,
         payment=payment,
     )
@@ -164,7 +226,7 @@ def test_verifier_rejects_wallet_mismatch_from_live_receipt() -> None:
             ChainReceipt(
                 tx_hash="0xabc123",
                 status=1,
-                from_address="0xsomeoneelse",
+                from_address=OTHER_BUYER_ADDRESS,
                 to_address="0x0000000000000000000000000000000000000134",
                 block_number=888,
                 event_id="receipt:0xabc123:888",
@@ -175,10 +237,88 @@ def test_verifier_rejects_wallet_mismatch_from_live_receipt() -> None:
 
     verification = verifier.verify_payment(
         tx_hash="0xabc123",
-        wallet_address="0xbuyer",
+        wallet_address=BUYER_ADDRESS,
         order=order,
         payment=payment,
     )
 
     assert verification.matched is False
     assert verification.reason == "wallet_mismatch"
+
+
+def test_verifier_rejects_machine_id_mismatch_from_order_created_event() -> None:
+    order = _build_order()
+    order.onchain_machine_id = "7"
+    payment = _build_payment(order.id)
+    verifier = OnchainPaymentVerifier(
+        receipt_reader=StubReceiptReader(
+            ChainReceipt(
+                tx_hash="0xabc123",
+                status=1,
+                from_address=BUYER_ADDRESS,
+                to_address="0x0000000000000000000000000000000000000134",
+                block_number=888,
+                event_id="receipt:0xabc123:888",
+                metadata={
+                    "logs": [
+                        _order_created_log_full(order_id=42, machine_id=8, buyer=BUYER_ADDRESS, gross_amount=1000),
+                        _order_payment_received_log(
+                            order_id=42,
+                            payer=BUYER_ADDRESS,
+                            token=USDC_ADDRESS,
+                            amount=1000,
+                        ),
+                    ]
+                },
+            )
+        )
+    )
+
+    verification = verifier.verify_payment(
+        tx_hash="0xabc123",
+        wallet_address=BUYER_ADDRESS,
+        order=order,
+        payment=payment,
+    )
+
+    assert verification.matched is False
+    assert verification.reason == "machine_id_mismatch"
+
+
+def test_verifier_rejects_payment_token_mismatch_from_router_event() -> None:
+    order = _build_order()
+    order.onchain_machine_id = "7"
+    payment = _build_payment(order.id)
+    verifier = OnchainPaymentVerifier(
+        receipt_reader=StubReceiptReader(
+            ChainReceipt(
+                tx_hash="0xabc123",
+                status=1,
+                from_address=BUYER_ADDRESS,
+                to_address="0x0000000000000000000000000000000000000134",
+                block_number=888,
+                event_id="receipt:0xabc123:888",
+                metadata={
+                    "logs": [
+                        _order_created_log_full(order_id=42, machine_id=7, buyer=BUYER_ADDRESS, gross_amount=1000),
+                        _order_payment_received_log(
+                            order_id=42,
+                            payer=BUYER_ADDRESS,
+                            token=USDT_ADDRESS,
+                            amount=1000,
+                        ),
+                    ]
+                },
+            )
+        )
+    )
+
+    verification = verifier.verify_payment(
+        tx_hash="0xabc123",
+        wallet_address=BUYER_ADDRESS,
+        order=order,
+        payment=payment,
+    )
+
+    assert verification.matched is False
+    assert verification.reason == "payment_token_mismatch"

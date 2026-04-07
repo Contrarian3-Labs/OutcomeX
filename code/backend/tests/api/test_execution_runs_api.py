@@ -1,5 +1,7 @@
 import os
 from datetime import datetime, timezone
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,6 +14,7 @@ from app.integrations.agentskillos_execution_service import get_agentskillos_exe
 from app.onchain.lifecycle_service import BroadcastReceipt, get_onchain_lifecycle_service
 from app.onchain.order_writer import OrderWriteResult, get_order_writer
 from app.main import create_app
+from app.domain.models import Order
 
 
 class _LifecycleSpy:
@@ -203,7 +206,49 @@ def _create_paid_order(client: TestClient, machine_id: str) -> dict:
     payment_id = payment_intent.json()["payment_id"]
     confirm = client.post(f"/api/v1/payments/{payment_id}/mock-confirm", json={"state": "succeeded"})
     assert confirm.status_code == 200
+    _anchor_order_projection(order_id, onchain_order_id="9001")
     return order.json()
+
+
+def _create_paid_order_without_anchor(client: TestClient, machine_id: str) -> dict:
+    order = client.post(
+        "/api/v1/orders",
+        json={
+            "user_id": "user-1",
+            "machine_id": machine_id,
+            "chat_session_id": "chat-1",
+            "user_prompt": "Write a report",
+            "quoted_amount_cents": 1000,
+            "input_files": ["brief.md"],
+            "execution_strategy": "quality",
+        },
+    )
+    assert order.status_code == 201
+    order_id = order.json()["id"]
+
+    payment_intent = client.post(
+        f"/api/v1/payments/orders/{order_id}/intent",
+        json={"amount_cents": 1000, "currency": "USD"},
+    )
+    assert payment_intent.status_code == 201
+    payment_id = payment_intent.json()["payment_id"]
+    confirm = client.post(f"/api/v1/payments/{payment_id}/mock-confirm", json={"state": "succeeded"})
+    assert confirm.status_code == 200
+    return order.json()
+
+
+def _anchor_order_projection(order_id: str, *, onchain_order_id: str) -> None:
+    engine = create_engine(os.environ["OUTCOMEX_DATABASE_URL"])
+    with Session(engine) as session:
+        order = session.scalar(select(Order).where(Order.id == order_id))
+        assert order is not None
+        order.onchain_order_id = onchain_order_id
+        order.create_order_tx_hash = f"0xtx-{onchain_order_id}"
+        order.create_order_event_id = f"OrderCreated:{onchain_order_id}:0xtx-{onchain_order_id}"
+        order.create_order_block_number = 12345
+        session.add(order)
+        session.commit()
+    engine.dispose()
 
 
 def test_start_execution_creates_run_and_run_endpoint_returns_snapshot_without_mutating_order_state(
@@ -265,6 +310,18 @@ def test_start_execution_creates_run_and_run_endpoint_returns_snapshot_without_m
     assert order_after_second_poll.status_code == 200
     assert order_after_second_poll.json()["state"] == "executing"
     assert order_after_second_poll.json()["settlement_state"] == "not_ready"
+
+
+def test_start_execution_requires_authoritative_onchain_order_anchor(
+    client: tuple[TestClient, _ExecutionServiceStub]
+) -> None:
+    test_client, _stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order_without_anchor(test_client, machine["id"])
+
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert start.status_code == 409
+    assert start.json()["detail"] == "Order execution requires authoritative paid projection"
 
 
 def test_start_execution_rejects_duplicate_active_run(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
