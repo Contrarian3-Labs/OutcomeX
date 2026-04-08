@@ -7,16 +7,16 @@ from app.schemas.chat_plan import RecommendedPlanResponse
 class SelfUsePlansRequest(BaseModel):
     viewer_user_id: str = Field(min_length=1, max_length=64)
     machine_id: str = Field(min_length=1, max_length=36)
-    user_message: str = Field(min_length=1)
-    mode: ExecutionStrategy | None = None
+    prompt: str = Field(min_length=1)
+    execution_strategy: ExecutionStrategy = ExecutionStrategy.QUALITY
     input_files: list[str] = Field(default_factory=list)
 
 
 class SelfUsePlansResponse(BaseModel):
     viewer_user_id: str
     machine_id: str
-    user_message: str
-    mode: ExecutionStrategy | None = None
+    prompt: str
+    execution_strategy: ExecutionStrategy
     input_files: list[str] = Field(default_factory=list)
     recommended_plan_summary: str
     recommended_plans: list[RecommendedPlanResponse] = Field(default_factory=list)
@@ -25,8 +25,8 @@ class SelfUsePlansResponse(BaseModel):
 class SelfUseRunCreateRequest(BaseModel):
     viewer_user_id: str = Field(min_length=1, max_length=64)
     machine_id: str = Field(min_length=1, max_length=36)
-    user_prompt: str = Field(min_length=1)
-    mode: ExecutionStrategy = ExecutionStrategy.QUALITY
+    prompt: str = Field(min_length=1)
+    execution_strategy: ExecutionStrategy = ExecutionStrategy.QUALITY
     input_files: list[str] = Field(default_factory=list)
     selected_plan_id: str | None = None
     selected_native_plan_index: int | None = None

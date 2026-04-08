@@ -153,7 +153,8 @@ def test_self_use_plans_forbid_non_owner(client: tuple[TestClient, _ExecutionSer
         json={
             "viewer_user_id": "not-owner",
             "machine_id": machine["id"],
-            "user_message": "Create a private diagnostics report",
+            "prompt": "Create a private diagnostics report",
+            "execution_strategy": "quality",
         },
     )
 
@@ -170,8 +171,8 @@ def test_self_use_owner_flow_without_order_side_effects(client: tuple[TestClient
         json={
             "viewer_user_id": owner_user_id,
             "machine_id": machine["id"],
-            "user_message": "Build owner dashboard",
-            "mode": "efficiency",
+            "prompt": "Build owner dashboard",
+            "execution_strategy": "efficiency",
             "input_files": ["owner-notes.md"],
         },
     )
@@ -193,8 +194,8 @@ def test_self_use_owner_flow_without_order_side_effects(client: tuple[TestClient
         json={
             "viewer_user_id": owner_user_id,
             "machine_id": machine["id"],
-            "user_prompt": "Build owner dashboard",
-            "mode": "simplicity",
+            "prompt": "Build owner dashboard",
+            "execution_strategy": "simplicity",
             "input_files": ["owner-notes.md"],
         },
     )
@@ -213,10 +214,7 @@ def test_self_use_owner_flow_without_order_side_effects(client: tuple[TestClient
     assert after_orders.status_code == 200
     assert after_orders.json()["items"] == []
 
-    read_run = test_client.get(
-        f"/api/v1/self-use/runs/{run_payload['id']}",
-        params={"viewer_user_id": owner_user_id},
-    )
+    read_run = test_client.get(f"/api/v1/self-use/runs/{run_payload['id']}")
     assert read_run.status_code == 200
     read_payload = read_run.json()
     assert read_payload["id"] == run_payload["id"]

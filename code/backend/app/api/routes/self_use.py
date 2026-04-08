@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -40,16 +40,16 @@ def create_self_use_plans(
     recommended_plans = build_recommended_plans(
         user_id=payload.viewer_user_id,
         chat_session_id=_self_use_external_order_id(machine_id=machine.id, viewer_user_id=payload.viewer_user_id),
-        user_message=payload.user_message,
-        preferred_strategy=payload.mode,
+        user_message=payload.prompt,
+        preferred_strategy=payload.execution_strategy,
         input_files=tuple(payload.input_files),
     )
     top_plan = recommended_plans[0]
     return SelfUsePlansResponse(
         viewer_user_id=payload.viewer_user_id,
         machine_id=machine.id,
-        user_message=payload.user_message,
-        mode=payload.mode,
+        prompt=payload.prompt,
+        execution_strategy=payload.execution_strategy,
         input_files=list(payload.input_files),
         recommended_plan_summary=top_plan.summary,
         recommended_plans=[
@@ -79,14 +79,14 @@ def create_self_use_run(
     recommended_plans = build_recommended_plans(
         user_id=payload.viewer_user_id,
         chat_session_id=_self_use_external_order_id(machine_id=machine.id, viewer_user_id=payload.viewer_user_id),
-        user_message=payload.user_prompt,
-        preferred_strategy=payload.mode,
+        user_message=payload.prompt,
+        preferred_strategy=payload.execution_strategy,
         input_files=tuple(payload.input_files),
     )
     selected_plan = select_recommended_plan(
         recommended_plans,
         selected_plan_id=payload.selected_plan_id,
-        execution_strategy=payload.mode,
+        execution_strategy=payload.execution_strategy,
     )
     if selected_plan is None:
         raise HTTPException(
@@ -107,7 +107,7 @@ def create_self_use_run(
     dispatch = ExecutionEngineService(execution_service=execution_service).dispatch(
         IntentRequest(
             intent_id=external_order_id,
-            prompt=payload.user_prompt,
+            prompt=payload.prompt,
             input_files=tuple(payload.input_files),
             execution_strategy=ExecutionStrategy(selected_plan.strategy.value),
             context=dispatch_context,
@@ -118,7 +118,7 @@ def create_self_use_run(
 
     run_status = ExecutionRunStatus(dispatch.run_status.value)
     submission_payload: dict[str, object] = {
-        "intent": payload.user_prompt,
+        "intent": payload.prompt,
         "files": list(payload.input_files),
         "execution_strategy": selected_plan.strategy.value,
         "selected_plan_id": selected_plan.plan_id,
@@ -157,20 +157,12 @@ def create_self_use_run(
 @router.get("/runs/{run_id}", response_model=ExecutionRunResponse)
 def get_self_use_run(
     run_id: str,
-    viewer_user_id: str = Query(min_length=1, max_length=64),
     db: Session = Depends(get_db),
     execution_service=Depends(get_agentskillos_execution_service),
 ) -> ExecutionRunResponse:
     run = db.get(ExecutionRun, run_id)
     if run is None or run.run_kind != _RUN_KIND_SELF_USE:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Self-use run not found")
-    if run.viewer_user_id != viewer_user_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Self-use is owner-only")
-    machine = db.get(Machine, run.machine_id) if run.machine_id is not None else None
-    if machine is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
-    if machine.owner_user_id != viewer_user_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Self-use is owner-only")
 
     snapshot = execution_service.get_run(run_id)
     return build_execution_run_response(run, snapshot, None)
