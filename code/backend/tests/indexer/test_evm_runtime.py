@@ -14,5 +14,6 @@ def test_build_subscriptions_reads_onchain_address_environment_variables(monkeyp
 
     assert subscriptions
     assert any(item.contract_name == "OrderBook" for item in subscriptions)
+    assert any(item.contract_name == "OrderBook" and item.event_name == "OrderCancelled" for item in subscriptions)
     assert any(item.contract_name == "MachineAssetNFT" for item in subscriptions)
     assert all(item.contract_address.startswith("0x") for item in subscriptions)

@@ -191,7 +191,7 @@ contract OutcomeXLifecycleTest is TestBase {
         orderBook.markOrderPaid(orderId, true, false, address(0));
 
         vm.prank(BUYER);
-        vm.expectRevert("REFUND_NOT_AUTHORIZED");
+        vm.expectRevert(bytes("REFUND_NOT_AUTHORIZED"));
         orderBook.refundFailedOrNoValidPreview(orderId);
     }
 
@@ -207,7 +207,7 @@ contract OutcomeXLifecycleTest is TestBase {
         orderBook.markOrderPaid(orderId, true, false, address(0));
 
         vm.prank(RECEIVER);
-        vm.expectRevert("NOT_MACHINE_OWNER");
+        vm.expectRevert(bytes("NOT_MACHINE_OWNER"));
         orderBook.markPreviewReady(orderId, true);
 
         vm.prank(MACHINE_OWNER);
@@ -233,5 +233,64 @@ contract OutcomeXLifecycleTest is TestBase {
         vm.prank(RECEIVER);
         machineAsset.transferFrom(RECEIVER, BUYER_TWO, machineId);
         assertEq(machineAsset.ownerOf(machineId), BUYER_TWO, "transfer should unlock after claim");
+    }
+
+    function testBuyerCanCancelUnpaidOrderBeforeExpiry() public {
+        vm.prank(BUYER);
+        uint256 orderId = orderBook.createOrder(machineId, 800);
+
+        vm.prank(BUYER);
+        orderBook.cancelUnpaidOrder(orderId);
+
+        OrderRecord memory order = orderBook.getOrder(orderId);
+        assertEq(uint256(order.status), uint256(OrderStatus.Cancelled), "expected cancelled status");
+        assertGt(order.cancelledAt, 0, "cancelledAt should be set");
+        assertTrue(!order.cancelledAsExpired, "buyer cancel should not be marked expired");
+    }
+
+    function testAnyoneCanExpireUnpaidOrderAfterDeadline() public {
+        vm.prank(BUYER);
+        uint256 orderId = orderBook.createOrder(machineId, 800);
+
+        vm.warp(block.timestamp + orderBook.UNPAID_ORDER_TTL() + 1);
+        orderBook.expireUnpaidOrder(orderId);
+
+        OrderRecord memory order = orderBook.getOrder(orderId);
+        assertEq(uint256(order.status), uint256(OrderStatus.Cancelled), "expected cancelled status");
+        assertEq(order.cancelledAt, uint64(block.timestamp), "cancel timestamp mismatch");
+        assertTrue(order.cancelledAsExpired, "expired cleanup should persist expiry truth");
+    }
+
+    function testExpireUnpaidOrderRejectsNonexistentOrderId() public {
+        vm.expectRevert(bytes("ORDER_NOT_FOUND"));
+        orderBook.expireUnpaidOrder(999);
+    }
+
+    function testExpireUnpaidOrderRevertsBeforeDeadline() public {
+        vm.prank(BUYER);
+        uint256 orderId = orderBook.createOrder(machineId, 800);
+
+        vm.warp(block.timestamp + orderBook.UNPAID_ORDER_TTL() - 1);
+        vm.expectRevert(bytes("ORDER_NOT_EXPIRED"));
+        orderBook.expireUnpaidOrder(orderId);
+    }
+
+    function testExpireUnpaidOrderRevertsAtExactDeadline() public {
+        vm.prank(BUYER);
+        uint256 orderId = orderBook.createOrder(machineId, 800);
+
+        vm.warp(block.timestamp + orderBook.UNPAID_ORDER_TTL());
+        vm.expectRevert(bytes("ORDER_NOT_EXPIRED"));
+        orderBook.expireUnpaidOrder(orderId);
+    }
+
+    function testBuyerCannotCancelUnpaidOrderAfterExpiry() public {
+        vm.prank(BUYER);
+        uint256 orderId = orderBook.createOrder(machineId, 800);
+
+        vm.warp(block.timestamp + orderBook.UNPAID_ORDER_TTL() + 1);
+        vm.prank(BUYER);
+        vm.expectRevert(bytes("ORDER_EXPIRED"));
+        orderBook.cancelUnpaidOrder(orderId);
     }
 }

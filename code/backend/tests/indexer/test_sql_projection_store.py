@@ -1,7 +1,9 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.domain.enums import OrderState, PaymentState, SettlementState
+from datetime import datetime, timezone
+
+from app.domain.enums import OrderState, PaymentState, PreviewState, SettlementState
 from app.domain.models import Base, Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementRecord
 from app.indexer.events import (
     MachineAssetEvent,
@@ -219,6 +221,7 @@ def test_sql_projection_advances_direct_payment_from_created_and_paid_events() -
         order = db.get(Order, "o-1")
         payment = db.get(Payment, "p-1")
         machine = db.get(Machine, "m-1")
+        metadata = dict(order.execution_metadata or {})
         assert order.onchain_order_id == "42"
         assert order.onchain_machine_id == "7"
         assert order.create_order_event_id == "133:22:0xpaytx:1"
@@ -229,7 +232,60 @@ def test_sql_projection_advances_direct_payment_from_created_and_paid_events() -
         assert order.settlement_beneficiary_user_id == "owner-1"
         assert order.settlement_is_self_use is False
         assert order.settlement_is_dividend_eligible is True
+        assert metadata["authoritative_order_status"] == "PAID"
+        assert metadata["authoritative_paid_projection"] is True
         assert machine.has_active_tasks is True
+
+
+def test_sql_projection_marks_order_cancelled_and_expired_from_onchain_event() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+    with session_factory() as db:
+        machine = Machine(id="m-1", display_name="node", owner_user_id="owner-1", has_active_tasks=True)
+        order = Order(
+            id="o-1",
+            onchain_order_id="42",
+            user_id="u-1",
+            machine_id="m-1",
+            chat_session_id="chat-1",
+            user_prompt="build",
+            recommended_plan_summary="plan",
+            quoted_amount_cents=100,
+        )
+        db.add(machine)
+        db.add(order)
+        db.commit()
+
+    store = SqlProjectionStore(session_factory=session_factory)
+    store.apply(
+        _event(
+            event_name="OrderCancelled",
+            block_number=24,
+            payload=OrderLifecycleEvent(
+                order_id="42",
+                machine_id="m-1",
+                buyer=None,
+                status="CANCELLED",
+                amount_wei=None,
+                cancelled_at=1_712_553_600,
+                cancelled_as_expired=True,
+            ),
+        )
+    )
+
+    with session_factory() as db:
+        machine = db.get(Machine, "m-1")
+        order = db.get(Order, "o-1")
+        metadata = dict(order.execution_metadata or {})
+        assert machine.has_active_tasks is False
+        assert order.state == OrderState.CANCELLED
+        assert order.preview_state == PreviewState.EXPIRED
+        assert order.cancelled_at == datetime.fromtimestamp(1_712_553_600, tz=timezone.utc).replace(tzinfo=None)
+        assert metadata["authoritative_order_status"] == "CANCELLED"
+        assert metadata["authoritative_paid_projection"] is False
+        assert metadata["cancelled_as_expired"] is True
 
 
 def test_sql_projection_records_machine_claim_from_revenue_claimed_event() -> None:

@@ -68,6 +68,34 @@ def test_normalize_order_settled_maps_kind_to_order_status() -> None:
     assert normalized.payload.amount_wei == 1000
 
 
+def test_normalize_order_cancelled_carries_expiry_truth() -> None:
+    decoded = DecodedChainEvent(
+        chain_id=177,
+        contract_name="OrderBook",
+        contract_address="0x3000000000000000000000000000000000000003",
+        event_name="OrderCancelled",
+        block_number=78,
+        block_hash="0xblock-78",
+        transaction_hash="0xaab",
+        log_index=2,
+        args={
+            "orderId": "10",
+            "machineId": "4",
+            "cancelledBy": "0xC00000000000000000000000000000000000C000",
+            "cancelledAt": "1712553600",
+            "expired": True,
+        },
+    )
+
+    normalized = normalize_decoded_event(decoded)
+
+    assert normalized.payload.order_id == "10"
+    assert normalized.payload.machine_id == "4"
+    assert normalized.payload.status == "CANCELLED"
+    assert normalized.payload.cancelled_at == 1712553600
+    assert normalized.payload.cancelled_as_expired is True
+
+
 def test_normalize_revenue_accrued_to_settlement_split_payload() -> None:
     decoded = DecodedChainEvent(
         chain_id=177,

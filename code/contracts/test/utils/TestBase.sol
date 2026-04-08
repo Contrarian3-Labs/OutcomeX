@@ -6,6 +6,7 @@ interface Vm {
     function startPrank(address caller) external;
     function stopPrank() external;
     function expectRevert(bytes calldata) external;
+    function warp(uint256 newTimestamp) external;
 }
 
 contract TestBase {
@@ -25,5 +26,9 @@ contract TestBase {
 
     function assertTrue(bool condition, string memory err) internal pure {
         require(condition, err);
+    }
+
+    function assertGt(uint256 left, uint256 right, string memory err) internal pure {
+        require(left > right, err);
     }
 }

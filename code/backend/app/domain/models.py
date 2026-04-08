@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
@@ -20,6 +20,9 @@ def utc_now() -> datetime:
 
 class Base(DeclarativeBase):
     pass
+
+
+UNPAID_ORDER_TTL = timedelta(minutes=10)
 
 
 class Machine(Base):
@@ -80,6 +83,7 @@ class Order(Base):
     execution_request: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     execution_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     result_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     machine: Mapped["Machine"] = relationship(back_populates="orders")
@@ -95,6 +99,36 @@ class Order(Base):
             return None
         latest = max(successful, key=lambda payment: payment.created_at)
         return latest.currency
+
+    @property
+    def payment_state(self) -> PaymentState:
+        if not self.payments:
+            return PaymentState.CREATED
+        if any(payment.state == PaymentState.SUCCEEDED for payment in self.payments):
+            return PaymentState.SUCCEEDED
+        latest = max(self.payments, key=lambda payment: payment.created_at)
+        return latest.state
+
+    @property
+    def unpaid_expiry_at(self) -> datetime | None:
+        metadata = dict(self.execution_metadata or {})
+        if metadata.get("authoritative_paid_projection") is True:
+            return None
+        if self.payment_state == PaymentState.SUCCEEDED or self.is_cancelled:
+            return None
+        return self.created_at + UNPAID_ORDER_TTL
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self.cancelled_at is not None or self.state == OrderState.CANCELLED
+
+    @property
+    def is_expired(self) -> bool:
+        expiry = self.unpaid_expiry_at
+        if expiry is None:
+            return False
+        now = datetime.now(expiry.tzinfo or timezone.utc)
+        return expiry <= now
 
 
 class ExecutionRun(Base):

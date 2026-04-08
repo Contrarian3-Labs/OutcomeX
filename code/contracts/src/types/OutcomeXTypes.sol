@@ -8,7 +8,8 @@ enum OrderStatus {
     PreviewReady,
     Confirmed,
     Rejected,
-    Refunded
+    Refunded,
+    Cancelled
 }
 
 enum SettlementKind {
@@ -24,10 +25,12 @@ struct OrderRecord {
     uint256 grossAmount;
     OrderStatus status;
     bool previewValid;
+    bool cancelledAsExpired;
     uint64 createdAt;
     uint64 paidAt;
     uint64 previewReadyAt;
     uint64 settledAt;
+    uint64 cancelledAt;
 }
 
 struct SettlementInput {

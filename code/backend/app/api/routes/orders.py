@@ -16,6 +16,7 @@ from app.execution.service import ExecutionEngineService
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
 from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
 from app.onchain.order_writer import OrderWriter, get_order_writer
+from app.runtime.hardware_simulator import get_shared_hardware_simulator
 from app.schemas.execution_run import ExecutionRunResponse
 from app.schemas.order import (
     OrderAvailableActionsResponse,
@@ -141,6 +142,38 @@ def _succeeded_payment_total_cents(order_id: str, db: Session) -> int:
             Payment.state == PaymentState.SUCCEEDED,
         )
     )
+
+
+def _has_authoritative_paid_projection(order: Order) -> bool:
+    metadata = dict(order.execution_metadata or {})
+    return metadata.get("authoritative_paid_projection") is True
+
+
+def _estimated_order_workload(order: Order, machine_id: str):
+    execution_request = dict(order.execution_request or {})
+    return ExecutionEngineService._estimate_workload(
+        IntentRequest(
+            intent_id=order.id,
+            prompt=order.user_prompt,
+            input_files=tuple(execution_request.get("files") or ()),
+            execution_strategy=ExecutionStrategy(execution_request.get("execution_strategy", "quality")),
+            context={"machine_id": machine_id},
+        )
+    )
+
+
+def _machine_is_runtime_available(order: Order, machine_id: str) -> bool:
+    simulator = get_shared_hardware_simulator(machine_id)
+    snapshot = get_shared_hardware_simulator(machine_id).snapshot()
+    workload = _estimated_order_workload(order, machine_id)
+    can_run_now = (
+        snapshot.running_count < snapshot.max_concurrency
+        and snapshot.used_capacity_units + workload.capacity_units <= snapshot.total_capacity_units
+        and snapshot.used_memory_mb + workload.memory_mb <= snapshot.total_memory_mb
+    )
+    if can_run_now:
+        return True
+    return snapshot.queued_count < simulator.profile.max_queue_depth
 
 
 def _has_active_execution_run(order_id: str, db: Session) -> bool:
@@ -385,13 +418,13 @@ def start_order_execution(
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
 
-    paid_cents = _succeeded_payment_total_cents(order.id, db)
-    if not has_sufficient_payment(order.quoted_amount_cents, paid_cents):
+    metadata = dict(order.execution_metadata or {})
+    if order.is_cancelled:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Order execution requires full payment",
+            detail="Order is expired" if metadata.get("cancelled_as_expired") or order.preview_state == PreviewState.EXPIRED else "Order is cancelled",
         )
-    if order.onchain_order_id is None:
+    if order.onchain_order_id is None or not _has_authoritative_paid_projection(order):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Order execution requires authoritative paid projection",
@@ -400,6 +433,11 @@ def start_order_execution(
     machine = db.get(Machine, order.machine_id)
     if machine is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
+    if not _machine_is_runtime_available(order, machine.id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Order machine is unavailable",
+        )
     if _has_active_execution_run(order.id, db):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

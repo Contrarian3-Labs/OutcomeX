@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -15,6 +15,7 @@ from app.onchain.lifecycle_service import BroadcastReceipt, get_onchain_lifecycl
 from app.onchain.order_writer import OrderWriteResult, get_order_writer
 from app.main import create_app
 from app.domain.models import Order
+from app.runtime.hardware_simulator import WorkloadSpec, get_shared_hardware_simulator
 
 
 class _LifecycleSpy:
@@ -182,7 +183,15 @@ def _create_machine(client: TestClient) -> dict:
     return response.json()
 
 
-def _create_paid_order(client: TestClient, machine_id: str) -> dict:
+def _create_paid_order(
+    client: TestClient,
+    machine_id: str,
+    *,
+    execution_strategy: str = "quality",
+    input_files: list[str] | None = None,
+) -> dict:
+    if input_files is None:
+        input_files = ["brief.md"]
     order = client.post(
         "/api/v1/orders",
         json={
@@ -191,8 +200,8 @@ def _create_paid_order(client: TestClient, machine_id: str) -> dict:
             "chat_session_id": "chat-1",
             "user_prompt": "Write a report",
             "quoted_amount_cents": 1000,
-            "input_files": ["brief.md"],
-            "execution_strategy": "quality",
+            "input_files": input_files,
+            "execution_strategy": execution_strategy,
         },
     )
     assert order.status_code == 201
@@ -206,7 +215,12 @@ def _create_paid_order(client: TestClient, machine_id: str) -> dict:
     payment_id = payment_intent.json()["payment_id"]
     confirm = client.post(f"/api/v1/payments/{payment_id}/mock-confirm", json={"state": "succeeded"})
     assert confirm.status_code == 200
-    _anchor_order_projection(order_id, onchain_order_id="9001")
+    _project_authoritative_order(
+        order_id,
+        onchain_order_id=f"paid-{order_id}",
+        status="PAID",
+        paid_projection=True,
+    )
     return order.json()
 
 
@@ -237,7 +251,14 @@ def _create_paid_order_without_anchor(client: TestClient, machine_id: str) -> di
     return order.json()
 
 
-def _anchor_order_projection(order_id: str, *, onchain_order_id: str) -> None:
+def _project_authoritative_order(
+    order_id: str,
+    *,
+    onchain_order_id: str,
+    status: str,
+    paid_projection: bool,
+    cancelled_as_expired: bool | None = None,
+) -> None:
     engine = create_engine(os.environ["OUTCOMEX_DATABASE_URL"])
     with Session(engine) as session:
         order = session.scalar(select(Order).where(Order.id == order_id))
@@ -246,6 +267,12 @@ def _anchor_order_projection(order_id: str, *, onchain_order_id: str) -> None:
         order.create_order_tx_hash = f"0xtx-{onchain_order_id}"
         order.create_order_event_id = f"OrderCreated:{onchain_order_id}:0xtx-{onchain_order_id}"
         order.create_order_block_number = 12345
+        metadata = dict(order.execution_metadata or {})
+        metadata["authoritative_order_status"] = status
+        metadata["authoritative_paid_projection"] = paid_projection
+        if cancelled_as_expired is not None:
+            metadata["cancelled_as_expired"] = cancelled_as_expired
+        order.execution_metadata = metadata
         session.add(order)
         session.commit()
     engine.dispose()
@@ -322,6 +349,205 @@ def test_start_execution_requires_authoritative_onchain_order_anchor(
     start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
     assert start.status_code == 409
     assert start.json()["detail"] == "Order execution requires authoritative paid projection"
+
+
+def test_start_execution_rejects_anchor_without_authoritative_paid_projection(
+    client: tuple[TestClient, _ExecutionServiceStub]
+) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order_without_anchor(test_client, machine["id"])
+    _project_authoritative_order(order["id"], onchain_order_id="9004", status="CREATED", paid_projection=False)
+
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert start.status_code == 409
+    assert start.json()["detail"] == "Order execution requires authoritative paid projection"
+    assert stub.submit_calls == 0
+
+
+def test_start_execution_rejects_projected_expired_order(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    order = test_client.post(
+        "/api/v1/orders",
+        json={
+            "user_id": "user-1",
+            "machine_id": machine["id"],
+            "chat_session_id": "chat-1",
+            "user_prompt": "Write a report",
+            "quoted_amount_cents": 1000,
+            "input_files": ["brief.md"],
+            "execution_strategy": "quality",
+        },
+    )
+    assert order.status_code == 201
+
+    engine = create_engine(os.environ["OUTCOMEX_DATABASE_URL"])
+    with Session(engine) as session:
+        db_order = session.scalar(select(Order).where(Order.id == order.json()["id"]))
+        assert db_order is not None
+        db_order.onchain_order_id = "9002"
+        db_order.create_order_tx_hash = "0xtx-9002"
+        db_order.create_order_event_id = "OrderCreated:9002:0xtx-9002"
+        db_order.create_order_block_number = 12346
+        db_order.state = __import__("app.domain.enums", fromlist=["OrderState"]).OrderState.CANCELLED
+        db_order.cancelled_at = datetime.now(timezone.utc)
+        db_order.preview_state = __import__("app.domain.enums", fromlist=["PreviewState"]).PreviewState.EXPIRED
+        metadata = dict(db_order.execution_metadata or {})
+        metadata["authoritative_order_status"] = "CANCELLED"
+        metadata["authoritative_paid_projection"] = False
+        metadata["cancelled_as_expired"] = True
+        db_order.execution_metadata = metadata
+        session.add(db_order)
+        session.commit()
+    engine.dispose()
+
+    start = test_client.post(f"/api/v1/orders/{order.json()['id']}/start-execution")
+    assert start.status_code == 409
+    assert start.json()["detail"] == "Order is expired"
+    assert stub.submit_calls == 0
+
+
+def test_start_execution_rejects_projected_cancelled_order(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    order = test_client.post(
+        "/api/v1/orders",
+        json={
+            "user_id": "user-1",
+            "machine_id": machine["id"],
+            "chat_session_id": "chat-1",
+            "user_prompt": "Write a report",
+            "quoted_amount_cents": 1000,
+            "input_files": ["brief.md"],
+            "execution_strategy": "quality",
+        },
+    )
+    assert order.status_code == 201
+
+    engine = create_engine(os.environ["OUTCOMEX_DATABASE_URL"])
+    with Session(engine) as session:
+        db_order = session.scalar(select(Order).where(Order.id == order.json()["id"]))
+        assert db_order is not None
+        db_order.onchain_order_id = "9003"
+        db_order.create_order_tx_hash = "0xtx-9003"
+        db_order.create_order_event_id = "OrderCreated:9003:0xtx-9003"
+        db_order.create_order_block_number = 12347
+        db_order.state = __import__("app.domain.enums", fromlist=["OrderState"]).OrderState.CANCELLED
+        db_order.cancelled_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+        metadata = dict(db_order.execution_metadata or {})
+        metadata["authoritative_order_status"] = "CANCELLED"
+        metadata["authoritative_paid_projection"] = False
+        metadata["cancelled_as_expired"] = False
+        db_order.execution_metadata = metadata
+        session.add(db_order)
+        session.commit()
+    engine.dispose()
+
+    start = test_client.post(f"/api/v1/orders/{order.json()['id']}/start-execution")
+    assert start.status_code == 409
+    assert start.json()["detail"] == "Order is cancelled"
+    assert stub.submit_calls == 0
+
+
+def test_start_execution_rejects_projected_unavailable_order(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order(test_client, machine["id"])
+
+    simulator = get_shared_hardware_simulator(machine["id"])
+    running = simulator.submit(
+        WorkloadSpec(
+            workload_id="running-capacity",
+            capacity_units=24,
+            memory_mb=32_768,
+            duration_ticks=5,
+        )
+    )
+    assert running.status.value == "running"
+    for idx in range(8):
+        queued = simulator.submit(
+            WorkloadSpec(
+                workload_id=f"queued-{idx}",
+                capacity_units=1,
+                memory_mb=64,
+                duration_ticks=1,
+            )
+        )
+        assert queued.status.value == "queued"
+
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert start.status_code == 409
+    assert start.json()["detail"] == "Order machine is unavailable"
+    assert stub.submit_calls == 0
+
+
+def test_start_execution_allows_queueable_busy_runtime(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order(test_client, machine["id"])
+
+    running = get_shared_hardware_simulator(machine["id"]).submit(
+        WorkloadSpec(
+            workload_id="busy-but-queueable",
+            capacity_units=24,
+            memory_mb=32_768,
+            duration_ticks=5,
+        )
+    )
+    assert running.status.value == "running"
+
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert start.status_code == 200
+    assert start.json()["status"] == "queued"
+    assert stub.submit_calls == 1
+
+
+def test_start_execution_preflight_uses_real_strategy_and_input_files(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    light_order = _create_paid_order(
+        test_client,
+        machine["id"],
+        execution_strategy="simplicity",
+        input_files=[],
+    )
+    heavy_order = _create_paid_order(
+        test_client,
+        machine["id"],
+        execution_strategy="quality",
+        input_files=["brief.md", "appendix.md"],
+    )
+
+    simulator = get_shared_hardware_simulator(machine["id"])
+    running = simulator.submit(
+        WorkloadSpec(
+            workload_id="partial-saturation",
+            capacity_units=23,
+            memory_mb=32_000,
+            duration_ticks=5,
+        )
+    )
+    assert running.status.value == "running"
+    for idx in range(8):
+        queued = simulator.submit(
+            WorkloadSpec(
+                workload_id=f"queue-full-{idx}",
+                capacity_units=2,
+                memory_mb=64,
+                duration_ticks=1,
+            )
+        )
+        assert queued.status.value == "queued"
+
+    light = test_client.post(f"/api/v1/orders/{light_order['id']}/start-execution")
+    assert light.status_code == 200
+    assert light.json()["status"] == "queued"
+
+    heavy = test_client.post(f"/api/v1/orders/{heavy_order['id']}/start-execution")
+    assert heavy.status_code == 409
+    assert heavy.json()["detail"] == "Order machine is unavailable"
+    assert stub.submit_calls == 1
 
 
 def test_start_execution_rejects_duplicate_active_run(client: tuple[TestClient, _ExecutionServiceStub]) -> None:

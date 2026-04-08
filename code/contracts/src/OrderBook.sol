@@ -14,6 +14,7 @@ error NotPaymentAdapter(address caller);
 contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
     bytes32 public constant REASON_ACTIVE_TASK = keccak256("ACTIVE_TASK");
     bytes32 public constant REASON_UNSETTLED_REVENUE = keccak256("UNSETTLED_REVENUE");
+    uint64 public constant UNPAID_ORDER_TTL = 10 minutes;
 
     MachineAssetNFT public immutable machineAsset;
 
@@ -45,6 +46,9 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
         uint256 indexed orderId, bool dividendEligible, bool refundFailedOrNoValidPreviewAuthorized
     );
     event OrderPaid(uint256 indexed orderId, uint256 indexed machineId, uint256 grossAmount);
+    event OrderCancelled(
+        uint256 indexed orderId, uint256 indexed machineId, address indexed cancelledBy, uint64 cancelledAt, bool expired
+    );
     event PreviewReady(uint256 indexed orderId, uint256 indexed machineId, bool validPreview);
     event OrderSettled(
         uint256 indexed orderId,
@@ -113,10 +117,12 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
             grossAmount: grossAmount,
             status: OrderStatus.Created,
             previewValid: false,
+            cancelledAsExpired: false,
             createdAt: uint64(block.timestamp),
             paidAt: 0,
             previewReadyAt: 0,
-            settledAt: 0
+            settledAt: 0,
+            cancelledAt: 0
         });
 
         settlementBeneficiaryByOrder[orderId] = machineOwner;
@@ -135,6 +141,7 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
     {
         OrderRecord storage order = _orders[orderId];
         require(order.status == OrderStatus.Created, "INVALID_STATUS");
+        require(block.timestamp <= _unpaidExpiryTimestamp(order), "ORDER_EXPIRED");
 
         order.status = OrderStatus.Paid;
         order.paidAt = uint64(block.timestamp);
@@ -191,6 +198,30 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
         }
 
         _settleOrder(order, SettlementKind.FailedOrNoValidPreview);
+    }
+
+    function cancelUnpaidOrder(uint256 orderId) external {
+        OrderRecord storage order = _orders[orderId];
+        require(order.status == OrderStatus.Created, "INVALID_STATUS");
+        require(msg.sender == order.buyer, "NOT_BUYER");
+        require(block.timestamp <= _unpaidExpiryTimestamp(order), "ORDER_EXPIRED");
+
+        _cancelUnpaidOrder(order, msg.sender, false);
+    }
+
+    function expireUnpaidOrder(uint256 orderId) external {
+        OrderRecord storage order = _orders[orderId];
+        require(order.id != 0, "ORDER_NOT_FOUND");
+        require(order.status == OrderStatus.Created, "INVALID_STATUS");
+        require(block.timestamp > _unpaidExpiryTimestamp(order), "ORDER_NOT_EXPIRED");
+
+        _cancelUnpaidOrder(order, msg.sender, true);
+    }
+
+    function unpaidOrderExpiresAt(uint256 orderId) public view returns (uint64) {
+        OrderRecord storage order = _orders[orderId];
+        require(order.id != 0, "ORDER_NOT_FOUND");
+        return _unpaidExpiryTimestamp(order);
     }
 
     function getOrder(uint256 orderId) external view returns (OrderRecord memory) {
@@ -254,5 +285,17 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
             breakdown.machineShare,
             breakdown.dividendEligible
         );
+    }
+
+    function _cancelUnpaidOrder(OrderRecord storage order, address cancelledBy, bool expired) internal {
+        order.status = OrderStatus.Cancelled;
+        order.cancelledAsExpired = expired;
+        order.cancelledAt = uint64(block.timestamp);
+
+        emit OrderCancelled(order.id, order.machineId, cancelledBy, order.cancelledAt, expired);
+    }
+
+    function _unpaidExpiryTimestamp(OrderRecord storage order) internal view returns (uint64) {
+        return order.createdAt + UNPAID_ORDER_TTL;
     }
 }

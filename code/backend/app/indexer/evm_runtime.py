@@ -14,6 +14,7 @@ _EVENT_SIGNATURES: dict[tuple[str, str], str] = {
     ("OrderBook", "OrderCreated"): "OrderCreated(uint256,uint256,address,uint256,address)",
     ("OrderBook", "OrderClassified"): "OrderClassified(uint256,bool,bool)",
     ("OrderBook", "OrderPaid"): "OrderPaid(uint256,uint256,uint256)",
+    ("OrderBook", "OrderCancelled"): "OrderCancelled(uint256,uint256,address,uint64,bool)",
     ("OrderBook", "PreviewReady"): "PreviewReady(uint256,uint256,bool)",
     ("OrderBook", "OrderSettled"): "OrderSettled(uint256,uint256,uint8,uint256,uint256,uint256,bool)",
     (
@@ -33,6 +34,7 @@ _EVENT_TOPIC0_BY_SIGNATURE: dict[str, str] = {
     "OrderCreated(uint256,uint256,address,uint256,address)": "0x10a337bf06bb798704a2c57575959ef9198b9a7c57e24ea27f8e728a620d272d",
     "OrderClassified(uint256,bool,bool)": "0x0214adacbe9e5548bb02fb8f97fce31e344b48dc0868d46d804fb0a07dda244d",
     "OrderPaid(uint256,uint256,uint256)": "0xe575062745448617c648dfd40a6400faddf8c5a9ab45c59b0f8aaeb3135b23da",
+    "OrderCancelled(uint256,uint256,address,uint64,bool)": "0x75745ade561ac203c37b0de71a179d5d1342edfca5fc690daefabbb9905ace65",
     "PreviewReady(uint256,uint256,bool)": "0x153aad31fe4dbe2c67053c077f5e7bf2749b197d34d3e36eaf9f2ee2326cc183",
     "OrderSettled(uint256,uint256,uint8,uint256,uint256,uint256,bool)": "0xe1f40c85f9bbf31b5c51006d63d7e0749be83f9edc49e1290159f1ceac9a48c7",
     "Settled(uint256,uint256,uint8,address,address,uint256,uint256,uint256,uint256,bool)": "0xcb5ad5c3a251c59218f10948d147c1c5e275fa0e9f397ee51162ad3160a5f32a",
@@ -115,6 +117,21 @@ _EVENT_ABIS: dict[tuple[str, str], Mapping[str, Any]] = {
             {"indexed": True, "name": "orderId", "type": "uint256"},
             {"indexed": True, "name": "machineId", "type": "uint256"},
             {"indexed": False, "name": "grossAmount", "type": "uint256"},
+        ],
+        "anonymous": False,
+    },
+    (
+        "OrderBook",
+        "OrderCancelled",
+    ): {
+        "type": "event",
+        "name": "OrderCancelled",
+        "inputs": [
+            {"indexed": True, "name": "orderId", "type": "uint256"},
+            {"indexed": True, "name": "machineId", "type": "uint256"},
+            {"indexed": True, "name": "cancelledBy", "type": "address"},
+            {"indexed": False, "name": "cancelledAt", "type": "uint64"},
+            {"indexed": False, "name": "expired", "type": "bool"},
         ],
         "anonymous": False,
     },

@@ -82,11 +82,27 @@ class SqlProjectionStore:
 
             machine = db.get(Machine, order.machine_id)
             order_status = payload.status.upper()
+            self._project_authoritative_order_truth(order=order, event=event, order_status=order_status, payload=payload)
             if order_status == "PAID" and machine is not None:
                 self._mark_direct_payment_succeeded(db=db, order=order, tx_hash=event.transaction_hash)
                 self._freeze_settlement_policy_if_fully_paid(db=db, order=order, machine=machine)
                 machine.has_active_tasks = True
                 db.add(machine)
+            elif order_status == "CANCELLED":
+                if machine is not None:
+                    machine.has_active_tasks = False
+                    db.add(machine)
+                order.state = OrderState.CANCELLED
+                if payload.cancelled_at is not None:
+                    order.cancelled_at = datetime.fromtimestamp(payload.cancelled_at, tz=timezone.utc)
+                else:
+                    order.cancelled_at = order.cancelled_at or datetime.now(timezone.utc)
+                metadata = dict(order.execution_metadata or {})
+                if payload.cancelled_as_expired is not None:
+                    metadata["cancelled_as_expired"] = payload.cancelled_as_expired
+                    if payload.cancelled_as_expired:
+                        order.preview_state = PreviewState.EXPIRED
+                order.execution_metadata = metadata
             elif order_status == "PREVIEW_READY":
                 order.preview_state = PreviewState.READY
                 if order.state == OrderState.EXECUTING:
@@ -123,6 +139,28 @@ class SqlProjectionStore:
                 order.settlement_state = SettlementState.DISTRIBUTED
             db.add(order)
             db.commit()
+
+    @staticmethod
+    def _project_authoritative_order_truth(
+        *,
+        order: Order,
+        event: NormalizedEvent,
+        order_status: str,
+        payload: OrderLifecycleEvent,
+    ) -> None:
+        metadata = dict(order.execution_metadata or {})
+        metadata["authoritative_order_status"] = order_status
+        metadata["authoritative_order_event_id"] = event.event_id
+        metadata["authoritative_paid_projection"] = order_status in {
+            "PAID",
+            "PREVIEW_READY",
+            "CONFIRMED",
+            "REJECTED",
+            "REFUNDED",
+        }
+        if payload.cancelled_as_expired is not None:
+            metadata["cancelled_as_expired"] = payload.cancelled_as_expired
+        order.execution_metadata = metadata
 
     @staticmethod
     def _resolve_order_for_event(*, db, event: NormalizedEvent, payload: OrderLifecycleEvent) -> Order | None:

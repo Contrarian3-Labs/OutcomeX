@@ -106,6 +106,24 @@
 
 优先级：`P0`
 
+状态：`已完成（待合并到 main）`
+
+验证：
+
+- `code/contracts`：`forge test --match-contract "OutcomeXLifecycleTest|OrderPaymentRouterTest" -vv` → `24 passed`
+- `code/backend`：`pytest -p no:cacheprovider tests/api/test_execution_runs_api.py tests/indexer/test_event_normalization.py tests/indexer/test_evm_runtime.py tests/indexer/test_sql_projection_store.py tests/test_order_models.py tests/test_alembic_migrations.py -q` → `26 passed`
+- `forge-yield-ai`：`npm test -- src/lib/order-presentation.test.ts src/test/order-detail-wallet-actions.test.tsx src/test/execution-run-panel.test.tsx src/test/order-detail-direct-payment-copy.test.ts` → `18 passed`
+
+收口结果：
+
+- 合约已补齐 unpaid TTL / buyer cancel / expire cleanup 真值，并持久化区分“主动取消”与“超时失效”
+- backend 已把 `OrderCancelled` 归一化并投影到 authoritative order truth，`start-execution` 也已按 authoritative paid / expired / cancelled / unavailable 真值 gating
+- 前端已统一改为消费 authoritative projected truth，不再混用 `payment_state`、`onchain_order_id` 与本地推导
+
+残余风险：
+
+- Alembic migration 已补文件与轻量测试，但当前本地环境缺少 Alembic runtime，尚未实际执行一次真实 `alembic upgrade`
+
 #### 当前状态
 
 - `code/contracts/src/OrderBook.sol` 目前没有：

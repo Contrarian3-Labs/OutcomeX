@@ -62,6 +62,8 @@ class OrderLifecycleEvent:
     buyer: str | None
     status: str
     amount_wei: int | None
+    cancelled_at: int | None = None
+    cancelled_as_expired: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -130,6 +132,7 @@ ORDER_EVENT_NAMES = {
     "OrderCreated",
     "OrderClassified",
     "OrderPaid",
+    "OrderCancelled",
     "PreviewReady",
     "OrderSettled",
     "Settled",
@@ -192,6 +195,7 @@ def _normalize_order_payload(event_name: str, args: Mapping[str, Any]) -> OrderL
         "OrderCreated": "CREATED",
         "OrderClassified": "CLASSIFIED",
         "OrderPaid": "PAID",
+        "OrderCancelled": "CANCELLED",
         "PreviewReady": "PREVIEW_READY",
     }
     status = status_by_event.get(event_name)
@@ -210,6 +214,8 @@ def _normalize_order_payload(event_name: str, args: Mapping[str, Any]) -> OrderL
         gross_amount = _pick(args, "grossAmount", "amountWei", required=False)
         if gross_amount is not None:
             amount_wei = _as_int(gross_amount, field_name="gross_amount")
+    elif event_name == "OrderCancelled":
+        amount_wei = None
     elif event_name in {"OrderSettled", "Settled"}:
         gross_amount = _pick(args, "grossAmount", required=False)
         if gross_amount is not None:
@@ -238,6 +244,16 @@ def _normalize_order_payload(event_name: str, args: Mapping[str, Any]) -> OrderL
         ),
         status=status,
         amount_wei=amount_wei,
+        cancelled_at=(
+            _as_int(_pick(args, "cancelledAt", "canceledAt", required=False), field_name="cancelled_at")
+            if _pick(args, "cancelledAt", "canceledAt", required=False) is not None
+            else None
+        ),
+        cancelled_as_expired=(
+            _as_bool(_pick(args, "expired", required=False), field_name="expired")
+            if _pick(args, "expired", required=False) is not None
+            else None
+        ),
     )
 
 

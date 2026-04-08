@@ -14,5 +14,8 @@ interface IOrderLifecycle {
     function confirmResult(uint256 orderId) external;
     function rejectValidPreview(uint256 orderId) external;
     function refundFailedOrNoValidPreview(uint256 orderId) external;
+    function cancelUnpaidOrder(uint256 orderId) external;
+    function expireUnpaidOrder(uint256 orderId) external;
+    function unpaidOrderExpiresAt(uint256 orderId) external view returns (uint64);
     function getOrder(uint256 orderId) external view returns (OrderRecord memory);
 }

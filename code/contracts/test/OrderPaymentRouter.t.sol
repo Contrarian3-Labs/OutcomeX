@@ -262,4 +262,22 @@ contract OrderPaymentRouterTest is TestBase {
         assertEq(pwr.balanceOf(BUYER), 1_000, "buyer should recover all pwr");
         assertEq(pwr.balanceOf(address(settlement)), 0, "settlement escrow should be empty");
     }
+
+    function testPaymentRouterRejectsExpiredUnpaidOrder() public {
+        vm.prank(BUYER);
+        uint256 orderId = orderBook.createOrder(machineId, 1_000);
+
+        vm.startPrank(ADMIN);
+        pwr.setMinter(ADMIN, true);
+        pwr.mint(BUYER, 1_000);
+        vm.stopPrank();
+
+        vm.prank(BUYER);
+        pwr.approve(address(router), 1_000);
+
+        vm.warp(block.timestamp + orderBook.UNPAID_ORDER_TTL() + 1);
+        vm.prank(BUYER);
+        vm.expectRevert(bytes("ORDER_EXPIRED"));
+        router.payWithPWR(orderId, 1_000);
+    }
 }
