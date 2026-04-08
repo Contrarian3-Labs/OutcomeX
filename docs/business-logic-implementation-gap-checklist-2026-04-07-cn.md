@@ -325,16 +325,28 @@
 
 优先级：`P1`
 
+状态：`进行中`
+
+本轮已完成：
+
+- `GET /api/v1/revenue/accounts/{owner_user_id}/overview` 已不再按 current owner 的 machine 集合聚合
+- 现在改成：
+  - `projected_cents` 按 `RevenueEntry.beneficiary_user_id`
+  - `claimed_cents / withdraw_history` 按统一 claim ledger 中的 `machine_revenue` + `claimant_user_id`
+- 因此“机器转手后，旧 beneficiary 的历史收益 / 已领取记录消失”这个问题已被修正
+- 验证：
+  - `code/backend`：`pytest -q tests/api/test_revenue_overview_api.py tests/api/test_revenue_claims_api.py tests/indexer/test_sql_projection_store.py` → `13 passed`
+
 #### 当前状态
 
 - 合约真值在 `RevenueVault`：
   - `unsettledRevenueByMachine`
   - `claimableByMachineOwner`
 - backend 当前仍有两类近似：
-  - revenue overview 仍主要按 current owner 聚合
+  - machine-level summary 仍主要按 machine aggregate 聚合
   - transfer readiness 仍偏布尔近似，不是金额级递减
 - 这会导致：
-  - 转移后收益口径偏差
+  - 某些 machine 页面展示仍未完全区分“asset-level locked amount”与“beneficiary-level revenue ownership”
   - claim 后 transfer guard 与合约 guard 可能不完全一致
 
 #### 涉及模块

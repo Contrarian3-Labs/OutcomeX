@@ -9,10 +9,10 @@ from app.core.config import reset_settings_cache
 from app.domain.enums import OrderState, PaymentState, SettlementState
 from app.domain.models import (
     Machine,
-    MachineRevenueClaim,
     Order,
     Payment,
     RevenueEntry,
+    SettlementClaimRecord,
     SettlementRecord,
 )
 from app.main import create_app
@@ -113,6 +113,7 @@ def _seed_machine_with_revenue(*, owner_user_id: str, machine_share_cents: int) 
 
 def _insert_claim(
     *,
+    claimant_user_id: str,
     machine_id: str,
     amount_cents: int,
     claimed_at: datetime,
@@ -120,10 +121,15 @@ def _insert_claim(
 ) -> None:
     container = get_container()
     with container.session_factory() as db:
-        claim = MachineRevenueClaim(
-            machine_id=machine_id,
+        claim = SettlementClaimRecord(
+            event_id=f"evt-{tx_hash}",
+            claim_kind="machine_revenue",
+            claimant_user_id=claimant_user_id,
+            account_address="0xclaimant",
+            token_address="0x0000000000000000000000000000000000000a11",
             amount_cents=amount_cents,
             tx_hash=tx_hash,
+            machine_id=machine_id,
             claimed_at=claimed_at,
         )
         db.add(claim)
@@ -150,8 +156,8 @@ def test_revenue_overview_reports_projected_and_claimed_history(client: TestClie
     machine = _seed_machine_with_revenue(owner_user_id=owner_user_id, machine_share_cents=900)
     now = datetime(2026, 4, 1, tzinfo=timezone.utc)
     later = now + timedelta(hours=1)
-    _insert_claim(machine_id=machine.id, amount_cents=150, claimed_at=now, tx_hash="0xold")
-    _insert_claim(machine_id=machine.id, amount_cents=200, claimed_at=later, tx_hash="0xnew")
+    _insert_claim(claimant_user_id=owner_user_id, machine_id=machine.id, amount_cents=150, claimed_at=now, tx_hash="0xold")
+    _insert_claim(claimant_user_id=owner_user_id, machine_id=machine.id, amount_cents=200, claimed_at=later, tx_hash="0xnew")
 
     response = client.get(f"/api/v1/revenue/accounts/{owner_user_id}/overview")
 
@@ -163,5 +169,46 @@ def test_revenue_overview_reports_projected_and_claimed_history(client: TestClie
     assert payload["claimable_cents"] == 550
     assert payload["withdraw_history"][0]["tx_hash"] == "0xnew"
     assert payload["withdraw_history"][1]["tx_hash"] == "0xold"
+
+
+def test_revenue_overview_stays_with_beneficiary_after_machine_owner_changes(client: TestClient) -> None:
+    owner_user_id = "owner-before-transfer"
+    machine = _seed_machine_with_revenue(owner_user_id=owner_user_id, machine_share_cents=900)
+    now = datetime(2026, 4, 1, tzinfo=timezone.utc)
+
+    container = get_container()
+    with container.session_factory() as db:
+        db_machine = db.get(Machine, machine.id)
+        db_machine.owner_user_id = "owner-after-transfer"
+        db.add(db_machine)
+        db.add(
+            SettlementClaimRecord(
+                event_id="evt-machine-claim-1",
+                claim_kind="machine_revenue",
+                claimant_user_id=owner_user_id,
+                account_address="0xownerbefore",
+                token_address="0x0000000000000000000000000000000000000a11",
+                amount_cents=300,
+                tx_hash="0xbeneficiary-claim",
+                machine_id=machine.id,
+                claimed_at=now,
+            )
+        )
+        db.commit()
+
+    original_owner = client.get(f"/api/v1/revenue/accounts/{owner_user_id}/overview")
+    new_owner = client.get("/api/v1/revenue/accounts/owner-after-transfer/overview")
+
+    assert original_owner.status_code == 200
+    assert new_owner.status_code == 200
+    original_payload = original_owner.json()
+    new_owner_payload = new_owner.json()
+    assert original_payload["projected_cents"] == 900
+    assert original_payload["claimed_cents"] == 300
+    assert original_payload["claimable_cents"] == 600
+    assert original_payload["withdraw_history"][0]["tx_hash"] == "0xbeneficiary-claim"
+    assert new_owner_payload["projected_cents"] == 0
+    assert new_owner_payload["claimed_cents"] == 0
+    assert new_owner_payload["claimable_cents"] == 0
 
 

@@ -26,30 +26,23 @@ def _succeeded_payment_total_cents(order_id: str, db: Session) -> int:
     )
 
 
-def _machine_ids_for_owner(owner_user_id: str, db: Session) -> list[str]:
-    return db.scalars(select(Machine.id).where(Machine.owner_user_id == owner_user_id)).all()
-
-
-def _sum_machine_share_cents(*, machine_ids: list[str], db: Session) -> int:
-    if not machine_ids:
-        return 0
+def _sum_projected_cents_for_beneficiary(*, beneficiary_user_id: str, db: Session) -> int:
     return (
         db.scalar(
             select(func.coalesce(func.sum(RevenueEntry.machine_share_cents), 0)).where(
-                RevenueEntry.machine_id.in_(machine_ids)
+                RevenueEntry.beneficiary_user_id == beneficiary_user_id
             )
         )
         or 0
     )
 
 
-def _sum_machine_claims_cents(*, machine_ids: list[str], db: Session) -> int:
-    if not machine_ids:
-        return 0
+def _sum_machine_claims_cents_for_claimant(*, claimant_user_id: str, db: Session) -> int:
     return (
         db.scalar(
-            select(func.coalesce(func.sum(MachineRevenueClaim.amount_cents), 0)).where(
-                MachineRevenueClaim.machine_id.in_(machine_ids)
+            select(func.coalesce(func.sum(SettlementClaimRecord.amount_cents), 0)).where(
+                SettlementClaimRecord.claimant_user_id == claimant_user_id,
+                SettlementClaimRecord.claim_kind == "machine_revenue",
             )
         )
         or 0
@@ -179,20 +172,18 @@ def list_machine_revenue(machine_id: str, db: Session = Depends(get_db)) -> list
 
 @router.get("/accounts/{owner_user_id}/overview", response_model=RevenueAccountOverviewResponse)
 def revenue_account_overview(owner_user_id: str, db: Session = Depends(get_db)) -> RevenueAccountOverviewResponse:
-    machine_ids = _machine_ids_for_owner(owner_user_id=owner_user_id, db=db)
-    projected_cents = _sum_machine_share_cents(machine_ids=machine_ids, db=db)
-    claimed_cents = _sum_machine_claims_cents(machine_ids=machine_ids, db=db)
+    projected_cents = _sum_projected_cents_for_beneficiary(beneficiary_user_id=owner_user_id, db=db)
+    claimed_cents = _sum_machine_claims_cents_for_claimant(claimant_user_id=owner_user_id, db=db)
     claimable_cents = max(0, projected_cents - claimed_cents)
-    withdraw_history = (
-        list(
-            db.scalars(
-                select(MachineRevenueClaim)
-                .where(MachineRevenueClaim.machine_id.in_(machine_ids))
-                .order_by(MachineRevenueClaim.claimed_at.desc())
+    withdraw_history = list(
+        db.scalars(
+            select(SettlementClaimRecord)
+            .where(
+                SettlementClaimRecord.claimant_user_id == owner_user_id,
+                SettlementClaimRecord.claim_kind == "machine_revenue",
             )
+            .order_by(SettlementClaimRecord.claimed_at.desc(), SettlementClaimRecord.id.desc())
         )
-        if machine_ids
-        else []
     )
     return RevenueAccountOverviewResponse(
         owner_user_id=owner_user_id,
@@ -201,7 +192,16 @@ def revenue_account_overview(owner_user_id: str, db: Session = Depends(get_db)) 
         claimable_cents=claimable_cents,
         claimed_cents=claimed_cents,
         currency=_user_primary_currency(user_id=owner_user_id, db=db),
-        withdraw_history=withdraw_history,
+        withdraw_history=[
+            {
+                "id": record.id,
+                "machine_id": record.machine_id,
+                "amount_cents": record.amount_cents,
+                "tx_hash": record.tx_hash,
+                "claimed_at": record.claimed_at,
+            }
+            for record in withdraw_history
+        ],
     )
 
 
