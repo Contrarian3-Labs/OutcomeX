@@ -19,11 +19,27 @@ from app.onchain.tx_sender import get_onchain_transaction_sender
 
 class SpyOrderWriter:
     def __init__(self) -> None:
-        self.create_and_mark_paid_calls: list[dict] = []
+        self.create_order_calls: list[dict] = []
+        self.pay_order_by_adapter_calls: list[dict] = []
         self.mark_paid_calls: list[dict] = []
 
-    def create_order(self, order):  # pragma: no cover - route noise for this test
-        return None
+    def create_order(self, order, *, buyer_wallet_address):
+        self.create_order_calls.append(
+            {
+                "order_id": order.id,
+                "buyer_wallet_address": buyer_wallet_address,
+            }
+        )
+        return OrderWriteResult(
+            tx_hash="0xcreateorder",
+            submitted_at=datetime(2026, 4, 5, tzinfo=timezone.utc),
+            chain_id=133,
+            contract_name="OrderPaymentRouter",
+            contract_address="0x0000000000000000000000000000000000000134",
+            method_name="createOrderByAdapter",
+            idempotency_key="writer-create-order",
+            payload={"buyer": buyer_wallet_address, "machine_id": order.machine_id, "gross_amount": order.quoted_amount_cents},
+        )
 
     def mark_preview_ready(self, order):  # pragma: no cover - route noise for this test
         return None
@@ -34,23 +50,26 @@ class SpyOrderWriter:
     def settle_order(self, order, settlement):  # pragma: no cover - route noise for this test
         return None
 
-    def create_order_and_mark_paid(self, order, payment, *, buyer_wallet_address):
-        self.create_and_mark_paid_calls.append(
+    def pay_order_by_adapter(self, order, payment):
+        self.pay_order_by_adapter_calls.append(
             {
                 "order_id": order.id,
                 "payment_id": payment.id,
-                "buyer_wallet_address": buyer_wallet_address,
             }
         )
         return OrderWriteResult(
-            tx_hash="0xcreatepaid",
+            tx_hash="0xpaybyadapter",
             submitted_at=datetime(2026, 4, 5, tzinfo=timezone.utc),
             chain_id=133,
             contract_name="OrderPaymentRouter",
             contract_address="0x0000000000000000000000000000000000000134",
-            method_name="createPaidOrderByAdapter",
-            idempotency_key="writer-create-paid",
-            payload={"buyer": buyer_wallet_address, "machine_id": order.machine_id, "amount": payment.amount_cents},
+            method_name="payOrderByAdapter",
+            idempotency_key=f"writer-pay-order-{payment.id}",
+            payload={
+                "order_id": order.onchain_order_id,
+                "amount": payment.amount_cents,
+                "payment_token_address": "0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
+            },
         )
 
     def mark_order_paid(self, order, payment):
@@ -68,19 +87,36 @@ class SpyOrderWriter:
 
 class SpyOnchainBroadcaster:
     def __init__(self) -> None:
+        self.create_order_calls: list[dict] = []
         self.create_paid_calls: list[dict] = []
 
-    def broadcast_create_paid_order(self, *, write_result):
-        self.create_paid_calls.append(
+    def broadcast_create_order(self, *, write_result):
+        sequence = len(self.create_order_calls) + 1
+        order_id = f"97{sequence:03d}"
+        self.create_order_calls.append(
             {
                 "method_name": write_result.method_name,
                 "buyer": write_result.payload["buyer"],
             }
         )
         return OnchainCreateOrderReceipt(
-            onchain_order_id="oc_98001",
+            onchain_order_id=order_id,
             tx_hash=write_result.tx_hash,
-            event_id=f"OrderCreated:oc_98001:{write_result.tx_hash}",
+            event_id=f"OrderCreated:{order_id}:{write_result.tx_hash}",
+            block_number=3330000 + sequence,
+        )
+
+    def broadcast_create_paid_order(self, *, write_result):
+        self.create_paid_calls.append(
+            {
+                "method_name": write_result.method_name,
+                "order_id": write_result.payload.get("order_id"),
+            }
+        )
+        return OnchainCreateOrderReceipt(
+            onchain_order_id="98001",
+            tx_hash=write_result.tx_hash,
+            event_id=f"OrderCreated:98001:{write_result.tx_hash}",
             block_number=3330001,
         )
 
@@ -92,7 +128,7 @@ class SpyTransactionSender:
     def send(self, write_result):
         self.calls.append({"method_name": write_result.method_name, "tx_hash": write_result.tx_hash})
         return OrderWriteResult(
-            tx_hash="0xlivetx",
+            tx_hash=write_result.tx_hash,
             submitted_at=write_result.submitted_at,
             chain_id=write_result.chain_id,
             contract_name=write_result.contract_name,
@@ -260,29 +296,43 @@ def test_hsp_webhook_is_idempotent_and_freezes_settlement_policy(
 
     order_after_payment = test_client.get(f"/api/v1/orders/{order['id']}")
     assert order_after_payment.status_code == 200
-    assert order_after_payment.json()["onchain_order_id"] == "oc_98001"
-    assert order_after_payment.json()["create_order_tx_hash"] == "0xlivetx"
-    assert order_after_payment.json()["create_order_event_id"] == "OrderCreated:oc_98001:0xlivetx"
+    assert order_after_payment.json()["onchain_order_id"] == "97001"
+    assert order_after_payment.json()["create_order_tx_hash"] == "0xcreateorder"
+    assert order_after_payment.json()["create_order_event_id"] == "OrderCreated:97001:0xcreateorder"
     assert order_after_payment.json()["create_order_block_number"] == 3330001
     assert order_after_payment.json()["settlement_beneficiary_user_id"] == "owner-1"
     assert order_after_payment.json()["settlement_is_self_use"] is False
     assert order_after_payment.json()["settlement_is_dividend_eligible"] is True
     assert order_after_payment.json()["execution_metadata"]["authoritative_order_status"] == "PAID"
     assert order_after_payment.json()["execution_metadata"]["authoritative_paid_projection"] is True
-    assert order_after_payment.json()["execution_metadata"]["authoritative_order_event_id"] == "OrderCreated:oc_98001:0xlivetx"
-    assert spy_writer.create_and_mark_paid_calls == [
+    assert order_after_payment.json()["execution_metadata"]["authoritative_order_event_id"] == "OrderCreated:98001:0xpaybyadapter"
+    assert spy_writer.create_order_calls == [
         {
             "order_id": order["id"],
-            "payment_id": payment["payment_id"],
             "buyer_wallet_address": "0x2222222222222222222222222222222222222222",
         }
     ]
+    assert spy_writer.pay_order_by_adapter_calls == [
+        {
+            "order_id": order["id"],
+            "payment_id": payment["payment_id"],
+        }
+    ]
     assert spy_writer.mark_paid_calls == []
-    assert spy_sender.calls == [{"method_name": "createPaidOrderByAdapter", "tx_hash": "0xcreatepaid"}]
+    assert spy_sender.calls == [
+        {"method_name": "createOrderByAdapter", "tx_hash": "0xcreateorder"},
+        {"method_name": "payOrderByAdapter", "tx_hash": "0xpaybyadapter"},
+    ]
+    assert spy_broadcaster.create_order_calls == [
+        {
+            "method_name": "createOrderByAdapter",
+            "buyer": "0x2222222222222222222222222222222222222222",
+        }
+    ]
     assert spy_broadcaster.create_paid_calls == [
         {
-            "method_name": "createPaidOrderByAdapter",
-            "buyer": "0x2222222222222222222222222222222222222222",
+            "method_name": "payOrderByAdapter",
+            "order_id": "97001",
         }
     ]
 
@@ -303,9 +353,9 @@ def test_hsp_webhook_marks_authoritative_paid_projection_when_order_is_already_a
     payment = _create_payment_intent(test_client, order_id=order["id"])
     _anchor_order(
         order_id=order["id"],
-        onchain_order_id="oc_existing",
+        onchain_order_id="97001",
         create_order_tx_hash="0xexistingtx",
-        create_order_event_id="OrderCreated:oc_existing:0xexistingtx",
+        create_order_event_id="OrderCreated:97001:0xexistingtx",
         create_order_block_number=3330000,
     )
     payload = _webhook_payload(
@@ -322,14 +372,33 @@ def test_hsp_webhook_marks_authoritative_paid_projection_when_order_is_already_a
     assert response.status_code == 200
     order_after_payment = test_client.get(f"/api/v1/orders/{order['id']}")
     assert order_after_payment.status_code == 200
-    assert order_after_payment.json()["onchain_order_id"] == "oc_existing"
+    assert order_after_payment.json()["onchain_order_id"] == "97001"
     assert order_after_payment.json()["create_order_tx_hash"] == "0xexistingtx"
     assert order_after_payment.json()["execution_metadata"]["authoritative_order_status"] == "PAID"
     assert order_after_payment.json()["execution_metadata"]["authoritative_paid_projection"] is True
-    assert order_after_payment.json()["execution_metadata"]["authoritative_order_event_id"] == "evt_existing_paid"
-    assert spy_writer.create_and_mark_paid_calls == []
-    assert spy_broadcaster.create_paid_calls == []
-    assert spy_sender.calls == []
+    assert order_after_payment.json()["execution_metadata"]["authoritative_order_event_id"] == "OrderCreated:98001:0xpaybyadapter"
+    assert spy_writer.create_order_calls == [
+        {
+            "order_id": order["id"],
+            "buyer_wallet_address": "0x2222222222222222222222222222222222222222",
+        }
+    ]
+    assert spy_writer.pay_order_by_adapter_calls == [
+        {
+            "order_id": order["id"],
+            "payment_id": payment["payment_id"],
+        }
+    ]
+    assert spy_broadcaster.create_paid_calls == [
+        {
+            "method_name": "payOrderByAdapter",
+            "order_id": "97001",
+        }
+    ]
+    assert spy_sender.calls == [
+        {"method_name": "createOrderByAdapter", "tx_hash": "0xcreateorder"},
+        {"method_name": "payOrderByAdapter", "tx_hash": "0xpaybyadapter"},
+    ]
 
 
 def test_hsp_webhook_rejects_invalid_signatures(
@@ -363,21 +432,14 @@ def test_hsp_webhook_rejects_unresolved_buyer_wallet(
     test_client, spy_writer, spy_broadcaster, spy_sender = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine_id=machine["id"], user_id="user-unmapped")
-    payment = _create_payment_intent(test_client, order_id=order["id"])
-    payload = _webhook_payload(
-        payment,
-        status="payment-successful",
-        currency="USDC",
-        tx_signature="0xdeadbeef",
-        request_id="evt_unmapped",
+    response = test_client.post(
+        f"/api/v1/payments/orders/{order['id']}/intent",
+        json={"amount_cents": 500, "currency": "usdc"},
     )
-    body, headers = _sign_payload(payload)
-
-    response = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
-
     assert response.status_code == 409
     assert response.json()["detail"] == "Buyer wallet address unresolved for HSP settlement"
-    assert spy_writer.create_and_mark_paid_calls == []
+    assert spy_writer.create_order_calls == []
+    assert spy_writer.pay_order_by_adapter_calls == []
     assert spy_broadcaster.create_paid_calls == []
     assert spy_sender.calls == []
 
@@ -504,3 +566,59 @@ def test_hsp_webhook_rejects_terminal_state_downgrade_after_success(
     failed_response = test_client.post("/api/v1/payments/hsp/webhooks", content=failed_body, headers=failed_headers)
     assert failed_response.status_code == 409
     assert failed_response.json()["detail"] == "Payment is already in terminal state"
+
+
+def test_hsp_webhook_rejects_success_without_tx_signature(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
+) -> None:
+    test_client, _spy_writer, _spy_broadcaster, _spy_sender = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine_id=machine["id"])
+    payment = _create_payment_intent(test_client, order_id=order["id"])
+
+    payload = _webhook_payload(
+        payment,
+        status="payment-successful",
+        currency="USDC",
+        tx_signature=None,
+        request_id="evt_missing_tx",
+    )
+    body, headers = _sign_payload(payload)
+    response = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Successful HSP webhook must include tx signature"
+
+
+def test_hsp_webhook_rejects_success_with_reused_tx_signature_across_payments(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
+) -> None:
+    test_client, _spy_writer, _spy_broadcaster, _spy_sender = client
+    machine = _create_machine(test_client)
+    first_order = _create_order(test_client, machine_id=machine["id"])
+    second_order = _create_order(test_client, machine_id=machine["id"], user_id="user-2", quoted_amount_cents=500)
+    first_payment = _create_payment_intent(test_client, order_id=first_order["id"], amount_cents=500)
+    second_payment = _create_payment_intent(test_client, order_id=second_order["id"], amount_cents=500)
+
+    shared_tx_hash = "0xsharedtxhash"
+    first_payload = _webhook_payload(
+        first_payment,
+        status="payment-successful",
+        currency="USDC",
+        tx_signature=shared_tx_hash,
+        request_id="evt_first_tx",
+    )
+    first_body, first_headers = _sign_payload(first_payload)
+    first_response = test_client.post("/api/v1/payments/hsp/webhooks", content=first_body, headers=first_headers)
+    assert first_response.status_code == 200
+
+    second_payload = _webhook_payload(
+        second_payment,
+        status="payment-successful",
+        currency="USDC",
+        tx_signature=shared_tx_hash,
+        request_id="evt_second_tx",
+    )
+    second_body, second_headers = _sign_payload(second_payload)
+    second_response = test_client.post("/api/v1/payments/hsp/webhooks", content=second_body, headers=second_headers)
+    assert second_response.status_code == 409
+    assert second_response.json()["detail"] == "HSP tx signature already used by another payment"

@@ -127,7 +127,10 @@ class Order(Base):
         expiry = self.unpaid_expiry_at
         if expiry is None:
             return False
-        now = datetime.now(expiry.tzinfo or timezone.utc)
+        if expiry.tzinfo is None:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+        else:
+            now = datetime.now(expiry.tzinfo)
         return expiry <= now
 
 

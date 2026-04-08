@@ -13,6 +13,7 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("OUTCOMEX_DATABASE_URL", f"sqlite+pysqlite:///{db_path.as_posix()}")
     monkeypatch.setenv("OUTCOMEX_AUTO_CREATE_TABLES", "true")
     monkeypatch.setenv("OUTCOMEX_ENV", "dev")
+    monkeypatch.setenv("OUTCOMEX_BUYER_WALLET_MAP_JSON", '{"user-1":"0x00000000000000000000000000000000000000aa"}')
     reset_settings_cache()
     reset_container_cache()
     with TestClient(create_app()) as test_client:

@@ -252,6 +252,85 @@ def test_sql_projection_advances_direct_payment_from_created_and_paid_events() -
         assert machine.has_active_tasks is True
 
 
+def test_sql_projection_does_not_downgrade_paid_truth_when_order_classified_arrives_after_payment() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+    with session_factory() as db:
+        machine = Machine(id="m-1", display_name="node", owner_user_id="owner-1")
+        order = Order(
+            id="o-1",
+            onchain_order_id="42",
+            onchain_machine_id="7",
+            user_id="u-1",
+            machine_id="m-1",
+            chat_session_id="chat-1",
+            user_prompt="build",
+            recommended_plan_summary="plan",
+            quoted_amount_cents=100,
+        )
+        payment = Payment(
+            id="p-1",
+            order_id="o-1",
+            provider="onchain_router",
+            amount_cents=100,
+            currency="USDC",
+            state=PaymentState.PENDING,
+        )
+        db.add(machine)
+        db.add(order)
+        db.add(payment)
+        db.commit()
+
+    store = SqlProjectionStore(session_factory=session_factory, owner_resolver=lambda _: "owner-1")
+    store.apply(
+        _event(
+            event_name="PaymentFinalized",
+            transaction_hash="0xpaytx",
+            block_number=22,
+            payload=OrderLifecycleEvent(
+                order_id="42",
+                machine_id="7",
+                buyer="0xbuyer",
+                status="PAID",
+                amount_wei=100,
+                payer="0xpayer",
+                payment_token="0x79aec4eea31d50792f61d1ca0733c18c89524c9e",
+                payment_source="0x1234",
+                settlement_beneficiary="0xowner",
+                dividend_eligible=True,
+                refund_authorized=True,
+            ),
+        )
+    )
+    store.apply(
+        _event(
+            event_name="OrderClassified",
+            transaction_hash="0xpaytx",
+            block_number=22,
+            payload=OrderLifecycleEvent(
+                order_id="42",
+                machine_id="7",
+                buyer="0xbuyer",
+                status="CLASSIFIED",
+                amount_wei=None,
+                settlement_beneficiary="0xowner",
+                dividend_eligible=True,
+                refund_authorized=True,
+            ),
+        )
+    )
+
+    with session_factory() as db:
+        order = db.get(Order, "o-1")
+        machine = db.get(Machine, "m-1")
+        metadata = dict(order.execution_metadata or {})
+        assert metadata["authoritative_order_status"] == "PAID"
+        assert metadata["authoritative_paid_projection"] is True
+        assert machine.has_active_tasks is True
+
+
 def test_sql_projection_marks_order_cancelled_and_expired_from_onchain_event() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     Base.metadata.create_all(bind=engine)

@@ -9,7 +9,7 @@ from app.onchain.tx_sender import (
     CLAIM_PLATFORM_REVENUE_SELECTOR,
     CLAIM_REFUND_SELECTOR,
     CONFIRM_RESULT_SELECTOR,
-    CREATE_PAID_ORDER_SELECTOR,
+    CREATE_ORDER_BY_ADAPTER_SELECTOR,
     MARK_PREVIEW_READY_SELECTOR,
     MINT_MACHINE_SELECTOR,
     NullTransactionSender,
@@ -20,7 +20,7 @@ from app.onchain.tx_sender import (
 
 def _write_result(
     *,
-    method_name: str = "createPaidOrderByAdapter",
+    method_name: str = "createOrderByAdapter",
     contract_name: str = "OrderPaymentRouter",
     contract_address: str = "0x0000000000000000000000000000000000000134",
     payload: dict | None = None,
@@ -37,8 +37,7 @@ def _write_result(
         or {
             "buyer": "0x2222222222222222222222222222222222222222",
             "machine_id": "7",
-            "amount": 500,
-            "payment_token_address": "0x79AEc4eea31d50792f61d1ca0733c18c89524c9e",
+            "gross_amount": 500,
         },
     )
 
@@ -80,7 +79,7 @@ def _reset_settings_cache_between_tests():
     reset_settings_cache()
 
 
-def test_python_sender_replaces_tx_hash_for_create_paid_order() -> None:
+def test_python_sender_replaces_tx_hash_for_create_order_by_adapter() -> None:
     rpc_client = FakeRpcClient()
     account = FakeAccount()
     sender = PythonTransactionSender(
@@ -103,7 +102,7 @@ def test_python_sender_replaces_tx_hash_for_create_paid_order() -> None:
     assert isinstance(estimated_tx, dict)
     assert estimated_tx["to"] == "0x0000000000000000000000000000000000000134"
     assert estimated_tx["from"] == "0x9999999999999999999999999999999999999999"
-    assert str(estimated_tx["data"]).startswith(CREATE_PAID_ORDER_SELECTOR)
+    assert str(estimated_tx["data"]).startswith(CREATE_ORDER_BY_ADAPTER_SELECTOR)
     assert account.signed_txs[0]["gas"] == 21000
     assert result.tx_hash == "0xlivehash"
 

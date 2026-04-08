@@ -45,7 +45,21 @@ class _LifecycleSpy:
 
 class _WriterSpy:
     def __init__(self) -> None:
+        self.create_calls = []
         self.paid_calls = []
+
+    def create_order(self, order, *, buyer_wallet_address):
+        self.create_calls.append((order.id, buyer_wallet_address))
+        return OrderWriteResult(
+            tx_hash="0xcreateorder",
+            submitted_at=datetime.now(timezone.utc),
+            chain_id=133,
+            contract_name="OrderPaymentRouter",
+            contract_address="0x0000000000000000000000000000000000000134",
+            method_name="createOrderByAdapter",
+            idempotency_key="create-order",
+            payload={"buyer": buyer_wallet_address, "machine_id": order.machine_id, "gross_amount": order.quoted_amount_cents},
+        )
 
     def mark_order_paid(self, order, payment) -> None:
         self.paid_calls.append((order.id, payment.id))
@@ -159,6 +173,7 @@ def client(tmp_path) -> tuple[TestClient, _ExecutionServiceStub]:
     os.environ["OUTCOMEX_DATABASE_URL"] = f"sqlite+pysqlite:///{db_path.as_posix()}"
     os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
     os.environ["OUTCOMEX_EXECUTION_SYNC_ENABLED"] = "false"
+    os.environ["OUTCOMEX_BUYER_WALLET_MAP_JSON"] = '{"user-1":"0x00000000000000000000000000000000000000aa"}'
     reset_settings_cache()
     reset_container_cache()
     app = create_app()

@@ -23,7 +23,7 @@ def _write_result() -> OrderWriteResult:
         chain_id=133,
         contract_name="OrderPaymentRouter",
         contract_address="0x0000000000000000000000000000000000000134",
-        method_name="createPaidOrderByAdapter",
+        method_name="payOrderByAdapter",
         idempotency_key="idempotency",
         payload={"buyer": BUYER_ADDRESS},
     )
@@ -75,5 +75,6 @@ def test_broadcaster_falls_back_to_deterministic_receipt_without_live_rpc() -> N
     receipt = broadcaster.broadcast_create_paid_order(write_result=_write_result())
 
     assert receipt.tx_hash == "0xabc123"
-    assert receipt.event_id.startswith("OrderCreated:oc_")
+    assert receipt.event_id.startswith("OrderCreated:")
+    assert receipt.onchain_order_id.isdigit()
     assert receipt.block_number >= 1_000_000

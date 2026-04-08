@@ -57,3 +57,11 @@ def test_unpaid_expiry_helpers_respect_authoritative_paid_projection() -> None:
 
     assert order.unpaid_expiry_at is None
     assert order.is_expired is False
+
+
+def test_is_expired_handles_naive_datetime_from_sqlite_roundtrip() -> None:
+    created_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=20)
+    order = _order(created_at=created_at)
+    assert order.unpaid_expiry_at is not None
+    assert order.unpaid_expiry_at.tzinfo is None
+    assert order.is_expired is True

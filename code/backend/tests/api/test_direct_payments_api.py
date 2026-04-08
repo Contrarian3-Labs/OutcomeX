@@ -14,10 +14,25 @@ from app.onchain.order_writer import OrderWriteResult, get_order_writer
 
 class SpyOrderWriter:
     def __init__(self) -> None:
+        self.create_calls: list[dict] = []
         self.mark_paid_calls: list[dict] = []
 
-    def create_order(self, order):  # pragma: no cover
-        return None
+    def create_order(self, order, *, buyer_wallet_address):
+        self.create_calls.append({"order_id": order.id, "buyer_wallet_address": buyer_wallet_address})
+        return OrderWriteResult(
+            tx_hash="0xcreateorder",
+            submitted_at=order.created_at,
+            chain_id=133,
+            contract_name="OrderPaymentRouter",
+            contract_address="0x0000000000000000000000000000000000000134",
+            method_name="createOrderByAdapter",
+            idempotency_key=f"create-{order.id}",
+            payload={
+                "buyer": buyer_wallet_address,
+                "machine_id": order.machine_id,
+                "gross_amount": order.quoted_amount_cents,
+            },
+        )
 
     def mark_preview_ready(self, order):  # pragma: no cover
         return None
@@ -65,11 +80,11 @@ class SpyOrderWriter:
                 "signing_standard": signing_standard,
             }
         else:
-            method_name = "createOrderAndPayWithPWR"
+            method_name = "payWithPWR"
             signing_standard = "erc20_approve"
             payload = {
                 "client_order_id": order.id,
-                "machine_id": order.machine_id,
+                "order_id": order.onchain_order_id or "1",
                 "payment_id": payment.id,
                 "gross_amount_cents": order.quoted_amount_cents,
                 "currency": currency,
@@ -134,6 +149,7 @@ def client(tmp_path) -> tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerif
     db_path = tmp_path / "direct-payments.db"
     os.environ["OUTCOMEX_DATABASE_URL"] = f"sqlite+pysqlite:///{db_path.as_posix()}"
     os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
+    os.environ["OUTCOMEX_BUYER_WALLET_MAP_JSON"] = '{"user-1":"0x00000000000000000000000000000000000000aa"}'
     reset_settings_cache()
     reset_container_cache()
     spy_writer = SpyOrderWriter()
@@ -265,15 +281,19 @@ def test_create_direct_payment_intent_supports_pwr_when_anchor_exists(
     payload = response.json()
     assert payload["provider"] == "onchain_router"
     assert payload["contract_name"] == "OrderPaymentRouter"
-    assert payload["method_name"] == "createOrderAndPayWithPWR"
+    assert payload["method_name"] == "payWithPWR"
     assert payload["finalize_required"] is False
-    assert payload["calldata"].startswith("0x321a55a2")
+    assert payload["calldata"].startswith("0xd4099cc2")
     assert payload["submit_payload"]["to"] == payload["contract_address"]
     assert payload["submit_payload"]["data"] == payload["calldata"]
     assert payload["submit_payload"]["value"] == "0x0"
     assert payload["submit_payload"]["currency"] == "PWR"
+    assert payload["submit_payload"]["order_id"] is not None
     assert payload["submit_payload"]["pwr_amount"] == "36000000000000000000"
     assert payload["quote"]["pwr_anchor_price_cents"] == 25
+    anchored_order = test_client.get(f"/api/v1/orders/{order['id']}").json()
+    assert anchored_order["onchain_order_id"] is not None
+    assert anchored_order["create_order_tx_hash"] == "0xcreateorder"
 
 
 def test_finalize_usdc_direct_payment_intent_returns_wallet_envelope(
@@ -365,9 +385,10 @@ def test_sync_onchain_payment_records_correlation_without_route_side_state_mutat
     order_after = test_client.get(f"/api/v1/orders/{order['id']}")
     assert order_after.status_code == 200
     assert order_after.json()["onchain_order_id"] is None
-    assert order_after.json()["create_order_tx_hash"] == "0xabc123"
+    assert order_after.json()["create_order_tx_hash"] is None
     assert order_after.json()["create_order_event_id"] is None
     assert order_after.json()["create_order_block_number"] is None
+    assert order_after.json()["execution_metadata"]["last_payment_tx_hash"] == "0xabc123"
     assert order_after.json()["settlement_beneficiary_user_id"] is None
     assert order_after.json()["settlement_is_dividend_eligible"] is None
     assert spy_writer.mark_paid_calls == []
@@ -414,10 +435,11 @@ def test_sync_onchain_pwr_payment_records_correlation_without_route_side_state_m
 
     order_after = test_client.get(f"/api/v1/orders/{order['id']}")
     assert order_after.status_code == 200
-    assert order_after.json()["onchain_order_id"] is None
-    assert order_after.json()["create_order_tx_hash"] == "0xpwr123"
-    assert order_after.json()["create_order_event_id"] is None
-    assert order_after.json()["create_order_block_number"] is None
+    assert order_after.json()["onchain_order_id"] is not None
+    assert order_after.json()["create_order_tx_hash"] == "0xcreateorder"
+    assert order_after.json()["create_order_event_id"] is not None
+    assert order_after.json()["create_order_block_number"] is not None
+    assert order_after.json()["execution_metadata"]["last_payment_tx_hash"] == "0xpwr123"
     assert order_after.json()["settlement_beneficiary_user_id"] is None
     assert order_after.json()["settlement_is_dividend_eligible"] is None
     assert spy_writer.mark_paid_calls == []

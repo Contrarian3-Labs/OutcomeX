@@ -36,6 +36,8 @@ interface IOrderPaymentRouter {
 
     function payWithPWR(uint256 orderId, uint256 amount) external;
 
+    function createOrderByAdapter(address buyer, uint256 machineId, uint256 amount) external returns (uint256 orderId);
+
     function createOrderAndPayWithUSDC(
         uint256 machineId,
         uint256 amount,
@@ -60,4 +62,6 @@ interface IOrderPaymentRouter {
     function createPaidOrderByAdapter(address buyer, uint256 machineId, uint256 amount, address paymentToken)
         external
         returns (uint256 orderId);
+
+    function payOrderByAdapter(uint256 orderId, uint256 amount, address paymentToken) external;
 }

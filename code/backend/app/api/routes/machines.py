@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.container import get_container
 from app.domain.models import Machine, MachineRevenueClaim, RevenueEntry
 from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
 from app.runtime.cost_service import get_runtime_cost_service
@@ -183,6 +184,7 @@ def create_machine(
 ) -> MachineResponse:
     onchain_machine_id = payload.onchain_machine_id
     ownership_source = "bootstrap"
+    owner_chain_address = None
     if onchain_machine_id is None and onchain_lifecycle.enabled():
         token_uri = f"ipfs://outcomex-machine/{payload.owner_user_id}/{payload.display_name.replace(' ', '-').lower()}"
         minted = onchain_lifecycle.mint_machine_for_owner(
@@ -196,12 +198,14 @@ def create_machine(
             )
         onchain_machine_id = minted.onchain_machine_id
         ownership_source = "chain"
+        owner_chain_address = get_container().buyer_address_resolver.resolve_wallet(payload.owner_user_id)
 
     machine = Machine(
         display_name=payload.display_name,
         owner_user_id=payload.owner_user_id,
         onchain_machine_id=onchain_machine_id,
         ownership_source=ownership_source,
+        owner_chain_address=owner_chain_address,
     )
     db.add(machine)
     db.commit()

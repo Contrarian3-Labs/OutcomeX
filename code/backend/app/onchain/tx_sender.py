@@ -8,10 +8,12 @@ import httpx
 from app.core.config import get_settings
 from app.onchain.order_writer import OrderWriteResult
 
-CREATE_PAID_ORDER_SELECTOR = "0xcaf5331f"
+CREATE_ORDER_BY_ADAPTER_SELECTOR = "0xc859da5c"
+PAY_ORDER_BY_ADAPTER_SELECTOR = "0xec08a5d2"
 CREATE_ORDER_AND_PAY_WITH_USDC_SELECTOR = "0xc73f27f1"
 CREATE_ORDER_AND_PAY_WITH_USDT_SELECTOR = "0x3d961057"
 CREATE_ORDER_AND_PAY_WITH_PWR_SELECTOR = "0x321a55a2"
+PAY_WITH_PWR_SELECTOR = "0xd4099cc2"
 MARK_PREVIEW_READY_SELECTOR = "0x9bd0cb73"
 CONFIRM_RESULT_SELECTOR = "0xeb05cf51"
 REJECT_VALID_PREVIEW_SELECTOR = "0xd5518ff7"
@@ -22,7 +24,8 @@ CLAIM_REFUND_SELECTOR = "0xbffa55d5"
 CLAIM_PLATFORM_REVENUE_SELECTOR = "0x23037e0c"
 
 TRANSACTION_METHODS = {
-    "createPaidOrderByAdapter",
+    "createOrderByAdapter",
+    "payOrderByAdapter",
     "markPreviewReady",
     "confirmResult",
     "rejectValidPreview",
@@ -37,6 +40,7 @@ ENCODABLE_METHODS = TRANSACTION_METHODS | {
     "createOrderAndPayWithUSDC",
     "createOrderAndPayWithUSDT",
     "createOrderAndPayWithPWR",
+    "payWithPWR",
 }
 
 
@@ -211,14 +215,20 @@ class PythonTransactionSender:
                 cls._encode_uint256(pwr_amount),
             ]
             return CREATE_ORDER_AND_PAY_WITH_PWR_SELECTOR + "".join(encoded)
-        if method_name == "createPaidOrderByAdapter":
+        if method_name == "createOrderByAdapter":
             encoded = [
                 cls._encode_address(payload["buyer"]),
                 cls._encode_uint256(payload["machine_id"]),
+                cls._encode_uint256(payload["gross_amount"]),
+            ]
+            return CREATE_ORDER_BY_ADAPTER_SELECTOR + "".join(encoded)
+        if method_name == "payOrderByAdapter":
+            encoded = [
+                cls._encode_uint256(payload["order_id"]),
                 cls._encode_uint256(payload["amount"]),
                 cls._encode_address(payload["payment_token_address"]),
             ]
-            return CREATE_PAID_ORDER_SELECTOR + "".join(encoded)
+            return PAY_ORDER_BY_ADAPTER_SELECTOR + "".join(encoded)
         if method_name == "mintMachine":
             return (
                 MINT_MACHINE_SELECTOR
@@ -232,6 +242,10 @@ class PythonTransactionSender:
             return CLAIM_REFUND_SELECTOR + cls._encode_address(payload["payment_token_address"])
         if method_name == "claimPlatformRevenue":
             return CLAIM_PLATFORM_REVENUE_SELECTOR + cls._encode_address(payload["payment_token_address"])
+        if method_name == "payWithPWR":
+            return PAY_WITH_PWR_SELECTOR + cls._encode_uint256(payload["order_id"]) + cls._encode_uint256(
+                payload.get("pwr_amount", payload["gross_amount_cents"])
+            )
 
         order_id = cls._encode_uint256(payload["order_id"])
         if method_name == "confirmResult":
@@ -328,7 +342,8 @@ def get_onchain_transaction_sender() -> TransactionSender:
         return NullTransactionSender()
 
     method_private_keys = {
-        "createPaidOrderByAdapter": settings.onchain_adapter_private_key or settings.onchain_broadcaster_private_key,
+        "createOrderByAdapter": settings.onchain_adapter_private_key or settings.onchain_broadcaster_private_key,
+        "payOrderByAdapter": settings.onchain_adapter_private_key or settings.onchain_broadcaster_private_key,
         "markPreviewReady": settings.onchain_machine_owner_private_key,
         "confirmResult": settings.onchain_buyer_private_key,
         "rejectValidPreview": settings.onchain_buyer_private_key,

@@ -105,6 +105,41 @@ def test_create_machine_mints_onchain_when_runtime_enabled(client: TestClient) -
     assert stub.mint_calls[0]["owner_user_id"] == "owner-1"
 
 
+def test_create_machine_backfills_owner_chain_address_when_wallet_mapping_exists(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.onchain.lifecycle_service import get_onchain_lifecycle_service
+
+    db_path = tmp_path / "machines-api-mint.db"
+    monkeypatch.setenv("OUTCOMEX_DATABASE_URL", f"sqlite+pysqlite:///{db_path.as_posix()}")
+    monkeypatch.setenv("OUTCOMEX_AUTO_CREATE_TABLES", "true")
+    monkeypatch.delenv("OUTCOMEX_ONCHAIN_RPC_URL", raising=False)
+    monkeypatch.setenv(
+        "OUTCOMEX_BUYER_WALLET_MAP_JSON",
+        '{"owner-1":"0x1111111111111111111111111111111111111111"}',
+    )
+    reset_settings_cache()
+    reset_container_cache()
+
+    stub = StubOnchainLifecycle(enabled=True, onchain_machine_id="101")
+    with TestClient(create_app()) as test_client:
+        test_client.app.dependency_overrides[get_onchain_lifecycle_service] = lambda: stub
+        response = test_client.post(
+            "/api/v1/machines",
+            json={"display_name": "GANA node", "owner_user_id": "owner-1"},
+        )
+
+    payload = response.json()
+    assert response.status_code == 201
+    assert payload["onchain_machine_id"] == "101"
+    assert payload["owner_chain_address"] == "0x1111111111111111111111111111111111111111"
+    assert payload["ownership_source"] == "chain"
+
+    reset_settings_cache()
+    reset_container_cache()
+
+
 def test_create_machine_skips_mint_when_onchain_machine_id_is_provided(client: TestClient) -> None:
     from app.onchain.lifecycle_service import get_onchain_lifecycle_service
 

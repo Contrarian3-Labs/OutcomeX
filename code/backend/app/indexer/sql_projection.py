@@ -88,7 +88,8 @@ class SqlProjectionStore:
 
             machine = db.get(Machine, order.machine_id)
             order_status = payload.status.upper()
-            self._project_authoritative_order_truth(order=order, event=event, order_status=order_status, payload=payload)
+            if order_status != "CLASSIFIED":
+                self._project_authoritative_order_truth(order=order, event=event, order_status=order_status, payload=payload)
             if order_status == "PAID" and machine is not None:
                 self._mark_direct_payment_succeeded(db=db, order=order, tx_hash=event.transaction_hash)
                 self._freeze_settlement_policy_if_fully_paid(db=db, order=order, machine=machine)

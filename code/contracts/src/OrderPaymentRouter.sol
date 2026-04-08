@@ -80,7 +80,7 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
         bytes32 r,
         bytes32 s
     ) external {
-        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender);
+        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender, true);
         require(validAfter <= block.timestamp, "AUTH_NOT_YET_VALID");
         require(validBefore >= block.timestamp, "AUTH_EXPIRED");
 
@@ -92,7 +92,7 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
     function payWithUSDT(uint256 orderId, uint256 amount, uint256 nonce, uint256 deadline, bytes calldata signature)
         external
     {
-        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender);
+        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender, true);
         require(deadline >= block.timestamp, "PERMIT_EXPIRED");
 
         IPermit2.PermitTransferFrom memory permit = IPermit2.PermitTransferFrom({
@@ -108,12 +108,22 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
     }
 
     function payWithPWR(uint256 orderId, uint256 amount) external {
-        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender);
+        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender, false);
 
         bool success = pwr.transferFrom(msg.sender, _settlementEscrow(), amount);
         require(success, "PWR_TRANSFER_FAILED");
 
         _markOrderPaid(orderId, amount, address(pwr), PAYMENT_SOURCE_PWR, dividendEligible, msg.sender);
+    }
+
+    function createOrderByAdapter(address buyer, uint256 machineId, uint256 amount)
+        external
+        onlyOwner
+        returns (uint256 orderId)
+    {
+        require(buyer != address(0), "ZERO_BUYER");
+        require(amount > 0, "ZERO_AMOUNT");
+        orderId = orderBook.createOrderForBuyer(buyer, machineId, amount);
     }
 
     function createOrderAndPayWithUSDC(
@@ -127,7 +137,7 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
         bytes32 s
     ) external returns (uint256 orderId) {
         orderId = orderBook.createOrderForBuyer(msg.sender, machineId, amount);
-        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender);
+        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender, true);
         require(validAfter <= block.timestamp, "AUTH_NOT_YET_VALID");
         require(validBefore >= block.timestamp, "AUTH_EXPIRED");
 
@@ -144,7 +154,7 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
         bytes calldata signature
     ) external returns (uint256 orderId) {
         orderId = orderBook.createOrderForBuyer(msg.sender, machineId, amount);
-        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender);
+        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender, true);
         require(deadline >= block.timestamp, "PERMIT_EXPIRED");
 
         IPermit2.PermitTransferFrom memory permit = IPermit2.PermitTransferFrom({
@@ -161,7 +171,7 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
 
     function createOrderAndPayWithPWR(uint256 machineId, uint256 amount) external returns (uint256 orderId) {
         orderId = orderBook.createOrderForBuyer(msg.sender, machineId, amount);
-        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender);
+        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender, false);
 
         bool success = pwr.transferFrom(msg.sender, _settlementEscrow(), amount);
         require(success, "PWR_TRANSFER_FAILED");
@@ -174,18 +184,28 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
         onlyOwner
         returns (uint256 orderId)
     {
-        require(buyer != address(0), "ZERO_BUYER");
+        buyer;
+        machineId;
+        amount;
+        paymentToken;
+        orderId = 0;
+        revert("LEGACY_ROUTE_DISABLED");
+    }
+
+    function payOrderByAdapter(uint256 orderId, uint256 amount, address paymentToken) external onlyOwner {
         require(paymentToken != address(0), "ZERO_TOKEN");
+        require(_isSupportedHSPToken(paymentToken), "UNSUPPORTED_HSP_TOKEN");
+
+        OrderRecord memory order = orderBook.getOrder(orderId);
+        bool dividendEligible = _validateOrderForPayment(orderId, amount, order.buyer, true);
 
         bool success = IERC20Like(paymentToken).transferFrom(msg.sender, _settlementEscrow(), amount);
         require(success, "ADAPTER_TRANSFER_FAILED");
 
-        orderId = orderBook.createOrderForBuyer(buyer, machineId, amount);
-        bool dividendEligible = _validateOrderForPayment(orderId, amount, buyer);
         _markOrderPaid(orderId, amount, paymentToken, PAYMENT_SOURCE_HSP, dividendEligible, msg.sender);
     }
 
-    function _validateOrderForPayment(uint256 orderId, uint256 amount, address expectedBuyer)
+    function _validateOrderForPayment(uint256 orderId, uint256 amount, address expectedBuyer, bool enforceGrossAmountMatch)
         internal
         view
         returns (bool dividendEligible)
@@ -193,7 +213,10 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
         OrderRecord memory order = orderBook.getOrder(orderId);
         require(order.status == OrderStatus.Created, "INVALID_STATUS");
         require(order.buyer == expectedBuyer, "NOT_BUYER");
-        require(order.grossAmount == amount, "INVALID_AMOUNT");
+        require(amount > 0, "ZERO_AMOUNT");
+        if (enforceGrossAmountMatch) {
+            require(order.grossAmount == amount, "INVALID_AMOUNT");
+        }
         require(paymentSourceByOrder[orderId] == bytes32(0), "ALREADY_PAID");
 
         address settlementBeneficiary = orderBook.settlementBeneficiaryByOrder(orderId);
@@ -229,5 +252,9 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
     function _settlementEscrow() internal view returns (address escrow) {
         escrow = settlementEscrow;
         require(escrow != address(0), "SETTLEMENT_NOT_SET");
+    }
+
+    function _isSupportedHSPToken(address token) internal view returns (bool) {
+        return token == address(usdc) || token == address(usdt);
     }
 }

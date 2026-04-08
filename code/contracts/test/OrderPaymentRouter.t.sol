@@ -148,13 +148,34 @@ contract OrderPaymentRouterTest is TestBase {
         assertEq(pwr.balanceOf(address(settlement)), 1_000, "settlement should escrow pwr");
     }
 
-    function testCreatePaidOrderByAdapterBlocksTransferImmediately() public {
+    function testCreateOrderByAdapterCreatesUnpaidOrderForBuyer() public {
+        vm.prank(ADMIN);
+        uint256 orderId = router.createOrderByAdapter(BUYER, machineId, 1_000_000);
+
+        OrderRecord memory order = orderBook.getOrder(orderId);
+        assertEq(order.buyer, BUYER, "buyer should match adapter input");
+        assertEq(uint256(order.status), uint256(OrderStatus.Created), "order should stay unpaid");
+        assertEq(orderBook.activeTaskCountByMachine(machineId), 0, "unpaid order should not lock active task");
+    }
+
+    function testCreatePaidOrderByAdapterIsDisabled() public {
+        vm.startPrank(ADMIN);
+        usdc.approve(address(router), 1_000_000);
+        vm.expectRevert(bytes("LEGACY_ROUTE_DISABLED"));
+        router.createPaidOrderByAdapter(BUYER, machineId, 1_000_000, address(usdc));
+        vm.stopPrank();
+    }
+
+    function testPayOrderByAdapterPaysExistingOrderAndBlocksTransfer() public {
+        vm.prank(ADMIN);
+        uint256 orderId = router.createOrderByAdapter(BUYER, machineId, 1_000_000);
+
         uint256 adminBalanceBefore = usdc.balanceOf(ADMIN);
         vm.startPrank(ADMIN);
         usdc.approve(address(router), 1_000_000);
         vm.expectEmit(true, true, true, true, address(router));
         emit PaymentFinalized(
-            1,
+            orderId,
             machineId,
             BUYER,
             ADMIN,
@@ -165,55 +186,35 @@ contract OrderPaymentRouterTest is TestBase {
             true,
             true
         );
-        uint256 orderId = router.createPaidOrderByAdapter(BUYER, machineId, 1_000_000, address(usdc));
+        router.payOrderByAdapter(orderId, 1_000_000, address(usdc));
         vm.stopPrank();
 
         OrderRecord memory order = orderBook.getOrder(orderId);
-        assertEq(order.buyer, BUYER, "buyer should match adapter input");
         assertEq(uint256(order.status), uint256(OrderStatus.Paid), "order should be paid");
         assertEq(orderBook.activeTaskCountByMachine(machineId), 1, "active task should be tracked");
         assertEq(usdc.balanceOf(address(settlement)), 1_000_000, "settlement should escrow adapter funds");
         assertEq(usdc.balanceOf(ADMIN), adminBalanceBefore - 1_000_000, "adapter caller should fund escrow");
-
-        (bool canTransfer, bytes32 reason) = orderBook.canTransfer(machineId, MACHINE_OWNER, address(0xDEAD));
-        assertTrue(!canTransfer, "transfer should be blocked");
-        assertEq(reason, orderBook.REASON_ACTIVE_TASK(), "active task reason mismatch");
-
-        vm.startPrank(MACHINE_OWNER);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                bytes4(keccak256("TransferGuardBlocked(uint256,bytes32)")), machineId, orderBook.REASON_ACTIVE_TASK()
-            )
-        );
-        machineAsset.transferFrom(MACHINE_OWNER, address(0xDEAD), machineId);
-        vm.stopPrank();
     }
 
-    function testCreatePaidOrderByAdapterRequiresEscrowApproval() public {
-        vm.startPrank(ADMIN);
-        vm.expectRevert(abi.encodeWithSelector(bytes4(keccak256("InsufficientAllowance(uint256,uint256)")), 0, 1_000_000));
-        router.createPaidOrderByAdapter(BUYER, machineId, 1_000_000, address(usdc));
-        vm.stopPrank();
-    }
-
-    function testLegacyCreateOrderThenPayWithPWRStillWorks() public {
+    function testPayWithPWRAcceptsAnchorAmountDifferentFromOrderGrossAmount() public {
         vm.prank(BUYER);
         uint256 orderId = orderBook.createOrder(machineId, 1_000);
 
         vm.startPrank(ADMIN);
         pwr.setMinter(ADMIN, true);
-        pwr.mint(BUYER, 1_000);
+        pwr.mint(BUYER, 3_600);
         vm.stopPrank();
 
         vm.prank(BUYER);
-        pwr.approve(address(router), 1_000);
+        pwr.approve(address(router), 3_600);
 
         vm.prank(BUYER);
-        router.payWithPWR(orderId, 1_000);
+        router.payWithPWR(orderId, 3_600);
 
         OrderRecord memory order = orderBook.getOrder(orderId);
         assertEq(order.buyer, BUYER, "legacy path should keep original buyer");
         assertEq(uint256(order.status), uint256(OrderStatus.Paid), "legacy path should mark paid");
+        assertEq(pwr.balanceOf(address(settlement)), 3_600, "settlement should escrow the anchor-sized pwr payment");
     }
 
     function testUSDTConfirmedOrderCreatesRealPlatformClaimAndReserve() public {

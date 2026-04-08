@@ -1,7 +1,7 @@
 from app.domain.enums import ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
 from app.domain.models import Order, Payment
 from app.integrations.onchain_payment_verifier import OnchainPaymentVerifier
-from app.onchain.event_decoder import ORDER_CREATED_TOPIC0
+from app.onchain.event_decoder import ORDER_CREATED_TOPIC0, PAYMENT_FINALIZED_TOPIC0
 from app.onchain.receipts import ChainReceipt
 
 BUYER_ADDRESS = "0x00000000000000000000000000000000000000b1"
@@ -135,12 +135,21 @@ def _order_payment_received_log(*, order_id: int, payer: str, token: str, amount
     return {
         "address": "0x0000000000000000000000000000000000000134",
         "topics": [
-            "0x108f7e2a0bbfd2535074381616daaa6b78b30921bd6a155acec03ed98ad5792f",
+            PAYMENT_FINALIZED_TOPIC0,
             _topic_uint256(order_id),
-            _topic_address(payer),
-            _topic_address(token),
+            _topic_uint256(7),
+            _topic_address(BUYER_ADDRESS),
         ],
-        "data": "0x" + _encode_word(amount) + _encode_word("0x" + "11" * 32),
+        "data": (
+            "0x"
+            + _encode_word(payer)
+            + _encode_word(token)
+            + _encode_word(amount)
+            + _encode_word("0x" + "11" * 32)
+            + _encode_word("0x0000000000000000000000000000000000000abc")
+            + _encode_word(1)
+            + _encode_word(1)
+        ),
         "transactionHash": "0xabc123",
         "logIndex": "0x3",
     }
@@ -213,7 +222,7 @@ def test_verifier_rejects_receipt_without_order_created_event() -> None:
     )
 
     assert verification.matched is False
-    assert verification.reason == "order_created_event_not_found"
+    assert verification.reason == "payment_received_event_not_found"
     assert verification.state == PaymentState.FAILED
     assert verification.evidence_order_id is None
 

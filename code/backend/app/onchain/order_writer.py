@@ -27,13 +27,15 @@ class OrderWriter:
     def __init__(self, contracts_registry: ContractsRegistry | None = None) -> None:
         self._contracts_registry = contracts_registry or ContractsRegistry()
 
-    def create_order(self, order: Order) -> OrderWriteResult:
+    def create_order(self, order: Order, *, buyer_wallet_address: str) -> OrderWriteResult:
         payload = {
+            "buyer": buyer_wallet_address.lower(),
             "machine_id": self._chain_machine_id(order),
             "gross_amount": order.quoted_amount_cents,
         }
-        return self._submit(
-            "createOrder",
+        return self._submit_to_target(
+            self._contracts_registry.payment_router(),
+            "createOrderByAdapter",
             payload,
             idempotency_scope={"client_order_id": order.id},
         )
@@ -53,17 +55,16 @@ class OrderWriter:
         }
         return self._submit("markOrderPaid", payload)
 
-    def create_order_and_mark_paid(self, order: Order, payment: Payment, *, buyer_wallet_address: str) -> OrderWriteResult:
+    def pay_order_by_adapter(self, order: Order, payment: Payment) -> OrderWriteResult:
         currency = payment.currency.upper()
         payload = {
-            "buyer": buyer_wallet_address.lower(),
-            "machine_id": self._chain_machine_id(order),
+            "order_id": self._chain_order_id(order),
             "amount": payment.amount_cents,
             "payment_token_address": self._contracts_registry.payment_token(currency),
         }
         return self._submit_to_target(
             self._contracts_registry.payment_router(),
-            "createPaidOrderByAdapter",
+            "payOrderByAdapter",
             payload,
             idempotency_scope={"client_order_id": order.id, "payment_id": payment.id},
         )
@@ -105,10 +106,10 @@ class OrderWriter:
         elif currency == "PWR":
             if pwr_amount is None or pricing_version is None or pwr_anchor_price_cents is None:
                 raise ValueError("pwr_amount_required")
-            method_name = "createOrderAndPayWithPWR"
+            method_name = "payWithPWR"
             payload = {
                 "client_order_id": order.id,
-                "machine_id": self._chain_machine_id(order),
+                "order_id": self._chain_order_id(order),
                 "payment_id": payment.id,
                 "gross_amount_cents": order.quoted_amount_cents,
                 "currency": "PWR",

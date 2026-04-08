@@ -84,7 +84,7 @@ class OnchainBroadcaster:
     @staticmethod
     def _derive_onchain_order_id(*, seed: str) -> str:
         digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
-        return f"oc_{(int(digest[:16], 16) % 1_000_000_000) + 1}"
+        return str((int(digest[:16], 16) % 1_000_000_000) + 1)
 
     @staticmethod
     def _derive_block_number(*, seed: str) -> int:

@@ -17,8 +17,101 @@
 
 - `Slice A` 已完成并合并到 `main`
 - `Slice B` 已完成并合并到 `main`
-- `Slice C` 继续推进中；本轮已完成 canonical event / indexer 对齐
-- 下一步继续围绕 `Slice C` 与其前端消费面收口
+- `Slice C / E / F` 的主链路已经在当前工作区补齐并通过本地全量验证
+- 本轮新增重点已完成：真实 HSP 双步链路、direct verifier fail-closed、execution run GET 只读化、PWR anchor-sized 支付、真实本地链路 E2E
+- 仍未做的只剩部署相关收尾：HSP 商户环境变量、HTTPS webhook URL、线上联调 smoke
+
+---
+
+## 0. 2026-04-08 本轮新增收口结果
+
+这轮新增收口的，不再只是“代码看起来合理”，而是已经有本地真实链路与全量测试支撑：
+
+### 0.1 已完成的关键补丁
+
+- `HSP` 正式收成双步链路：
+  - backend 先 `createOrderByAdapter`
+  - webhook 成功后再 `payOrderByAdapter`
+  - 合约已禁用旧的 `createPaidOrderByAdapter` 一步到位入口，避免“无实款直接 paid”
+- direct onchain verifier 已改成 `fail-closed`：
+  - 没有真实 receipt 不再判成功
+  - 必须解出 `PaymentFinalized`
+  - 若是首笔 create+pay，还必须同时解出 `OrderCreated`
+- `GET /execution-runs/{run_id}` 已经只读：
+  - 不再把 `RESULT_CONFIRMED` 打回 `RESULT_PENDING_CONFIRMATION`
+  - 不再靠前端轮询副作用释放机器 active task
+- 支付终态已单向化：
+  - `SUCCEEDED / FAILED / REFUNDED` 进入终态后不能再相互覆盖
+  - HSP webhook 失败晚到时，不会再把已成功支付改回失败
+- HSP 支付约束已收紧：
+  - 金额必须与订单报价一致
+  - 成功 webhook 必须带真实 `0x...` tx hash
+  - 同一条成功 tx hash 不能复用于另一笔 payment
+- `PWR` 直付已允许 anchor-sized amount：
+  - 不再强制等于订单 gross cents
+  - 仍保留 stablecoin/HSP 路径的 gross amount 严格匹配
+- machine mint 已在 backend 创建时回填 `owner_chain_address`（如果 user→wallet resolver 已知）
+- live indexer 投影已避免 `OrderClassified` 把 `PAID` authoritative truth 再降级回 `CLASSIFIED`
+
+### 0.2 本轮新增验证结果
+
+- backend 全量测试：
+  - `cd code/backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -q`
+  - 结果：`201 passed, 1 warning`
+- contracts 全量测试：
+  - `cd code/contracts && forge test -vv`
+  - 结果：`25 passed, 0 failed`
+- 真实本地业务逻辑 E2E：
+  - `cd code/backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python tests/smoke/run_real_business_logic_e2e.py`
+  - 结果：
+    - `hsp_transfer_blocked_before_claim = true`
+    - `machine_transferred_after_hsp_claim = true`
+    - `pwr_refund_claim_available = true`
+    - `platform_usdc_claimed = true`
+    - `platform_pwr_claimed = true`
+  - 落盘报告：`/tmp/outcomex-business-e2e-report.json`
+
+### 0.3 这轮 E2E 真正覆盖了什么
+
+#### HSP 场景
+
+- backend 真正 mint 机器并等待 indexer 回写 owner projection
+- `/chat/plans` 生成 plan，`/orders` 建单
+- `/payments/orders/{order_id}/intent` 先创建链上 order anchor
+- HSP webhook 成功后，backend 真实调用 `payOrderByAdapter`
+- machine owner 标记 preview ready
+- buyer 确认结果
+- machine owner claim machine revenue
+- treasury claim platform `USDC`
+- revenue 未 claim 前 NFT transfer 被阻止；claim 后可以真实转移
+
+#### PWR 场景
+
+- buyer 创建 order
+- admin 向 buyer 转 `PWR`
+- buyer 对 router 做 `approve`
+- buyer 直接 `payWithPWR`
+- backend `sync-onchain` 只在真实 receipt 存在且事件匹配时才回写成功
+- preview ready 后 buyer 走 reject 路径
+- buyer 领取 refund
+- machine owner 领取 machine revenue
+- treasury 领取 platform `PWR`
+
+### 0.4 仍然不是 fully-live 的部分
+
+- HSP 商户线上环境仍未实配，因此这轮 HSP 验证是：
+  - 正式业务逻辑
+  - 本地链上真实合约
+  - mock merchant webhook
+- 要变成真正线上 HSP 联调，还需要：
+  - `OUTCOMEX_HSP_APP_KEY`
+  - `OUTCOMEX_HSP_APP_SECRET`
+  - `OUTCOMEX_HSP_MERCHANT_PRIVATE_KEY_PEM`
+  - `OUTCOMEX_HSP_PAY_TO_ADDRESS`
+  - `OUTCOMEX_HSP_REDIRECT_URL`
+  - `OUTCOMEX_HSP_WEBHOOK_URL`
+- webhook 最终地址应为：
+  - `https://<backend-domain>/api/v1/payments/hsp/webhooks`
 
 ---
 
@@ -57,6 +150,14 @@
 - backend 已把 AgentSkillOS 当作 execution kernel
 - 不是自己重写 orchestration 内核
 - 当前问题主要不在“是否接了 AgentSkillOS”，而在“产品输入契约与执行约束是否完全透传”
+
+### 1.5 本轮新增已收口的高优先级问题
+
+- `HSP/adapter` 不再允许一步 create+paid 直接把订单标记成已支付
+- direct payment verifier 不再在 receipt 缺失时 fail-open
+- execution run 查询接口不再带状态回写副作用
+- paid authoritative truth 不再被后续 `OrderClassified` 事件降级
+- mint machine 时 owner 链地址可在已知 wallet mapping 下直接回填
 
 ---
 
@@ -479,7 +580,7 @@
 
 优先级：`P1`
 
-状态：`进行中（本轮已完成 contract hardening 主链路）`
+状态：`进行中（本轮已完成 contract hardening + 前端 traceability 展示）`
 
 本轮已完成：
 
@@ -495,9 +596,23 @@
   - selected plan 运行结果
   - `is_consistent`
 - `ExecutionRunPanel` 与 `OrderDetail` 已开始把这组 contract truth 展示给前端，不再只显示一个 plan 名称
+- 前端 `Orders` 列表现在也会直接展示锁定的：
+  - selected plan name
+  - execution strategy
+  - native plan index
+- 前端 `OrderDetail` 已新增 run contract status 摘要：
+  - 当前 run 是否与锁定 plan 一致
+  - run 实际提交的 selected plan id / strategy / native plan index
+- 前端 `ExecutionRunPanel` 的 binding 文案已收成更明确的合同语义：
+  - `Order locked plan`
+  - `Run submitted plan`
+  - `Run submitted strategy`
+  - `Execution returned plan`
+  - `Contract verdict`
 - 验证：
   - `code/backend`：`pytest -q tests/api/test_execution_runs_api.py` → `11 passed`
-  - `forge-yield-ai`：`npm test -- src/test/execution-run-panel.test.tsx src/test/order-detail-wallet-actions.test.tsx` → `13 passed`
+  - `forge-yield-ai`：`npm test -- src/test/orders-list.test.tsx src/test/execution-run-panel.test.tsx src/test/order-detail-wallet-actions.test.tsx` → `18 passed`
+  - `forge-yield-ai`：`npm run build` → `BUILD_EXIT=0`
 
 #### 当前状态
 
@@ -508,8 +623,7 @@
 往 AgentSkillOS 执行入口传递
 - `ExecutionEngineService` 也会按 strategy 影响 workload admission
 - 当前剩余问题已经缩小为：
-  - 还没有把更多 selected plan contract 字段沉到更广泛的订单列表 / 历史页展示
-  - main 分支尚未吸收这条 feature 分支上的 `Slice C/D/E/F` 改动
+  - history / list / detail 的前端 traceability 已补齐，本 slice 剩余主要是最终合并与状态同步
 
 #### 涉及模块
 

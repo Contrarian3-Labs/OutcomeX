@@ -10,7 +10,7 @@ from app.onchain.tx_sender import encode_contract_call
 def _build_order() -> Order:
     order = Order(
         id="order-1",
-        onchain_order_id="chain-order-1",
+        onchain_order_id="1",
         onchain_machine_id="7",
         user_id="user-1",
         machine_id="machine-1",
@@ -51,16 +51,15 @@ def test_mark_order_paid_returns_deterministic_tx_metadata() -> None:
     assert first.tx_hash == second.tx_hash
     assert first.method_name == "markOrderPaid"
     assert first.contract_name == "OrderBook"
-    assert first.payload["order_id"] == "chain-order-1"
+    assert first.payload["order_id"] == "1"
     assert first.payload["settlement_beneficiary_user_id"] == "owner-1"
     assert first.payload["settlement_is_self_use"] is False
     assert first.payload["settlement_is_dividend_eligible"] is True
 
 
-def test_create_order_and_mark_paid_uses_create_paid_router_method() -> None:
+def test_pay_order_by_adapter_uses_existing_order_id() -> None:
     writer = OrderWriter(ContractsRegistry())
     order = _build_order()
-    order.onchain_order_id = None
     payment = Payment(
         id="payment-1",
         order_id=order.id,
@@ -73,19 +72,13 @@ def test_create_order_and_mark_paid_uses_create_paid_router_method() -> None:
         state=PaymentState.SUCCEEDED,
     )
 
-    write_result = writer.create_order_and_mark_paid(
-        order,
-        payment,
-        buyer_wallet_address="0x1111111111111111111111111111111111111111",
-    )
+    write_result = writer.pay_order_by_adapter(order, payment)
 
     assert write_result.contract_name == "OrderPaymentRouter"
-    assert write_result.method_name == "createPaidOrderByAdapter"
-    assert write_result.payload["buyer"] == "0x1111111111111111111111111111111111111111"
-    assert write_result.payload["machine_id"] == "7"
+    assert write_result.method_name == "payOrderByAdapter"
+    assert write_result.payload["order_id"] == "1"
     assert write_result.payload["amount"] == 1000
     assert write_result.payload["payment_token_address"] == "0x79aec4eea31d50792f61d1ca0733c18c89524c9e"
-    assert "order_id" not in write_result.payload
 
 
 def test_writer_exposes_create_confirm_and_settle_actions() -> None:
@@ -100,13 +93,13 @@ def test_writer_exposes_create_confirm_and_settle_actions() -> None:
         state=SettlementState.LOCKED,
     )
 
-    create_result = writer.create_order(order)
+    create_result = writer.create_order(order, buyer_wallet_address="0x1111111111111111111111111111111111111111")
     preview_result = writer.mark_preview_ready(order)
     confirm_result = writer.confirm_result(order)
     settle_result = writer.settle_order(order, settlement)
 
-    assert create_result.method_name == "createOrder"
-    assert "order_id" not in create_result.payload
+    assert create_result.method_name == "createOrderByAdapter"
+    assert create_result.payload["buyer"] == "0x1111111111111111111111111111111111111111"
     assert create_result.payload["gross_amount"] == 1000
     assert preview_result.method_name == "markPreviewReady"
     assert confirm_result.method_name == "confirmResult"
@@ -121,10 +114,11 @@ def test_create_order_uses_per_order_idempotency_scope() -> None:
     order_b = _build_order()
     order_b.id = "order-2"
 
-    first = writer.create_order(order_a)
-    second = writer.create_order(order_b)
+    first = writer.create_order(order_a, buyer_wallet_address="0x1111111111111111111111111111111111111111")
+    second = writer.create_order(order_b, buyer_wallet_address="0x1111111111111111111111111111111111111111")
 
     assert first.payload == second.payload
+    assert first.payload["buyer"] == "0x1111111111111111111111111111111111111111"
     assert first.payload["machine_id"] == "7"
     assert first.payload["gross_amount"] == 1000
     assert first.idempotency_key != second.idempotency_key
@@ -204,10 +198,11 @@ def test_writer_builds_pwr_direct_payment_call_spec() -> None:
     )
 
     assert intent.contract_name == "OrderPaymentRouter"
-    assert intent.method_name == "createOrderAndPayWithPWR"
+    assert intent.method_name == "payWithPWR"
     assert intent.payload["currency"] == "PWR"
+    assert intent.payload["order_id"] == "1"
     assert intent.payload["pwr_amount"] == "36000000000000000000"
     assert intent.payload["pricing_version"] == "phase1_v3"
     calldata = encode_contract_call(intent)
     assert calldata is not None
-    assert calldata.startswith("0x321a55a2")
+    assert calldata.startswith("0xd4099cc2")

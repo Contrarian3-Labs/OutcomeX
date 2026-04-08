@@ -16,9 +16,11 @@ from app.domain.models import Machine, Order, Payment, utc_now
 from app.domain.order_truth import set_authoritative_order_truth
 from app.domain.rules import has_sufficient_payment, is_dividend_eligible
 from app.integrations.onchain_broadcaster import OnchainCreateOrderReceipt
+from app.integrations.onchain_broadcaster import OnchainBroadcaster, get_onchain_broadcaster
 from app.integrations.onchain_payment_verifier import OnchainPaymentVerifier, get_onchain_payment_verifier
 from app.onchain.contracts_registry import ContractsRegistry
 from app.onchain.order_writer import OrderWriter, get_order_writer
+from app.onchain.tx_sender import TransactionSender, get_onchain_transaction_sender
 from app.onchain.tx_sender import encode_contract_call
 from app.runtime.cost_service import RuntimeCostService, get_runtime_cost_service
 from app.schemas.payment import (
@@ -275,13 +277,16 @@ def _persist_order_chain_anchor(
     order.create_order_block_number = create_order_block_number
 
 
-def _persist_order_tx_correlation(order: Order, *, create_order_tx_hash: str) -> None:
-    if order.create_order_tx_hash is not None and order.create_order_tx_hash != create_order_tx_hash:
+def _persist_order_tx_correlation(order: Order, *, payment_tx_hash: str) -> None:
+    metadata = dict(order.execution_metadata or {})
+    existing = metadata.get("last_payment_tx_hash")
+    if existing is not None and existing != payment_tx_hash:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Order already correlated with a different payment tx hash",
         )
-    order.create_order_tx_hash = create_order_tx_hash
+    metadata["last_payment_tx_hash"] = payment_tx_hash
+    order.execution_metadata = metadata
 
 
 def _backfill_order_chain_anchor_from_verification(order: Order, verification) -> None:
@@ -325,6 +330,42 @@ def _mark_authoritative_paid_projection(
     set_authoritative_order_truth(order, order_status=order_status, event_id=event_id)
 
 
+def _mark_authoritative_order_created_projection(order: Order, *, event_id: str) -> None:
+    set_authoritative_order_truth(order, order_status="CREATED", event_id=event_id)
+
+
+def _resolve_buyer_wallet_or_409(*, container: Container, order: Order, detail: str) -> str:
+    buyer_wallet_address = container.buyer_address_resolver.resolve_wallet(order.user_id)
+    if buyer_wallet_address is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+    return buyer_wallet_address.lower()
+
+
+def _ensure_onchain_order_anchor(
+    *,
+    order: Order,
+    container: Container,
+    order_writer: OrderWriter,
+    onchain_broadcaster: OnchainBroadcaster,
+    tx_sender: TransactionSender,
+    db: Session,
+    unresolved_wallet_detail: str,
+) -> None:
+    if order.onchain_order_id is not None:
+        return
+    buyer_wallet_address = _resolve_buyer_wallet_or_409(
+        container=container,
+        order=order,
+        detail=unresolved_wallet_detail,
+    )
+    write_result = order_writer.create_order(order, buyer_wallet_address=buyer_wallet_address)
+    broadcasted_write = tx_sender.send(write_result)
+    create_order_receipt = onchain_broadcaster.broadcast_create_order(write_result=broadcasted_write)
+    _backfill_order_chain_anchor_from_receipt(order, create_order_receipt)
+    _mark_authoritative_order_created_projection(order, event_id=create_order_receipt.event_id)
+    db.add(order)
+
+
 @router.post(
     "/orders/{order_id}/intent",
     response_model=PaymentIntentResponse,
@@ -338,6 +379,9 @@ def create_payment_intent(
     db: Session = Depends(get_db),
     container: Container = Depends(get_dependency_container),
     cost_service: RuntimeCostService = Depends(get_runtime_cost_service),
+    order_writer: OrderWriter = Depends(get_order_writer),
+    onchain_broadcaster: OnchainBroadcaster = Depends(get_onchain_broadcaster),
+    tx_sender: TransactionSender = Depends(get_onchain_transaction_sender),
 ) -> PaymentIntentResponse:
     order = db.get(Order, order_id)
     if order is None:
@@ -355,6 +399,18 @@ def create_payment_intent(
             status_code=status.HTTP_409_CONFLICT,
             detail="HSP payment amount must match quoted order amount",
         )
+    if order.is_cancelled or order.is_expired:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Order is not payable")
+
+    _ensure_onchain_order_anchor(
+        order=order,
+        container=container,
+        order_writer=order_writer,
+        onchain_broadcaster=onchain_broadcaster,
+        tx_sender=tx_sender,
+        db=db,
+        unresolved_wallet_detail="Buyer wallet address unresolved for HSP settlement",
+    )
 
     existing_payment = _existing_active_hsp_payment(order.id, db)
     if existing_payment is not None:
@@ -418,6 +474,9 @@ def create_direct_payment_intent(
     db: Session = Depends(get_db),
     order_writer: OrderWriter = Depends(get_order_writer),
     cost_service: RuntimeCostService = Depends(get_runtime_cost_service),
+    container: Container = Depends(get_dependency_container),
+    onchain_broadcaster: OnchainBroadcaster = Depends(get_onchain_broadcaster),
+    tx_sender: TransactionSender = Depends(get_onchain_transaction_sender),
 ) -> DirectPaymentIntentResponse:
     order = db.get(Order, order_id)
     if order is None:
@@ -436,6 +495,18 @@ def create_direct_payment_intent(
             status_code=status.HTTP_409_CONFLICT,
             detail="Direct payment amount must match quoted order amount",
         )
+    if order.is_cancelled or order.is_expired:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Order is not payable")
+
+    _ensure_onchain_order_anchor(
+        order=order,
+        container=container,
+        order_writer=order_writer,
+        onchain_broadcaster=onchain_broadcaster,
+        tx_sender=tx_sender,
+        db=db,
+        unresolved_wallet_detail="Buyer wallet address unresolved for direct payment",
+    )
 
     payment = Payment(
         order_id=order.id,
@@ -615,7 +686,7 @@ def sync_onchain_payment(
             detail="Onchain receipt did not confirm a successful payment",
         )
 
-    _persist_order_tx_correlation(order, create_order_tx_hash=verification.tx_hash)
+    _persist_order_tx_correlation(order, payment_tx_hash=verification.tx_hash)
     db.add(order)
 
     payment.callback_event_id = verification.event_id
