@@ -16,7 +16,9 @@ from app.schemas.execution_run import ExecutionRunResponse
 router = APIRouter()
 
 
-def _build_execution_run_response(run: ExecutionRun, snapshot, order: Order | None) -> ExecutionRunResponse:
+def build_execution_run_response(run: ExecutionRun, snapshot, order: Order | None) -> ExecutionRunResponse:
+    machine_id = run.machine_id or (order.machine_id if order is not None else None)
+    viewer_user_id = run.viewer_user_id or (order.user_id if order is not None else None)
     snapshot_submission_payload = getattr(snapshot, "submission_payload", None)
     response_submission_payload = merge_submission_payload(
         order=order,
@@ -30,6 +32,9 @@ def _build_execution_run_response(run: ExecutionRun, snapshot, order: Order | No
     )
     response = ExecutionRunResponse.model_validate(run).model_copy(
         update={
+            "machine_id": machine_id,
+            "viewer_user_id": viewer_user_id,
+            "run_kind": run.run_kind or "order",
             "status": getattr(snapshot, "status", run.status),
             "submission_payload": response_submission_payload,
             "workspace_path": getattr(snapshot, "workspace_path", run.workspace_path),
@@ -75,8 +80,8 @@ def get_execution_run(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution run not found")
 
     snapshot = execution_service.get_run(run_id)
-    order = db.get(Order, run.order_id)
-    return _build_execution_run_response(run, snapshot, order)
+    order = db.get(Order, run.order_id) if run.order_id is not None else None
+    return build_execution_run_response(run, snapshot, order)
 
 
 @router.post("/{run_id}/cancel", response_model=ExecutionRunResponse)
@@ -91,7 +96,7 @@ def cancel_execution_run(
 
     snapshot = execution_service.cancel_run(run_id)
     _sync_model_from_snapshot(run, snapshot)
-    order = db.get(Order, run.order_id)
+    order = db.get(Order, run.order_id) if run.order_id is not None else None
     if order is not None:
         order.execution_state = ExecutionState.CANCELLED
         metadata = dict(order.execution_metadata or {})
@@ -102,4 +107,4 @@ def cancel_execution_run(
     db.add(run)
     db.commit()
     db.refresh(run)
-    return _build_execution_run_response(run, snapshot, order)
+    return build_execution_run_response(run, snapshot, order)

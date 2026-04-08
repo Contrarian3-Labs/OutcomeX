@@ -9,6 +9,7 @@ from app.api.routes.machines import router as machines_router
 from app.api.routes.orders import router as orders_router
 from app.api.routes.payments import router as payments_router
 from app.api.routes.revenue import router as revenue_router
+from app.api.routes.self_use import router as self_use_router
 from app.api.routes.settlement import router as settlement_router
 from app.core.config import get_settings
 
@@ -17,6 +18,7 @@ def create_api_router() -> APIRouter:
     api_router = APIRouter()
     api_router.include_router(health_router, tags=["health"])
     api_router.include_router(chat_plans_router, prefix="/chat", tags=["chat"])
+    api_router.include_router(self_use_router, prefix="/self-use", tags=["self-use"])
     api_router.include_router(execution_runs_router, prefix="/execution-runs", tags=["execution-runs"])
     api_router.include_router(orders_router, prefix="/orders", tags=["orders"])
     api_router.include_router(machines_router, prefix="/machines", tags=["machines"])

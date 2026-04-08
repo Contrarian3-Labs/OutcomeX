@@ -446,6 +446,9 @@ def start_order_execution(
     run = ExecutionRun(
         id=dispatch.run_id,
         order_id=order.id,
+        machine_id=machine.id,
+        viewer_user_id=order.user_id,
+        run_kind="order",
         external_order_id=order.id,
         status=run_status,
         submission_payload=submission_payload,

@@ -7,7 +7,10 @@ from app.domain.enums import ExecutionRunStatus
 
 class ExecutionRunResponse(BaseModel):
     id: str
-    order_id: str
+    order_id: str | None
+    machine_id: str | None = None
+    viewer_user_id: str | None = None
+    run_kind: str
     external_order_id: str
     status: ExecutionRunStatus
     submission_payload: dict | None = None

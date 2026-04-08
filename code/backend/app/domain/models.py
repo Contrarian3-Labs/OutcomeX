@@ -138,8 +138,11 @@ class ExecutionRun(Base):
     __tablename__ = "execution_runs"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True, nullable=False)
-    external_order_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    order_id: Mapped[str | None] = mapped_column(ForeignKey("orders.id"), index=True, nullable=True)
+    machine_id: Mapped[str | None] = mapped_column(String(36), index=True, nullable=True)
+    viewer_user_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    run_kind: Mapped[str] = mapped_column(String(32), default="order", nullable=False)
+    external_order_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
     status: Mapped[ExecutionRunStatus] = mapped_column(
         Enum(ExecutionRunStatus),
         default=ExecutionRunStatus.QUEUED,
@@ -164,7 +167,7 @@ class ExecutionRun(Base):
         nullable=False,
     )
 
-    order: Mapped["Order"] = relationship(back_populates="execution_runs")
+    order: Mapped["Order | None"] = relationship(back_populates="execution_runs")
 
 
 class Payment(Base):
