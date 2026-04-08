@@ -164,6 +164,7 @@ def test_revenue_overview_reports_projected_and_claimed_history(client: TestClie
     assert response.status_code == 200
     payload = response.json()
     assert payload["paid_cents"] == 1000
+    assert payload["currency"] == "PWR"
     assert payload["projected_cents"] == 900
     assert payload["claimed_cents"] == 350
     assert payload["claimable_cents"] == 550

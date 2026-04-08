@@ -108,6 +108,12 @@ def _currency_from_token_address(token_address: str | None) -> str | None:
     return mapping.get(normalized)
 
 
+def _claim_record_currency(*, claim_kind: str, token_address: str | None) -> str | None:
+    if claim_kind == "machine_revenue":
+        return _currency_from_token_address(token_address) or "PWR"
+    return _currency_from_token_address(token_address)
+
+
 @router.post("/orders/{order_id}/distribute", response_model=RevenueDistributionResponse)
 def distribute_revenue(order_id: str, db: Session = Depends(get_db)) -> RevenueDistributionResponse:
     order = db.get(Order, order_id)
@@ -203,7 +209,9 @@ def revenue_account_overview(owner_user_id: str, db: Session = Depends(get_db)) 
         projected_cents=projected_cents,
         claimable_cents=claimable_cents,
         claimed_cents=claimed_cents,
-        currency=_user_primary_currency(user_id=owner_user_id, db=db),
+        currency="PWR"
+        if (projected_cents > 0 or claimed_cents > 0 or claimable_cents > 0)
+        else _user_primary_currency(user_id=owner_user_id, db=db),
         withdraw_history=[
             {
                 "id": record.id,
@@ -233,7 +241,7 @@ def list_revenue_claims(user_id: str, db: Session = Depends(get_db)) -> list[Rev
             claimant_user_id=record.claimant_user_id,
             account_address=record.account_address,
             token_address=record.token_address,
-            currency=_currency_from_token_address(record.token_address),
+            currency=_claim_record_currency(claim_kind=record.claim_kind, token_address=record.token_address),
             amount_cents=record.amount_cents,
             tx_hash=record.tx_hash,
             machine_id=record.machine_id,
@@ -257,7 +265,7 @@ def platform_revenue_overview(
             claimant_user_id=record.claimant_user_id,
             account_address=record.account_address,
             token_address=record.token_address,
-            currency=_currency_from_token_address(record.token_address),
+            currency=_claim_record_currency(claim_kind=record.claim_kind, token_address=record.token_address),
             amount_cents=record.amount_cents,
             tx_hash=record.tx_hash,
             machine_id=record.machine_id,

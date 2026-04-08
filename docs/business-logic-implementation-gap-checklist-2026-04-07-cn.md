@@ -675,7 +675,8 @@
 - revenue projection：
   - claim 前 machine revenue entry：`claimable_cents = 900`
   - claim 后 machine revenue entry：`claimed_cents = 900`, `claimable_cents = 0`
-  - owner overview：`projected_cents = 900`, `claimed_cents = 900`, `claimable_cents = 0`
+  - owner overview：`currency = PWR`, `projected_cents = 900`, `claimed_cents = 900`, `claimable_cents = 0`
+  - owner claim history：machine revenue claim 现在也会规范化成 `currency = PWR`，不再返回 `null`
   - machine claim 后：
     - `transfer_ready = true`
     - `locked_unsettled_revenue_cents = 0`

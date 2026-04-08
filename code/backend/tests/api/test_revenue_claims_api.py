@@ -75,3 +75,30 @@ def test_list_revenue_claims_returns_descending_unified_claim_history(client: Te
     assert payload[0]["currency"] == "USDC"
     assert payload[1]["claim_kind"] == "machine_revenue"
     assert payload[1]["currency"] == "PWR"
+
+
+def test_list_revenue_claims_maps_machine_revenue_without_token_address_to_pwr(client: TestClient) -> None:
+    container = get_container()
+    with container.session_factory() as db:
+        db.add(Machine(id="machine-2", display_name="node-2", owner_user_id="owner-2"))
+        db.add(
+            SettlementClaimRecord(
+                event_id="evt-machine-null-token",
+                claim_kind="machine_revenue",
+                claimant_user_id="owner-2",
+                account_address="0xowner2",
+                token_address=None,
+                amount_cents=500,
+                tx_hash="0xclaim-machine-null-token",
+                machine_id="machine-2",
+            )
+        )
+        db.commit()
+
+    response = client.get("/api/v1/revenue/accounts/owner-2/claims")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["claim_kind"] == "machine_revenue"
+    assert payload[0]["currency"] == "PWR"
