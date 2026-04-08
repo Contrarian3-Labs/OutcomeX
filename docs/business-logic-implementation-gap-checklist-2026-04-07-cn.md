@@ -267,7 +267,10 @@
   - direct payment 会同步标记为 `PaymentState.REFUNDED`
   - order 会进入 `CANCELLED + DISTRIBUTED`，与退款完成后的按钮 gating 更一致
 - 合约 `RefundClaimed / PlatformRevenueClaimed` 事件已补 token 维度，便于后端对链上 claim 轨做 token-aware normalization
-- backend `available-actions` 已在链上 runtime 打开时改为读取 authoritative `refundableAmount`，前端也开始消费 `refund_claim_currency / refund_claim_amount_cents`
+- backend `available-actions` 已不再直接把账户级 `refundableAmount` 回显给单个订单：
+  - 现在会按 `SettlementRecord` 的订单级 refund due 与 `SettlementClaimRecord(refund)` 做 FIFO 分摊
+  - 同一用户 / 同一币种有多个退款订单时，按钮与金额会落到具体 order，而不是把账户总余额误显示到每个订单
+  - 前端继续消费 `refund_claim_currency / refund_claim_amount_cents`，但其语义已改为“该订单剩余可领退款”
 - backend 已新增统一 claim ledger 投影与查询接口：
   - `SettlementClaimRecord` 统一记录 `refund / platform_revenue / machine_revenue`
   - `GET /api/v1/revenue/accounts/{user_id}/claims` 可返回按时间倒序的 claim history
@@ -280,11 +283,11 @@
 
 - `CONFIRMED / REJECTED / REFUNDED` 三条 settlement 路径已经可以在 read model 里解释
 - 但以下 claim read model 仍不够完整或不够等价：
-  - `RefundClaimed`
   - `PlatformRevenueClaimed`
   - `MachineRevenueClaimed`
 - 当前已经有统一 claim ledger / projection 表来记录 claim 历史与 token 维度
-- 但它仍缺少 order 维度，因此 refund claim 暂时只能做到“账户级 / 币种级”已领取状态，而不是精确回写到单个 order
+- refund claim 虽然链上事件没有 order id，但 backend 已通过 FIFO projection 补齐单个 order 的剩余退款读模型
+- 当前仍未完全补齐的，是 platform / machine revenue claim 的 entry / order 级分摊视图
 
 #### 涉及模块
 
@@ -311,9 +314,12 @@
 
 未完成项：
 
-- refund claim 仍未精确绑定到单个 order，因为现有链上事件没有 order 维度
 - platform claim 虽已进入统一 claim ledger，但前端还没有专门 platform-side dashboard
 - `AssetYield` 侧 machine claim history / overview 仍是 beneficiary 聚合问题，后续会与 `Slice D` 一起收口
+
+本轮新增验证：
+
+- `code/backend`：`pytest -q tests/api/test_order_available_actions_api.py tests/api/test_hsp_webhooks.py tests/integrations/test_hsp_adapter.py tests/api/test_direct_payments_api.py tests/indexer/test_sql_projection_store.py` → `31 passed`
 
 #### commit 主题
 

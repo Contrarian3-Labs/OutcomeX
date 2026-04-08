@@ -12,6 +12,7 @@ from app.api.execution_contract import (
 )
 from app.core.config import get_settings
 from app.domain.accounting import effective_paid_amount_cents
+from app.domain.claim_projection import project_order_refund_claim
 from app.domain.enums import ExecutionRunStatus, ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
 from app.domain.models import ExecutionRun, Machine, Order, Payment
 from app.domain.planning import build_recommended_plans, select_recommended_plan
@@ -19,7 +20,6 @@ from app.domain.rules import has_sufficient_payment
 from app.execution import ExecutionStrategy, IntentRequest
 from app.execution.service import ExecutionEngineService
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
-from app.onchain.claim_state_reader import SettlementClaimStateReader, get_settlement_claim_state_reader
 from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
 from app.onchain.order_writer import OrderWriter, get_order_writer
 from app.runtime.hardware_simulator import get_shared_hardware_simulator
@@ -58,10 +58,6 @@ def _is_settlement_policy_frozen(order: Order) -> bool:
         and order.settlement_is_self_use is not None
         and order.settlement_is_dividend_eligible is not None
     )
-
-
-def _onchain_settlement_enabled(order: Order, onchain_lifecycle: OnchainLifecycleService) -> bool:
-    return bool(onchain_lifecycle.enabled() and order.onchain_order_id and order.create_order_tx_hash)
 
 
 def _can_confirm_result(order: Order, db: Session) -> bool:
@@ -299,31 +295,14 @@ def list_orders(
 def get_order_available_actions(
     order_id: str,
     db: Session = Depends(get_db),
-    claim_state_reader: SettlementClaimStateReader = Depends(get_settlement_claim_state_reader),
-    onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
 ) -> OrderAvailableActionsResponse:
     order = db.get(Order, order_id)
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
-    refund_claim_currency = order.latest_success_payment_currency.upper() if order.latest_success_payment_currency else None
-    refund_claim_amount_cents: int | None = None
-    can_claim_refund = False
-    if (
-        order.state == OrderState.CANCELLED
-        and order.settlement_state == SettlementState.DISTRIBUTED
-        and refund_claim_currency is not None
-    ):
-        if _onchain_settlement_enabled(order, onchain_lifecycle):
-            try:
-                refund_claim_amount_cents = claim_state_reader.refundable_amount(
-                    user_id=order.user_id,
-                    currency=refund_claim_currency,
-                )
-            except RuntimeError:
-                refund_claim_amount_cents = 0
-            can_claim_refund = refund_claim_amount_cents > 0
-        else:
-            can_claim_refund = True
+    refund_projection = project_order_refund_claim(order=order, db=db)
+    refund_claim_currency = refund_projection.currency
+    refund_claim_amount_cents = refund_projection.claimable_cents if refund_claim_currency is not None else None
+    can_claim_refund = refund_claim_amount_cents is not None and refund_claim_amount_cents > 0
     return OrderAvailableActionsResponse(
         order_id=order.id,
         preview_valid=_preview_valid(order),
