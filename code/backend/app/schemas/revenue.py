@@ -73,6 +73,19 @@ class RevenueClaimHistoryItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PaymentLedgerItem(BaseModel):
+    payment_id: str
+    order_id: str
+    user_prompt: str
+    provider: str
+    provider_reference: str | None
+    currency: str
+    amount_cents: int
+    state: str
+    tx_hash: str | None
+    created_at: datetime
+
+
 class RevenueAccountOverviewResponse(BaseModel):
     owner_user_id: str
     currency: str

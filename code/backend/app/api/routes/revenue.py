@@ -10,6 +10,7 @@ from app.domain.enums import PaymentState, SettlementState
 from app.domain.models import Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementClaimRecord, SettlementRecord
 from app.domain.rules import has_sufficient_payment
 from app.schemas.revenue import (
+    PaymentLedgerItem,
     PlatformRevenueOverviewResponse,
     RevenueClaimHistoryItem,
     RevenueAccountOverviewResponse,
@@ -251,6 +252,31 @@ def list_revenue_claims(user_id: str, db: Session = Depends(get_db)) -> list[Rev
     ]
 
 
+@router.get("/accounts/{user_id}/payment-ledger", response_model=list[PaymentLedgerItem])
+def list_payment_ledger(user_id: str, db: Session = Depends(get_db)) -> list[PaymentLedgerItem]:
+    rows = db.execute(
+        select(Payment, Order.user_prompt)
+        .join(Order, Order.id == Payment.order_id)
+        .where(Order.user_id == user_id)
+        .order_by(Payment.created_at.desc(), Payment.id.desc())
+    ).all()
+    return [
+        PaymentLedgerItem(
+            payment_id=payment.id,
+            order_id=payment.order_id,
+            user_prompt=user_prompt,
+            provider=payment.provider,
+            provider_reference=payment.provider_reference,
+            currency=payment.currency.upper(),
+            amount_cents=payment.amount_cents,
+            state=payment.state.value,
+            tx_hash=payment.callback_tx_hash,
+            created_at=payment.created_at,
+        )
+        for payment, user_prompt in rows
+    ]
+
+
 @router.get("/platform/overview", response_model=PlatformRevenueOverviewResponse)
 def platform_revenue_overview(
     currency: str,
@@ -285,5 +311,4 @@ def platform_revenue_overview(
         claimable_cents=max(0, projected_cents - claimed_cents),
         claim_history=claim_history,
     )
-
 

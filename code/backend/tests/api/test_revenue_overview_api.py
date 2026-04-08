@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.core.container import get_container, reset_container_cache
 from app.core.config import reset_settings_cache
@@ -211,6 +212,67 @@ def test_revenue_overview_stays_with_beneficiary_after_machine_owner_changes(cli
     assert new_owner_payload["projected_cents"] == 0
     assert new_owner_payload["claimed_cents"] == 0
     assert new_owner_payload["claimable_cents"] == 0
+
+
+def test_payment_ledger_lists_payments_for_user_descending(client: TestClient) -> None:
+    owner_user_id = "owner-ledger"
+    machine = _seed_machine_with_revenue(owner_user_id=owner_user_id, machine_share_cents=900, payment_currency="USDT")
+    earlier = datetime(2026, 4, 1, 9, 0, tzinfo=timezone.utc)
+    later = datetime(2026, 4, 1, 11, 30, tzinfo=timezone.utc)
+
+    container = get_container()
+    with container.session_factory() as db:
+        original_order = db.scalar(select(Order).where(Order.machine_id == machine.id, Order.user_id == owner_user_id))
+        assert original_order is not None
+        original_order_id = original_order.id
+        original_payment = db.scalar(select(Payment).where(Payment.order_id == original_order.id))
+        assert original_payment is not None
+        original_payment.created_at = earlier
+        original_payment.callback_tx_hash = "0xolder"
+        db.add(original_payment)
+
+        second_order = Order(
+            user_id=owner_user_id,
+            machine_id=machine.id,
+            chat_session_id="chat-ledger-2",
+            user_prompt="Generate launch video",
+            recommended_plan_summary="Video plan",
+            quoted_amount_cents=2500,
+            state=OrderState.USER_CONFIRMED,
+            settlement_state=SettlementState.NOT_READY,
+        )
+        db.add(second_order)
+        db.flush()
+        db.add(
+            Payment(
+                order_id=second_order.id,
+                provider="direct",
+                provider_reference="payment-ref-2",
+                amount_cents=2500,
+                currency="USDC",
+                state=PaymentState.PENDING,
+                callback_tx_hash="0xnewer",
+                created_at=later,
+            )
+        )
+        second_order_id = second_order.id
+        db.commit()
+
+    response = client.get(f"/api/v1/revenue/accounts/{owner_user_id}/payment-ledger")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [item["order_id"] for item in payload] == [second_order_id, original_order_id]
+    assert payload[0]["payment_id"]
+    assert payload[0]["user_prompt"] == "Generate launch video"
+    assert payload[0]["provider"] == "direct"
+    assert payload[0]["currency"] == "USDC"
+    assert payload[0]["amount_cents"] == 2500
+    assert payload[0]["state"] == "pending"
+    assert payload[0]["tx_hash"] == "0xnewer"
+    assert payload[1]["user_prompt"] == "Produce deliverable"
+    assert payload[1]["state"] == "succeeded"
+    assert payload[1]["tx_hash"] == "0xolder"
 
 
 def test_list_machine_revenue_projects_claimed_and_claimable_per_entry_fifo(client: TestClient) -> None:
