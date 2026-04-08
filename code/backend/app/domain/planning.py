@@ -126,6 +126,21 @@ def _fallback_plans(
     return tuple(plans)
 
 
+def _apply_preferred_strategy(
+    plans: tuple[RecommendedPlan, ...],
+    *,
+    preferred_strategy: ExecutionStrategy | None,
+) -> tuple[RecommendedPlan, ...]:
+    if not preferred_strategy:
+        return plans
+
+    preferred = [plan for plan in plans if plan.strategy == preferred_strategy]
+    remaining = [plan for plan in plans if plan.strategy != preferred_strategy]
+    if not preferred:
+        return plans
+    return tuple(preferred + remaining)
+
+
 def _native_plans_to_recommendations(
     *,
     user_id: str,
@@ -165,25 +180,33 @@ def build_recommended_plans(
     user_id: str,
     chat_session_id: str,
     user_message: str,
+    preferred_strategy: ExecutionStrategy | None = None,
+    input_files: tuple[str, ...] = (),
     bridge: AgentSkillOSBridge | None = None,
 ) -> tuple[RecommendedPlan, ...]:
     normalized = _normalize_message(user_message)
     bridge = bridge or AgentSkillOSBridge()
-    planning_result = bridge.generate_plans(normalized or user_message)
+    planning_result = bridge.generate_plans(normalized or user_message, files=input_files)
     if planning_result.plans:
-        return _native_plans_to_recommendations(
-            user_id=user_id,
-            chat_session_id=chat_session_id,
-            normalized_message=normalized,
-            planning_result=planning_result,
+        return _apply_preferred_strategy(
+            _native_plans_to_recommendations(
+                user_id=user_id,
+                chat_session_id=chat_session_id,
+                normalized_message=normalized,
+                planning_result=planning_result,
+            ),
+            preferred_strategy=preferred_strategy,
         )
 
     discovery = bridge.discover_skills(normalized or user_message)
-    return _fallback_plans(
-        user_id=user_id,
-        chat_session_id=chat_session_id,
-        normalized_message=normalized,
-        has_skill_signal=bool(discovery.skill_ids),
+    return _apply_preferred_strategy(
+        _fallback_plans(
+            user_id=user_id,
+            chat_session_id=chat_session_id,
+            normalized_message=normalized,
+            has_skill_signal=bool(discovery.skill_ids),
+        ),
+        preferred_strategy=preferred_strategy,
     )
 
 

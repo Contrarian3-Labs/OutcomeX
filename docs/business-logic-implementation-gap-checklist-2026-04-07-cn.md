@@ -389,14 +389,31 @@
 
 优先级：`P1`
 
+状态：`进行中（本轮已完成主链路透传）`
+
+本轮已完成：
+
+- `/api/v1/chat/plans` 现在已经正式接收并回显：
+  - `user_message`
+  - `mode`
+  - `input_files`
+- backend 已把 `input_files` 真实传入 `AgentSkillOSBridge.generate_plans(files=...)`
+- backend 已把 `mode` 作为 planning preference，用于把对应 strategy 的 plan 提升到返回列表首位
+- 前端 `Home -> ChatWorkspace` 已新增明确的 `quality / efficiency / simplicity` 选择，不再只是展示标签
+- 前端创建 order 时也会沿用同一组 `input_files`，保持 planning 与 execution 输入一致
+- 验证：
+  - `code/backend`：`pytest -q tests/api/test_chat_plans_api.py tests/test_orders_execution_metadata.py tests/domain/test_planning_inputs.py` → `6 passed`
+  - `forge-yield-ai`：`npm test -- src/test/plans-order-flow.test.tsx src/test/chat-workspace-api-hooks.test.tsx` → `5 passed`
+  - `forge-yield-ai`：`npm run build` → `BUILD_EXIT=0`
+
 #### 当前状态
 
 - `code/backend/app/domain/planning.py` 已经会调用真实 `AgentSkillOSBridge.generate_plans()`
 - 说明 `/chat/plans` 已不再是纯静态推荐
-- 但产品输入契约仍不完整：
-  - 还没有正式透传 `attachments / input_files`
-  - `mode` 仍未成为清晰产品输入
-  - 前端 `ChatWorkspace` 仍以 `user_message` 为主
+- 当前剩余问题已经缩小为：
+  - attachment 仍是“文件名 / 引用”级输入，不是已上传文件对象
+  - 更完整的 plan metadata 还没有在更多页面完全消费
+  - `selected_plan_id -> execution binding` 的更强约束仍归 `Slice F`
 
 #### 涉及模块
 
