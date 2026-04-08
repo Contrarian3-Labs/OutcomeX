@@ -593,3 +593,95 @@
 4. P1-5 / P1-6 / P1-7
 5. P1.5 分阶段收敛
 6. 最后统一文档与前端文案
+
+---
+
+## 2026-04-08 补充进展：前端 richer onchain truth + live indexer 联调
+
+### A. 前端页面已接 richer onchain truth
+
+本轮新增/收口的前端重点，不再只消费“是否成功”的平面字段，而是直接消费 backend 已经暴露出的更丰富链上投影：
+
+- `AssetYield`
+  - 接入 `GET /api/v1/revenue/machines/{machine_id}`
+  - 展示 machine-level 锁定收益、beneficiary、transfer guard、recent machine revenue entries
+- `SpendWallet`
+  - 接入统一 claim history 投影
+  - machine-side claim 与 refund claim 都展示真实 tx hash / timestamp / amount
+- `OrderDetail`
+  - `Live Order State` 直接展示：
+    - `create_order_tx_hash`
+    - `onchain_order_id`
+    - `onchain_machine_id`
+    - `latest_success_payment_currency`
+    - `settlement_beneficiary_user_id`
+    - `settlement_is_dividend_eligible`
+    - `settlement_is_self_use`
+  - `Available Actions` 直接展示 refund claim currency / amount truth
+
+对应前端改动文件：
+
+- `forge-yield-ai/src/pages/AssetYield.tsx`
+- `forge-yield-ai/src/pages/SpendWallet.tsx`
+- `forge-yield-ai/src/pages/OrderDetail.tsx`
+- `forge-yield-ai/src/hooks/use-outcomex-api.ts`
+- `forge-yield-ai/src/lib/api/outcomex-client.ts`
+- `forge-yield-ai/src/lib/api/outcomex-types.ts`
+- `forge-yield-ai/src/lib/api/query-keys.ts`
+- `forge-yield-ai/src/lib/machines-api.ts`
+- `forge-yield-ai/src/lib/projection-success.ts`
+
+新增/更新验证：
+
+- `forge-yield-ai`：
+  - `npm test -- src/test/asset-yield-claim.test.tsx src/test/spend-wallet-ledger.test.tsx src/test/order-detail-wallet-actions.test.tsx` → `13 passed`
+  - `npm test -- src/test/asset-yield-claim.test.tsx src/test/spend-wallet-ledger.test.tsx src/test/order-detail-wallet-actions.test.tsx src/test/order-detail-hsp-payment.test.tsx src/test/product-closure.test.tsx` → `25 passed`
+  - `npm run build` → `built in 1m 24s`
+
+### B. live indexer 本地联调已真实跑通
+
+本轮不是只跑 pytest / Foundry，而是起了本地 Anvil（chain id `133`）、真实部署合约、打开 backend live indexer，然后走了一条真实链路：
+
+1. `create_machine`
+   - backend 发真实 mint tx
+   - live indexer 回写 `owner_projection_last_event_id / owner_chain_address`
+2. HSP mock-merchant webhook
+   - backend 走真实 `createPaidOrderByAdapter`
+   - 本地链上产生真实 `OrderCreated / PaymentFinalized`
+3. `mock-result-ready`
+   - machine owner 发真实 `markPreviewReady`
+4. buyer 发真实 `confirmResult`
+   - live indexer 投影出 confirmed settlement / revenue entry
+5. machine owner 发真实 `claimMachineRevenue`
+   - live indexer 回写 machine claim history / machine unlock state
+
+本轮联调的真实结果已经落盘到：
+
+- `/tmp/outcomex-live-indexer-report.json`
+
+关键结果：
+
+- machine ownership projection：
+  - `owner_chain_address = 0x70997970c51812dc3a010c7d01b50e0d17dc79c8`
+  - `owner_projection_last_event_id = 133:10:...`
+- payment projection：
+  - `onchain_order_id = 2`
+  - `create_order_tx_hash = 0xf346...7a92`
+  - `latest_success_payment_currency = USDC`
+- preview / confirm projection：
+  - `onchain_preview_ready_tx_hash = 0x1763...e3bf`
+  - `confirm_tx_hash = 0x708e...7d99`
+  - order 终态：`result_confirmed + distributed`
+- revenue projection：
+  - claim 前 machine revenue entry：`claimable_cents = 900`
+  - claim 后 machine revenue entry：`claimed_cents = 900`, `claimable_cents = 0`
+  - owner overview：`projected_cents = 900`, `claimed_cents = 900`, `claimable_cents = 0`
+  - machine claim 后：
+    - `transfer_ready = true`
+    - `locked_unsettled_revenue_cents = 0`
+
+这条联调说明：
+
+- frontend 这轮接的 richer truth 已经有真实 backend / chain 数据支撑，不只是 mock payload
+- `owner_projection_last_event_id`、machine revenue entry、claim history 这些字段确实来自 live indexer 投影，而不是前端或 route 直接写死
+- claim/payment/yield 三类页面现在都可以围绕同一套 authoritative projection 展示
