@@ -20,6 +20,8 @@ def create_chat_plan(
         user_id=payload.user_id,
         chat_session_id=payload.chat_session_id,
         user_message=payload.user_message,
+        preferred_strategy=payload.mode,
+        input_files=tuple(payload.input_files),
     )
     top_plan = recommended_plans[0]
     plan = ChatPlan(
@@ -34,6 +36,8 @@ def create_chat_plan(
     response = ChatPlanResponse.model_validate(plan)
     return response.model_copy(
         update={
+            "mode": payload.mode,
+            "input_files": list(payload.input_files),
             "quote": cost_service.quote_for_prompt(payload.user_message),
             "recommended_plans": [
                 RecommendedPlanResponse(

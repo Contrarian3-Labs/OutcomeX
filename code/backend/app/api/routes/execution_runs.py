@@ -2,6 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.api.execution_contract import (
+    build_selected_plan_binding,
+    build_selected_plan_payload,
+    merge_submission_payload,
+)
 from app.domain.enums import ExecutionRunStatus, ExecutionState
 from app.domain.models import ExecutionRun, Order
 from app.indexer.execution_sync import _sync_model_from_snapshot
@@ -11,56 +16,22 @@ from app.schemas.execution_run import ExecutionRunResponse
 router = APIRouter()
 
 
-
-def _selected_plan_payload(snapshot, order: Order | None, submission_payload: dict | None = None) -> dict | None:
-    selected_plan = getattr(snapshot, "selected_plan", None)
-    if selected_plan:
-        payload = dict(selected_plan)
-    elif order is None:
-        return None
-    else:
-        metadata = dict(order.execution_metadata or {})
-        name = metadata.get("selected_native_plan_name")
-        description = metadata.get("selected_native_plan_description")
-        nodes = metadata.get("selected_native_plan_nodes")
-        if not (name or description or nodes):
-            return None
-        payload = {
-            "index": metadata.get("selected_native_plan_index"),
-            "name": name,
-            "description": description,
-            "nodes": nodes or [],
-        }
-
-    if payload.get("index") is None:
-        submission_payload = submission_payload or {}
-        if submission_payload.get("selected_plan_index") is not None:
-            payload["index"] = submission_payload.get("selected_plan_index")
-        elif order is not None:
-            payload["index"] = dict(order.execution_metadata or {}).get("selected_native_plan_index")
-    return payload
-
-
-def _selected_plan_binding(selected_plan: dict | None, submission_payload: dict | None) -> dict | None:
-    submission_payload = submission_payload or {}
-    submission_index = submission_payload.get("selected_plan_index")
-    selected_index = selected_plan.get("index") if selected_plan else None
-    if submission_index is None and selected_index is None:
-        return None
-    return {
-        "submission_payload_selected_plan_index": submission_index,
-        "selected_plan_index": selected_index,
-        "is_consistent": submission_index == selected_index,
-    }
-
-
 def _build_execution_run_response(run: ExecutionRun, snapshot, order: Order | None) -> ExecutionRunResponse:
     snapshot_submission_payload = getattr(snapshot, "submission_payload", None)
-    selected_plan = _selected_plan_payload(snapshot, order, snapshot_submission_payload or run.submission_payload)
+    response_submission_payload = merge_submission_payload(
+        order=order,
+        persisted_payload=run.submission_payload,
+        snapshot_payload=snapshot_submission_payload,
+    )
+    selected_plan = build_selected_plan_payload(
+        order=order,
+        snapshot_selected_plan=getattr(snapshot, "selected_plan", None),
+        submission_payload=response_submission_payload,
+    )
     response = ExecutionRunResponse.model_validate(run).model_copy(
         update={
             "status": getattr(snapshot, "status", run.status),
-            "submission_payload": snapshot_submission_payload if snapshot_submission_payload is not None else run.submission_payload,
+            "submission_payload": response_submission_payload,
             "workspace_path": getattr(snapshot, "workspace_path", run.workspace_path),
             "run_dir": getattr(snapshot, "run_dir", run.run_dir),
             "preview_manifest": list(getattr(snapshot, "preview_manifest", run.preview_manifest) or []),
@@ -76,7 +47,11 @@ def _build_execution_run_response(run: ExecutionRun, snapshot, order: Order | No
     return response.model_copy(
         update={
             "selected_plan": selected_plan,
-            "selected_plan_binding": _selected_plan_binding(selected_plan, response.submission_payload),
+            "selected_plan_binding": build_selected_plan_binding(
+                order=order,
+                selected_plan=selected_plan,
+                submission_payload=response.submission_payload,
+            ),
             "pid": getattr(snapshot, "pid", None),
             "pid_alive": getattr(snapshot, "pid_alive", None),
             "stdout_log_path": getattr(snapshot, "stdout_log_path", None),

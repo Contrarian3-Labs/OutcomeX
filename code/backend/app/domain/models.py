@@ -236,6 +236,21 @@ class MachineRevenueClaim(Base):
     machine: Mapped["Machine"] = relationship(back_populates="claims")
 
 
+class SettlementClaimRecord(Base):
+    __tablename__ = "settlement_claim_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    event_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    claim_kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    claimant_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    account_address: Mapped[str] = mapped_column(String(42), nullable=False, index=True)
+    token_address: Mapped[str | None] = mapped_column(String(42), nullable=True)
+    amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    machine_id: Mapped[str | None] = mapped_column(ForeignKey("machines.id"), index=True, nullable=True)
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
 class ChatPlan(Base):
     __tablename__ = "chat_plans"
 

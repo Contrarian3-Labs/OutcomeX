@@ -40,8 +40,8 @@ contract SettlementController is Ownable {
         uint256 machineShare,
         bool dividendEligible
     );
-    event RefundClaimed(address indexed buyer, uint256 amount);
-    event PlatformRevenueClaimed(address indexed treasury, uint256 amount);
+    event RefundClaimed(address indexed buyer, address indexed token, uint256 amount);
+    event PlatformRevenueClaimed(address indexed treasury, address indexed token, uint256 amount);
 
     constructor(address initialOwner, address revenueVaultAddress, address initialTreasury) Ownable(initialOwner) {
         revenueVault = IRevenueVault(revenueVaultAddress);
@@ -133,7 +133,7 @@ contract SettlementController is Ownable {
         require(amount > 0, "NOTHING_TO_CLAIM");
 
         refundableUSDT[msg.sender] = 0;
-        emit RefundClaimed(msg.sender, amount);
+        emit RefundClaimed(msg.sender, address(0), amount);
     }
 
     function claimRefund(address token) external returns (uint256 amount) {
@@ -146,7 +146,7 @@ contract SettlementController is Ownable {
         bool success = IERC20Like(token).transfer(msg.sender, amount);
         require(success, "TOKEN_TRANSFER_FAILED");
 
-        emit RefundClaimed(msg.sender, amount);
+        emit RefundClaimed(msg.sender, token, amount);
     }
 
     function claimPlatformRevenue() external returns (uint256 amount) {
@@ -156,7 +156,7 @@ contract SettlementController is Ownable {
         require(amount > 0, "NOTHING_TO_CLAIM");
 
         platformAccruedUSDT = 0;
-        emit PlatformRevenueClaimed(msg.sender, amount);
+        emit PlatformRevenueClaimed(msg.sender, address(0), amount);
     }
 
     function claimPlatformRevenue(address token) external returns (uint256 amount) {
@@ -170,6 +170,6 @@ contract SettlementController is Ownable {
         bool success = IERC20Like(token).transfer(msg.sender, amount);
         require(success, "TOKEN_TRANSFER_FAILED");
 
-        emit PlatformRevenueClaimed(msg.sender, amount);
+        emit PlatformRevenueClaimed(msg.sender, token, amount);
     }
 }

@@ -73,6 +73,22 @@ def _machine_revenue_summary(*, machine_ids: list[str], db: Session) -> dict[str
     return summary
 
 
+def _locked_beneficiaries_by_machine(*, machine_ids: list[str], db: Session) -> dict[str, list[str]]:
+    if not machine_ids:
+        return {}
+    rows = db.execute(
+        select(RevenueEntry.machine_id, RevenueEntry.beneficiary_user_id)
+        .where(RevenueEntry.machine_id.in_(machine_ids))
+        .distinct()
+    ).all()
+    summary: dict[str, list[str]] = {machine_id: [] for machine_id in machine_ids}
+    for machine_id, beneficiary_user_id in rows:
+        beneficiaries = summary.setdefault(machine_id, [])
+        if beneficiary_user_id not in beneficiaries:
+            beneficiaries.append(beneficiary_user_id)
+    return summary
+
+
 def _runtime_snapshot_response(machine_id: str | None = None) -> MachineRuntimeSnapshotResponse:
     snapshot = get_shared_hardware_simulator(machine_id).snapshot()
     capacity_utilization = (
@@ -115,10 +131,16 @@ def _availability_from_runtime(snapshot: MachineRuntimeSnapshotResponse) -> int:
     return max(0, min(100, int(round((1 - pressure) * 100))))
 
 
-def _to_machine_response(machine: Machine, *, revenue_summary: dict[str, int] | None = None) -> MachineResponse:
+def _to_machine_response(
+    machine: Machine,
+    *,
+    revenue_summary: dict[str, int] | None = None,
+    locked_beneficiary_user_ids: list[str] | None = None,
+) -> MachineResponse:
     summary = revenue_summary or {"projected_cents": 0, "claimed_cents": 0, "claimable_cents": 0}
     blocking_reasons = _transfer_blocking_reasons(machine)
     runtime_snapshot = _runtime_snapshot_response(machine.id)
+    locked_cents = summary["claimable_cents"] if machine.has_unsettled_revenue else 0
     return MachineResponse(
         id=machine.id,
         onchain_machine_id=machine.onchain_machine_id,
@@ -136,6 +158,9 @@ def _to_machine_response(machine: Machine, *, revenue_summary: dict[str, int] | 
         projected_cents=summary["projected_cents"],
         claimed_cents=summary["claimed_cents"],
         claimable_cents=summary["claimable_cents"],
+        locked_unsettled_revenue_cents=locked_cents,
+        locked_unsettled_revenue_pwr=_cents_to_pwr(locked_cents),
+        locked_beneficiary_user_ids=(locked_beneficiary_user_ids or []) if locked_cents > 0 else [],
         profile_label=MOCK_MACHINE_SPEC["profile_label"],
         gpu_spec=MOCK_MACHINE_SPEC["gpu_spec"],
         supported_categories=list(MOCK_MACHINE_SPEC["supported_categories"]),
@@ -188,4 +213,12 @@ def create_machine(
 def list_machines(db: Session = Depends(get_db)) -> list[MachineResponse]:
     machines = list(db.scalars(select(Machine).order_by(Machine.created_at.desc())))
     revenue_summary = _machine_revenue_summary(machine_ids=[machine.id for machine in machines], db=db)
-    return [_to_machine_response(machine, revenue_summary=revenue_summary.get(machine.id)) for machine in machines]
+    locked_beneficiaries = _locked_beneficiaries_by_machine(machine_ids=[machine.id for machine in machines], db=db)
+    return [
+        _to_machine_response(
+            machine,
+            revenue_summary=revenue_summary.get(machine.id),
+            locked_beneficiary_user_ids=locked_beneficiaries.get(machine.id),
+        )
+        for machine in machines
+    ]

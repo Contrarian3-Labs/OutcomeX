@@ -9,9 +9,13 @@ from sqlalchemy.orm import sessionmaker
 
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.enums import OrderState, PaymentState, PreviewState, SettlementState
-from app.domain.models import Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementRecord
+from app.domain.models import Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementClaimRecord, SettlementRecord
 from app.domain.order_truth import set_authoritative_order_truth
-from app.domain.settlement_projection import ensure_confirmed_settlement_projection
+from app.domain.rules import (
+    calculate_failed_or_no_valid_preview_breakdown,
+    calculate_rejected_valid_preview_breakdown,
+)
+from app.domain.settlement_projection import ensure_confirmed_settlement_projection, ensure_settlement_projection
 from app.indexer.events import (
     MachineAssetEvent,
     NormalizedEvent,
@@ -35,6 +39,7 @@ class SqlProjectionStore:
         self._session_factory = session_factory
         self._mirror = InMemoryProjectionStore()
         self._ownership_integrator = MachineOwnershipProjectionIntegrator(owner_resolver=owner_resolver)
+        self._user_resolver = owner_resolver
 
     def apply(self, event: NormalizedEvent) -> None:
         self._mirror.apply(event)
@@ -133,8 +138,53 @@ class SqlProjectionStore:
                         settlement.state = SettlementState.DISTRIBUTED
                         db.add(settlement)
                         db.add(entry)
+                elif order_status == "REJECTED":
+                    order.state = OrderState.CANCELLED
+                    paid_cents = db.scalar(
+                        select(func.coalesce(func.sum(Payment.amount_cents), 0)).where(
+                            Payment.order_id == order.id,
+                            Payment.state == PaymentState.SUCCEEDED,
+                        )
+                    )
+                    gross_amount_cents = effective_paid_amount_cents(order=order, paid_amount_cents=paid_cents)
+                    if machine is not None:
+                        breakdown = calculate_rejected_valid_preview_breakdown(gross_amount_cents)
+                        settlement, entry = ensure_settlement_projection(
+                            db=db,
+                            order=order,
+                            machine=machine,
+                            gross_amount_cents=breakdown.gross_amount_cents,
+                            platform_fee_cents=breakdown.platform_fee_cents,
+                            machine_share_cents=breakdown.machine_share_cents,
+                            distributed_at=datetime.now(timezone.utc),
+                        )
+                        settlement.state = SettlementState.DISTRIBUTED
+                        db.add(settlement)
+                        db.add(entry)
                 elif order_status == "REFUNDED":
+                    order.state = OrderState.CANCELLED
                     self._mark_direct_payment_refunded(db=db, order=order)
+                    paid_cents = db.scalar(
+                        select(func.coalesce(func.sum(Payment.amount_cents), 0)).where(
+                            Payment.order_id == order.id,
+                            Payment.state == PaymentState.SUCCEEDED,
+                        )
+                    )
+                    gross_amount_cents = effective_paid_amount_cents(order=order, paid_amount_cents=paid_cents)
+                    if machine is not None:
+                        breakdown = calculate_failed_or_no_valid_preview_breakdown(gross_amount_cents)
+                        settlement, entry = ensure_settlement_projection(
+                            db=db,
+                            order=order,
+                            machine=machine,
+                            gross_amount_cents=breakdown.gross_amount_cents,
+                            platform_fee_cents=breakdown.platform_fee_cents,
+                            machine_share_cents=breakdown.machine_share_cents,
+                            distributed_at=datetime.now(timezone.utc),
+                        )
+                        settlement.state = SettlementState.DISTRIBUTED
+                        db.add(settlement)
+                        db.add(entry)
                 else:
                     order.state = OrderState.CANCELLED
                 order.settlement_state = SettlementState.DISTRIBUTED
@@ -263,12 +313,36 @@ class SqlProjectionStore:
             db.commit()
 
     def _apply_revenue_claim(self, *, event: NormalizedEvent, payload: RevenueClaimedEvent) -> None:
-        if payload.machine_id is None:
-            return
         with self._session_factory() as db:
-            machine = db.scalar(select(Machine).where(Machine.onchain_machine_id == payload.machine_id))
-            if machine is None:
+            machine = (
+                db.scalar(select(Machine).where(Machine.onchain_machine_id == payload.machine_id))
+                if payload.machine_id is not None
+                else None
+            )
+            existing_claim_record = db.scalar(
+                select(SettlementClaimRecord).where(
+                    SettlementClaimRecord.event_id == event.event_id,
+                )
+            )
+            if existing_claim_record is None:
+                claimant_user_id = self._user_resolver(payload.account) if self._user_resolver is not None else None
+                db.add(
+                    SettlementClaimRecord(
+                        event_id=event.event_id,
+                        claim_kind=payload.claim_kind,
+                        claimant_user_id=claimant_user_id,
+                        account_address=payload.account,
+                        token_address=payload.token_address,
+                        amount_cents=payload.amount_wei,
+                        tx_hash=event.transaction_hash,
+                        machine_id=machine.id if machine is not None else None,
+                    )
+                )
+
+            if payload.claim_kind != "machine_revenue" or machine is None:
+                db.commit()
                 return
+
             existing_claim = db.scalar(
                 select(MachineRevenueClaim).where(
                     MachineRevenueClaim.machine_id == machine.id,

@@ -63,6 +63,9 @@ def test_create_machine_exposes_bootstrap_ownership_state(client: TestClient) ->
     assert machine["projected_cents"] == 0
     assert machine["claimed_cents"] == 0
     assert machine["claimable_cents"] == 0
+    assert machine["locked_unsettled_revenue_cents"] == 0
+    assert machine["locked_unsettled_revenue_pwr"] == 0.0
+    assert machine["locked_beneficiary_user_ids"] == []
 
 
 class StubOnchainLifecycle:
@@ -176,6 +179,9 @@ def test_list_machines_includes_revenue_summary_and_projection_metadata(client: 
     assert payload["projected_cents"] == 900
     assert payload["claimed_cents"] == 250
     assert payload["claimable_cents"] == 650
+    assert payload["locked_unsettled_revenue_cents"] == 650
+    assert payload["locked_unsettled_revenue_pwr"] == 26.0
+    assert payload["locked_beneficiary_user_ids"] == ["owner-1"]
 
 
 def test_list_machines_exposes_mock_spec_and_runtime_snapshot(client: TestClient) -> None:

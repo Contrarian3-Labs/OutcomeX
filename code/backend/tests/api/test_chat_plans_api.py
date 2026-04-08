@@ -39,18 +39,18 @@ def test_chat_plans_returns_three_productsized_recommendations(client: TestClien
             "user_id": "user-1",
             "chat_session_id": "chat-1",
             "user_message": "Create a launch-ready teaser campaign with visual assets",
+            "mode": "efficiency",
+            "input_files": ["brief.pdf", "brand-guide.png"],
         },
     )
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["mode"] == "efficiency"
+    assert payload["input_files"] == ["brief.pdf", "brand-guide.png"]
     assert payload["recommended_plan_summary"]
-    assert [plan["strategy"] for plan in payload["recommended_plans"]] == [
-        "quality",
-        "efficiency",
-        "simplicity",
-    ]
-    assert [plan["native_plan_index"] for plan in payload["recommended_plans"]] == [0, 1, 2]
+    assert [plan["strategy"] for plan in payload["recommended_plans"]] == ["efficiency", "quality", "simplicity"]
+    assert [plan["native_plan_index"] for plan in payload["recommended_plans"]] == [1, 0, 2]
     assert all(plan["plan_id"] for plan in payload["recommended_plans"])
     assert all(plan["title"] for plan in payload["recommended_plans"])
     assert all(plan["summary"] for plan in payload["recommended_plans"])
@@ -58,6 +58,7 @@ def test_chat_plans_returns_three_productsized_recommendations(client: TestClien
     assert all(plan["tradeoff"] for plan in payload["recommended_plans"])
     assert all(plan["native_plan_name"] for plan in payload["recommended_plans"])
     assert all(plan["native_plan_description"] for plan in payload["recommended_plans"])
+    assert payload["recommended_plan_summary"] == payload["recommended_plans"][0]["summary"]
 
 
 def test_order_creation_binds_selected_plan_id_to_execution_request(client: TestClient) -> None:

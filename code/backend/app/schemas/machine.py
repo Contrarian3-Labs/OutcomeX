@@ -40,6 +40,9 @@ class MachineResponse(BaseModel):
     projected_cents: int
     claimed_cents: int
     claimable_cents: int
+    locked_unsettled_revenue_cents: int
+    locked_unsettled_revenue_pwr: float
+    locked_beneficiary_user_ids: list[str]
     profile_label: str
     gpu_spec: str
     supported_categories: list[str]

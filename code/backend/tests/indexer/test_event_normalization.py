@@ -122,6 +122,56 @@ def test_normalize_revenue_accrued_to_settlement_split_payload() -> None:
     assert normalized.payload.role == "MACHINE_OWNER_DIVIDEND"
 
 
+def test_normalize_refund_claimed_carries_token_and_claim_kind() -> None:
+    decoded = DecodedChainEvent(
+        chain_id=177,
+        contract_name="SettlementController",
+        contract_address="0x5000000000000000000000000000000000000005",
+        event_name="RefundClaimed",
+        block_number=91,
+        block_hash="0xblock-91",
+        transaction_hash="0xbbc",
+        log_index=6,
+        args={
+            "buyer": "0xB00000000000000000000000000000000000B000",
+            "token": "0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
+            "amount": "700",
+        },
+    )
+
+    normalized = normalize_decoded_event(decoded)
+
+    assert normalized.payload.account == "0xb00000000000000000000000000000000000b000"
+    assert normalized.payload.claim_kind == "refund"
+    assert normalized.payload.token_address == "0x79aec4eea31d50792f61d1ca0733c18c89524c9e"
+    assert normalized.payload.amount_wei == 700
+
+
+def test_normalize_platform_claimed_carries_zero_address_token() -> None:
+    decoded = DecodedChainEvent(
+        chain_id=177,
+        contract_name="SettlementController",
+        contract_address="0x5000000000000000000000000000000000000005",
+        event_name="PlatformRevenueClaimed",
+        block_number=92,
+        block_hash="0xblock-92",
+        transaction_hash="0xbbd",
+        log_index=7,
+        args={
+            "treasury": "0xC00000000000000000000000000000000000C000",
+            "token": "0x0000000000000000000000000000000000000000",
+            "amount": "100",
+        },
+    )
+
+    normalized = normalize_decoded_event(decoded)
+
+    assert normalized.payload.account == "0xc00000000000000000000000000000000000c000"
+    assert normalized.payload.claim_kind == "platform_revenue"
+    assert normalized.payload.token_address == "0x0000000000000000000000000000000000000000"
+    assert normalized.payload.amount_wei == 100
+
+
 def test_try_normalize_unknown_event_returns_none() -> None:
     decoded = DecodedChainEvent(
         chain_id=177,

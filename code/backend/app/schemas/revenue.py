@@ -56,6 +56,21 @@ class WithdrawHistoryItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class RevenueClaimHistoryItem(BaseModel):
+    id: str
+    claim_kind: str
+    claimant_user_id: str | None
+    account_address: str
+    token_address: str | None
+    currency: str | None
+    amount_cents: int
+    tx_hash: str | None
+    machine_id: str | None
+    claimed_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class RevenueAccountOverviewResponse(BaseModel):
     owner_user_id: str
     currency: str

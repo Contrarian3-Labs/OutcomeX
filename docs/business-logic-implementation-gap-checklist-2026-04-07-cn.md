@@ -189,6 +189,28 @@
 
 - 当前这一 slice 只收口了“稳定币主支付轨”，没有改变 HSP 适配器是否具备真实资金入账校验这一更底层安全问题；该问题仍在更高优先级审计项中单独跟踪
 
+#### HSP 当前接入状态记录（2026-04-08）
+
+- backend 已按 `merchant-docs-all-in-one.pdf` 补齐真实接入骨架：
+  - Merchant API HMAC 请求签名
+  - `ES256K` 的 `merchant_authorization` JWT
+  - 文档格式的 webhook 验签：`X-Signature: t=...,v1=...`
+  - `.env.example` 模板
+- 当前代码仍未切到真实 HSP 线上联调，原因是部署环境变量尚未正式填写
+- 目前默认仍可在 `dev/test` 下走 mock-compatible checkout；只有当 HSP live 配置填完整后，才会真正调用 HashKey Merchant API
+- 当前尚未填写 / 尚未在服务器侧确认的关键项：
+  - `OUTCOMEX_HSP_APP_KEY`
+  - `OUTCOMEX_HSP_APP_SECRET`
+  - `OUTCOMEX_HSP_MERCHANT_PRIVATE_KEY_PEM`
+  - `OUTCOMEX_HSP_PAY_TO_ADDRESS`
+  - `OUTCOMEX_HSP_REDIRECT_URL`
+  - `OUTCOMEX_HSP_WEBHOOK_URL`
+- webhook 最终应配置为：
+  - 生产：`https://<backend-domain>/api/v1/payments/hsp/webhooks`
+  - 本地联调：`https://<public-tunnel-domain>/api/v1/payments/hsp/webhooks`
+- 注意：HashKey Merchant 文档要求 `webhook_url` 必须是 `HTTPS`，因此部署前不能用裸 `localhost`
+- 结论：HSP 代码层已到“待填环境变量 + 待服务器部署联调”的状态；最后收尾时只需要填好 `.env`、配置 merchant console 中的 webhook URL、再做一次真实 create-order / webhook smoke
+
 #### 当前状态
 
 - 合约侧 `HSP adapter -> escrow -> mark paid` 路径已经比早期真实很多
@@ -232,26 +254,48 @@
 
 优先级：`P1`
 
+状态：`进行中`
+
+本轮已完成：
+
+- backend projection 已补齐 `REJECTED` 路径的 read model 落地：
+  - `70% refund / 30% rejection fee`
+  - `10% platform / 90% machine` 的 rejection fee split
+  - `SettlementRecord / RevenueEntry / machine.has_unsettled_revenue` 现在可被完整解释
+- backend projection 已补齐 `REFUNDED` 路径的 read model 落地：
+  - `SettlementRecord / RevenueEntry` 会落成 `0 platform / 0 machine`
+  - direct payment 会同步标记为 `PaymentState.REFUNDED`
+  - order 会进入 `CANCELLED + DISTRIBUTED`，与退款完成后的按钮 gating 更一致
+- 合约 `RefundClaimed / PlatformRevenueClaimed` 事件已补 token 维度，便于后端对链上 claim 轨做 token-aware normalization
+- backend `available-actions` 已在链上 runtime 打开时改为读取 authoritative `refundableAmount`，前端也开始消费 `refund_claim_currency / refund_claim_amount_cents`
+- backend 已新增统一 claim ledger 投影与查询接口：
+  - `SettlementClaimRecord` 统一记录 `refund / platform_revenue / machine_revenue`
+  - `GET /api/v1/revenue/accounts/{user_id}/claims` 可返回按时间倒序的 claim history
+  - `SpendWallet` 已开始消费该接口，`Refund Records / PWR Settlement Ledger` 不再完全是 placeholder
+- 验证目标：
+  - `code/backend`：`pytest -q tests/indexer/test_sql_projection_store.py tests/api/test_revenue_claims_api.py tests/api/test_settlement_convergence_api.py tests/api/test_order_available_actions_api.py tests/indexer/test_event_normalization.py`
+  - `code/contracts`：`forge test -vv`
+
 #### 当前状态
 
-- `CONFIRMED` 路径的投影相对完整
-- 但以下路径仍不够完整或不够等价：
-  - `REJECTED`
-  - `REFUNDED`
+- `CONFIRMED / REJECTED / REFUNDED` 三条 settlement 路径已经可以在 read model 里解释
+- 但以下 claim read model 仍不够完整或不够等价：
   - `RefundClaimed`
   - `PlatformRevenueClaimed`
   - `MachineRevenueClaimed`
-- 当前 read model 仍不足以完整表达 settlement 真相
+- 当前已经有统一 claim ledger / projection 表来记录 claim 历史与 token 维度
+- 但它仍缺少 order 维度，因此 refund claim 暂时只能做到“账户级 / 币种级”已领取状态，而不是精确回写到单个 order
 
 #### 涉及模块
 
 - 合约：
   - `code/contracts/src/SettlementController.sol`
   - `code/contracts/src/OrderBook.sol`
-  - 如果事件字段不足，再补事件
 - 后端：
   - `code/backend/app/indexer/events.py`
+  - `code/backend/app/indexer/evm_runtime.py`
   - `code/backend/app/indexer/sql_projection.py`
+  - `code/backend/app/api/routes/orders.py`
   - `code/backend/app/api/routes/settlement.py`
   - `code/backend/app/api/routes/revenue.py`
 - 前端：
@@ -265,6 +309,12 @@
 - 前端所有相关状态与按钮开放逻辑都以后端 projection 为准
 - 不再靠页面本地公式或静态判断替代真实投影
 
+未完成项：
+
+- refund claim 仍未精确绑定到单个 order，因为现有链上事件没有 order 维度
+- platform claim 虽已进入统一 claim ledger，但前端还没有专门 platform-side dashboard
+- `AssetYield` 侧 machine claim history / overview 仍是 beneficiary 聚合问题，后续会与 `Slice D` 一起收口
+
 #### commit 主题
 
 - `fix: align settlement projections with onchain truth`
@@ -275,17 +325,37 @@
 
 优先级：`P1`
 
+状态：`进行中`
+
+本轮已完成：
+
+- `GET /api/v1/revenue/accounts/{owner_user_id}/overview` 已不再按 current owner 的 machine 集合聚合
+- 现在改成：
+  - `projected_cents` 按 `RevenueEntry.beneficiary_user_id`
+  - `claimed_cents / withdraw_history` 按统一 claim ledger 中的 `machine_revenue` + `claimant_user_id`
+- 因此“机器转手后，旧 beneficiary 的历史收益 / 已领取记录消失”这个问题已被修正
+- `GET /api/v1/machines` 现已补充机器级锁定金额真值：
+  - `locked_unsettled_revenue_cents`
+  - `locked_unsettled_revenue_pwr`
+  - `locked_beneficiary_user_ids`
+- `MyMachines` / `NodeDetail` 已开始直接消费这组字段，明确区分：
+  - 谁拥有这笔收益（beneficiary）
+  - 是多少未领取收益仍在锁住机器转移（asset-level locked amount）
+- 验证：
+  - `code/backend`：`pytest -q tests/api/test_revenue_overview_api.py tests/api/test_revenue_claims_api.py tests/indexer/test_sql_projection_store.py` → `13 passed`
+  - `code/backend`：`pytest -q tests/api/test_machines_api.py tests/api/test_revenue_overview_api.py tests/api/test_revenue_claims_api.py` → `10 passed`
+
 #### 当前状态
 
 - 合约真值在 `RevenueVault`：
   - `unsettledRevenueByMachine`
   - `claimableByMachineOwner`
 - backend 当前仍有两类近似：
-  - revenue overview 仍主要按 current owner 聚合
-  - transfer readiness 仍偏布尔近似，不是金额级递减
+  - machine-level summary 仍主要按 machine aggregate 聚合
+  - transfer readiness 虽然已经改成 read model 权威字段，但更细的锁定金额变化仍依赖 projection 刷新时效
 - 这会导致：
-  - 转移后收益口径偏差
-  - claim 后 transfer guard 与合约 guard 可能不完全一致
+  - claim 后 transfer guard 与合约 guard 可能在极短同步窗口内不完全一致
+  - 某些后续页面仍可能继续复用旧的布尔心智，而不是直接展示锁定金额
 
 #### 涉及模块
 
@@ -307,6 +377,7 @@
 - revenue overview 按 beneficiary 口径聚合
 - unsettled revenue / claim 后余额按 amount 真值变化
 - transfer readiness 只由权威 read model 决定
+- machine 页面显式展示锁定金额与 beneficiary 提示，不再只给布尔 blocked / unblocked
 
 #### commit 主题
 
@@ -318,14 +389,31 @@
 
 优先级：`P1`
 
+状态：`进行中（本轮已完成主链路透传）`
+
+本轮已完成：
+
+- `/api/v1/chat/plans` 现在已经正式接收并回显：
+  - `user_message`
+  - `mode`
+  - `input_files`
+- backend 已把 `input_files` 真实传入 `AgentSkillOSBridge.generate_plans(files=...)`
+- backend 已把 `mode` 作为 planning preference，用于把对应 strategy 的 plan 提升到返回列表首位
+- 前端 `Home -> ChatWorkspace` 已新增明确的 `quality / efficiency / simplicity` 选择，不再只是展示标签
+- 前端创建 order 时也会沿用同一组 `input_files`，保持 planning 与 execution 输入一致
+- 验证：
+  - `code/backend`：`pytest -q tests/api/test_chat_plans_api.py tests/test_orders_execution_metadata.py tests/domain/test_planning_inputs.py` → `6 passed`
+  - `forge-yield-ai`：`npm test -- src/test/plans-order-flow.test.tsx src/test/chat-workspace-api-hooks.test.tsx` → `5 passed`
+  - `forge-yield-ai`：`npm run build` → `BUILD_EXIT=0`
+
 #### 当前状态
 
 - `code/backend/app/domain/planning.py` 已经会调用真实 `AgentSkillOSBridge.generate_plans()`
 - 说明 `/chat/plans` 已不再是纯静态推荐
-- 但产品输入契约仍不完整：
-  - 还没有正式透传 `attachments / input_files`
-  - `mode` 仍未成为清晰产品输入
-  - 前端 `ChatWorkspace` 仍以 `user_message` 为主
+- 当前剩余问题已经缩小为：
+  - attachment 仍是“文件名 / 引用”级输入，不是已上传文件对象
+  - 更完整的 plan metadata 还没有在更多页面完全消费
+  - `selected_plan_id -> execution binding` 的更强约束仍归 `Slice F`
 
 #### 涉及模块
 
@@ -359,6 +447,26 @@
 
 优先级：`P1`
 
+状态：`进行中（本轮已完成 contract hardening 主链路）`
+
+本轮已完成：
+
+- backend 已把 selected plan contract 明确收成 order 的执行合同：
+  - `selected_plan_id`
+  - `selected_plan_strategy`
+  - `selected_native_plan_index`
+  - `input_files`
+- `start-execution` 现在会先校验 order 上的执行合同是否自洽；若 `execution_request` 与 `execution_metadata` 被篡改或不一致，会直接 `409`
+- execution run 接口现在会显式返回更完整的 `selected_plan_binding`：
+  - order 侧锁定的 plan id / strategy / native plan index / input files
+  - submission payload 实际携带的 strategy / files / selected plan index
+  - selected plan 运行结果
+  - `is_consistent`
+- `ExecutionRunPanel` 与 `OrderDetail` 已开始把这组 contract truth 展示给前端，不再只显示一个 plan 名称
+- 验证：
+  - `code/backend`：`pytest -q tests/api/test_execution_runs_api.py` → `11 passed`
+  - `forge-yield-ai`：`npm test -- src/test/execution-run-panel.test.tsx src/test/order-detail-wallet-actions.test.tsx` → `13 passed`
+
 #### 当前状态
 
 - backend 已经会把：
@@ -367,9 +475,9 @@
 
 往 AgentSkillOS 执行入口传递
 - `ExecutionEngineService` 也会按 strategy 影响 workload admission
-- 但 end-to-end 产品契约还没完全收死：
-  - 下单选中的 plan 与执行采用的 plan 需要更明确锁定
-  - 前端对“已锁定计划”的表达还不够强
+- 当前剩余问题已经缩小为：
+  - 还没有把更多 selected plan contract 字段沉到更广泛的订单列表 / 历史页展示
+  - main 分支尚未吸收这条 feature 分支上的 `Slice C/D/E/F` 改动
 
 #### 涉及模块
 

@@ -84,6 +84,8 @@ class OrderAvailableActionsResponse(BaseModel):
     can_reject_valid_preview: bool
     can_refund_failed_or_no_valid_preview: bool
     can_claim_refund: bool
+    refund_claim_currency: str | None = None
+    refund_claim_amount_cents: int | None = None
 
 
 class OrderSettlementActionResponse(BaseModel):
