@@ -447,6 +447,26 @@
 
 优先级：`P1`
 
+状态：`进行中（本轮已完成 contract hardening 主链路）`
+
+本轮已完成：
+
+- backend 已把 selected plan contract 明确收成 order 的执行合同：
+  - `selected_plan_id`
+  - `selected_plan_strategy`
+  - `selected_native_plan_index`
+  - `input_files`
+- `start-execution` 现在会先校验 order 上的执行合同是否自洽；若 `execution_request` 与 `execution_metadata` 被篡改或不一致，会直接 `409`
+- execution run 接口现在会显式返回更完整的 `selected_plan_binding`：
+  - order 侧锁定的 plan id / strategy / native plan index / input files
+  - submission payload 实际携带的 strategy / files / selected plan index
+  - selected plan 运行结果
+  - `is_consistent`
+- `ExecutionRunPanel` 与 `OrderDetail` 已开始把这组 contract truth 展示给前端，不再只显示一个 plan 名称
+- 验证：
+  - `code/backend`：`pytest -q tests/api/test_execution_runs_api.py` → `11 passed`
+  - `forge-yield-ai`：`npm test -- src/test/execution-run-panel.test.tsx src/test/order-detail-wallet-actions.test.tsx` → `13 passed`
+
 #### 当前状态
 
 - backend 已经会把：
@@ -455,9 +475,9 @@
 
 往 AgentSkillOS 执行入口传递
 - `ExecutionEngineService` 也会按 strategy 影响 workload admission
-- 但 end-to-end 产品契约还没完全收死：
-  - 下单选中的 plan 与执行采用的 plan 需要更明确锁定
-  - 前端对“已锁定计划”的表达还不够强
+- 当前剩余问题已经缩小为：
+  - 还没有把更多 selected plan contract 字段沉到更广泛的订单列表 / 历史页展示
+  - main 分支尚未吸收这条 feature 分支上的 `Slice C/D/E/F` 改动
 
 #### 涉及模块
 

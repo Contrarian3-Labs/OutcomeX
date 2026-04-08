@@ -293,24 +293,49 @@ def test_start_execution_creates_run_and_run_endpoint_returns_snapshot_without_m
     assert start.json()["selected_plan"]["name"] == "Quality-First"
     assert start.json()["selected_plan"]["description"] == "Deep validation path"
     assert start.json()["selected_plan_binding"] == {
+        "order_selected_plan_id": start.json()["submission_payload"]["selected_plan_id"],
+        "order_selected_plan_strategy": "quality",
+        "order_selected_plan_index": 0,
+        "order_input_files": ["brief.md"],
+        "submission_payload_selected_plan_id": start.json()["submission_payload"]["selected_plan_id"],
+        "submission_payload_execution_strategy": "quality",
+        "submission_payload_files": ["brief.md"],
         "submission_payload_selected_plan_index": 0,
         "selected_plan_index": 0,
+        "selected_plan_name": "Quality-First",
+        "selected_plan_strategy_matches": True,
+        "input_files_match": True,
+        "selected_plan_id_present": True,
         "is_consistent": True,
     }
 
     run_response = test_client.get("/api/v1/execution-runs/aso-run-test")
     assert run_response.status_code == 200
     payload = run_response.json()
+    order_fetch = test_client.get(f"/api/v1/orders/{order['id']}")
+    assert order_fetch.status_code == 200
     assert payload["status"] == "succeeded"
     assert payload["submission_payload"]["execution_strategy"] == "quality"
+    assert payload["submission_payload"]["selected_plan_id"] == order_fetch.json()["execution_metadata"]["selected_plan_id"]
     assert payload["submission_payload"]["selected_plan_index"] == 0
     assert payload["selected_plan"]["index"] == 0
     assert payload["selected_plan"]["name"] == "Quality-First"
     assert payload["selected_plan"]["description"] == "Deep validation path"
     assert payload["selected_plan"]["nodes"][0]["name"] == "docx"
     assert payload["selected_plan_binding"] == {
+        "order_selected_plan_id": order_fetch.json()["execution_metadata"]["selected_plan_id"],
+        "order_selected_plan_strategy": "quality",
+        "order_selected_plan_index": 0,
+        "order_input_files": ["brief.md"],
+        "submission_payload_selected_plan_id": order_fetch.json()["execution_metadata"]["selected_plan_id"],
+        "submission_payload_execution_strategy": "quality",
+        "submission_payload_files": ["brief.md"],
         "submission_payload_selected_plan_index": 0,
         "selected_plan_index": 0,
+        "selected_plan_name": "Quality-First",
+        "selected_plan_strategy_matches": True,
+        "input_files_match": True,
+        "selected_plan_id_present": True,
         "is_consistent": True,
     }
     assert payload["artifact_manifest"][0]["path"] == "workspace/report.docx"
@@ -324,8 +349,6 @@ def test_start_execution_creates_run_and_run_endpoint_returns_snapshot_without_m
     assert payload["current_step"] == "docx"
     assert payload["last_heartbeat_at"] is not None
 
-    order_fetch = test_client.get(f"/api/v1/orders/{order['id']}")
-    assert order_fetch.status_code == 200
     assert order_fetch.json()["execution_metadata"]["run_id"] == "aso-run-test"
     assert order_fetch.json()["execution_metadata"]["run_status"] == "queued"
     assert order_fetch.json()["state"] == "executing"
@@ -337,6 +360,29 @@ def test_start_execution_creates_run_and_run_endpoint_returns_snapshot_without_m
     assert order_after_second_poll.status_code == 200
     assert order_after_second_poll.json()["state"] == "executing"
     assert order_after_second_poll.json()["settlement_state"] == "not_ready"
+
+
+def test_start_execution_rejects_tampered_execution_contract(
+    client: tuple[TestClient, _ExecutionServiceStub]
+) -> None:
+    test_client, _stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order(test_client, machine["id"])
+
+    engine = create_engine(os.environ["OUTCOMEX_DATABASE_URL"])
+    with Session(engine) as session:
+        db_order = session.get(Order, order["id"])
+        assert db_order is not None
+        execution_request = dict(db_order.execution_request or {})
+        execution_request["execution_strategy"] = "efficiency"
+        db_order.execution_request = execution_request
+        session.add(db_order)
+        session.commit()
+    engine.dispose()
+
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert start.status_code == 409
+    assert start.json()["detail"] == "Order execution contract is inconsistent"
 
 
 def test_start_execution_requires_authoritative_onchain_order_anchor(

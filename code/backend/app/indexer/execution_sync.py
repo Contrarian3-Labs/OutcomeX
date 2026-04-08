@@ -99,7 +99,9 @@ def sync_execution_runs_once(
 
 def _sync_model_from_snapshot(run: ExecutionRun, snapshot) -> None:
     run.status = snapshot.status
-    run.submission_payload = snapshot.submission_payload
+    submission_payload = dict(run.submission_payload or {})
+    submission_payload.update(dict(snapshot.submission_payload or {}))
+    run.submission_payload = submission_payload or None
     run.workspace_path = snapshot.workspace_path
     run.run_dir = snapshot.run_dir
     run.preview_manifest = list(snapshot.preview_manifest)

@@ -5,6 +5,11 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.api.execution_contract import (
+    build_selected_plan_binding,
+    build_selected_plan_payload,
+    is_order_execution_contract_consistent,
+)
 from app.core.config import get_settings
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.enums import ExecutionRunStatus, ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
@@ -91,50 +96,6 @@ def _can_refund_failed_or_no_valid_preview(order: Order, db: Session) -> bool:
             or order.execution_state in {ExecutionState.FAILED, ExecutionState.CANCELLED}
         )
     )
-
-
-def _selected_plan_payload_from_order(
-    order: Order,
-    submission_payload: dict | None = None,
-    snapshot_selected_plan: dict | None = None,
-) -> dict | None:
-    if snapshot_selected_plan:
-        payload = dict(snapshot_selected_plan)
-    else:
-        metadata = dict(order.execution_metadata or {})
-        name = metadata.get("selected_native_plan_name")
-        description = metadata.get("selected_native_plan_description")
-        nodes = metadata.get("selected_native_plan_nodes")
-        if not (name or description or nodes):
-            return None
-        payload = {
-            "index": metadata.get("selected_native_plan_index"),
-            "name": name,
-            "description": description,
-            "nodes": nodes or [],
-        }
-
-    if payload.get("index") is None:
-        submission_payload = submission_payload or {}
-        if submission_payload.get("selected_plan_index") is not None:
-            payload["index"] = submission_payload.get("selected_plan_index")
-        else:
-            payload["index"] = dict(order.execution_metadata or {}).get("selected_native_plan_index")
-    return payload
-
-
-def _selected_plan_binding(selected_plan: dict | None, submission_payload: dict | None) -> dict | None:
-    submission_payload = submission_payload or {}
-    submission_index = submission_payload.get("selected_plan_index")
-    selected_index = selected_plan.get("index") if selected_plan else None
-    if submission_index is None and selected_index is None:
-        return None
-    return {
-        "submission_payload_selected_plan_index": submission_index,
-        "selected_plan_index": selected_index,
-        "is_consistent": submission_index == selected_index,
-    }
-
 
 def _succeeded_payment_total_cents(order_id: str, db: Session) -> int:
     return db.scalar(
@@ -246,6 +207,8 @@ def create_order(
         user_id=payload.user_id,
         chat_session_id=payload.chat_session_id,
         user_message=payload.user_prompt,
+        preferred_strategy=payload.execution_strategy,
+        input_files=tuple(payload.input_files),
     )
     selected_plan = select_recommended_plan(
         recommended_plans,
@@ -280,6 +243,7 @@ def create_order(
     )
     execution_metadata = dict(execution_plan.metadata)
     execution_metadata["selected_plan_id"] = selected_plan.plan_id
+    execution_metadata["selected_plan_title"] = selected_plan.title
     execution_metadata["selected_plan_strategy"] = selected_plan.strategy.value
     execution_metadata["selected_native_plan_index"] = selected_plan.native_plan_index
     if selected_plan.native_plan_name:
@@ -454,6 +418,11 @@ def start_order_execution(
             status_code=status.HTTP_409_CONFLICT,
             detail="Order execution requires authoritative paid projection",
         )
+    if not is_order_execution_contract_consistent(order):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Order execution contract is inconsistent",
+        )
 
     machine = db.get(Machine, order.machine_id)
     if machine is None:
@@ -489,6 +458,10 @@ def start_order_execution(
 
     run_status = ExecutionRunStatus(dispatch.run_status.value)
     submission_payload = dict(order.execution_request or {})
+    if metadata.get("selected_plan_id") is not None:
+        submission_payload["selected_plan_id"] = metadata.get("selected_plan_id")
+    if metadata.get("selected_plan_strategy") is not None:
+        submission_payload["selected_plan_strategy"] = metadata.get("selected_plan_strategy")
     if selected_native_plan_index is not None:
         submission_payload["selected_plan_index"] = selected_native_plan_index
     run = ExecutionRun(
@@ -523,14 +496,18 @@ def start_order_execution(
     db.commit()
     db.refresh(run)
     response = ExecutionRunResponse.model_validate(run)
-    selected_plan = _selected_plan_payload_from_order(
-        order,
+    selected_plan = build_selected_plan_payload(
+        order=order,
         submission_payload=run.submission_payload,
         snapshot_selected_plan=dispatch.selected_plan,
     )
     return response.model_copy(
         update={
             "selected_plan": selected_plan,
-            "selected_plan_binding": _selected_plan_binding(selected_plan, run.submission_payload),
+            "selected_plan_binding": build_selected_plan_binding(
+                order=order,
+                selected_plan=selected_plan,
+                submission_payload=run.submission_payload,
+            ),
         }
     )
