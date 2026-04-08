@@ -83,3 +83,11 @@ class RevenueAccountOverviewResponse(BaseModel):
     withdraw_history: list[WithdrawHistoryItem]
 
     model_config = {"from_attributes": True}
+
+
+class PlatformRevenueOverviewResponse(BaseModel):
+    currency: str
+    projected_cents: int
+    claimed_cents: int
+    claimable_cents: int
+    claim_history: list[RevenueClaimHistoryItem]

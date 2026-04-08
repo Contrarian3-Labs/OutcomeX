@@ -254,7 +254,7 @@
 
 优先级：`P1`
 
-状态：`进行中`
+状态：`进行中（backend/read-model 继续收口）`
 
 本轮已完成：
 
@@ -275,6 +275,13 @@
   - `SettlementClaimRecord` 统一记录 `refund / platform_revenue / machine_revenue`
   - `GET /api/v1/revenue/accounts/{user_id}/claims` 可返回按时间倒序的 claim history
   - `SpendWallet` 已开始消费该接口，`Refund Records / PWR Settlement Ledger` 不再完全是 placeholder
+- backend 已新增 platform-side overview read API：
+  - `GET /api/v1/revenue/platform/overview?currency=USDC|USDT|PWR`
+  - 该接口会把 `SettlementRecord.platform_fee_cents` 与 `SettlementClaimRecord(platform_revenue)` 汇总成：
+    - `projected_cents`
+    - `claimed_cents`
+    - `claimable_cents`
+    - `claim_history`
 - 验证目标：
   - `code/backend`：`pytest -q tests/indexer/test_sql_projection_store.py tests/api/test_revenue_claims_api.py tests/api/test_settlement_convergence_api.py tests/api/test_order_available_actions_api.py tests/indexer/test_event_normalization.py`
   - `code/contracts`：`forge test -vv`
@@ -287,7 +294,7 @@
   - `MachineRevenueClaimed`
 - 当前已经有统一 claim ledger / projection 表来记录 claim 历史与 token 维度
 - refund claim 虽然链上事件没有 order id，但 backend 已通过 FIFO projection 补齐单个 order 的剩余退款读模型
-- 当前仍未完全补齐的，是 platform claim 的正式 overview read model 与前端消费
+- platform claim 已补正式 overview read model；当前剩余主要是前端尚未消费该 platform-side API
 
 #### 涉及模块
 
@@ -314,12 +321,13 @@
 
 未完成项：
 
-- platform claim 虽已进入统一 claim ledger，但前端还没有专门 platform-side dashboard
+- platform claim 的 backend overview 已具备，但前端还没有专门 platform-side dashboard
 - `AssetYield` 侧 machine claim history / overview 仍是 beneficiary 聚合问题，后续会与 `Slice D` 一起收口
 
 本轮新增验证：
 
 - `code/backend`：`pytest -q tests/api/test_order_available_actions_api.py tests/api/test_hsp_webhooks.py tests/integrations/test_hsp_adapter.py tests/api/test_direct_payments_api.py tests/indexer/test_sql_projection_store.py` → `31 passed`
+- `code/backend`：`pytest -q tests/api/test_revenue_overview_api.py tests/api/test_revenue_claims_api.py tests/api/test_machines_api.py tests/indexer/test_sql_projection_store.py` → `21 passed`
 
 #### commit 主题
 

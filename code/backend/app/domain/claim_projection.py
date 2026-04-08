@@ -127,6 +127,33 @@ def project_machine_entry_claims(*, machine_id: str, db: Session) -> dict[str, R
     return projection
 
 
+def project_platform_revenue_overview(*, currency: str, db: Session) -> tuple[int, int]:
+    normalized_currency = currency.upper()
+    rows = list(
+        db.execute(
+            select(Order, SettlementRecord)
+            .join(SettlementRecord, SettlementRecord.order_id == Order.id)
+            .where(Order.settlement_state == SettlementState.DISTRIBUTED)
+            .order_by(SettlementRecord.distributed_at.asc(), Order.created_at.asc(), Order.id.asc())
+        )
+    )
+    projected_cents = 0
+    for order, settlement in rows:
+        order_currency = order.latest_success_payment_currency.upper() if order.latest_success_payment_currency else None
+        if order_currency == normalized_currency:
+            projected_cents += settlement.platform_fee_cents
+    claimed_cents = sum(
+        record.amount_cents
+        for record in db.scalars(
+            select(SettlementClaimRecord)
+            .where(SettlementClaimRecord.claim_kind == "platform_revenue")
+            .order_by(SettlementClaimRecord.claimed_at.asc(), SettlementClaimRecord.id.asc())
+        )
+        if _claim_record_matches_currency(record.token_address, normalized_currency)
+    )
+    return projected_cents, claimed_cents
+
+
 def _refund_due_cents(settlement: SettlementRecord) -> int:
     return max(0, settlement.gross_amount_cents - settlement.platform_fee_cents - settlement.machine_share_cents)
 

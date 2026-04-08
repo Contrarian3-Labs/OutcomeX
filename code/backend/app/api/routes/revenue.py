@@ -5,11 +5,12 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.core.config import get_settings
 from app.domain.accounting import effective_paid_amount_cents
-from app.domain.claim_projection import project_machine_entry_claims
+from app.domain.claim_projection import project_machine_entry_claims, project_platform_revenue_overview
 from app.domain.enums import PaymentState, SettlementState
 from app.domain.models import Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementClaimRecord, SettlementRecord
 from app.domain.rules import has_sufficient_payment
 from app.schemas.revenue import (
+    PlatformRevenueOverviewResponse,
     RevenueClaimHistoryItem,
     RevenueAccountOverviewResponse,
     RevenueDistributionResponse,
@@ -240,5 +241,41 @@ def list_revenue_claims(user_id: str, db: Session = Depends(get_db)) -> list[Rev
         )
         for record in records
     ]
+
+
+@router.get("/platform/overview", response_model=PlatformRevenueOverviewResponse)
+def platform_revenue_overview(
+    currency: str,
+    db: Session = Depends(get_db),
+) -> PlatformRevenueOverviewResponse:
+    normalized_currency = currency.upper()
+    projected_cents, claimed_cents = project_platform_revenue_overview(currency=normalized_currency, db=db)
+    claim_history = [
+        RevenueClaimHistoryItem(
+            id=record.id,
+            claim_kind=record.claim_kind,
+            claimant_user_id=record.claimant_user_id,
+            account_address=record.account_address,
+            token_address=record.token_address,
+            currency=_currency_from_token_address(record.token_address),
+            amount_cents=record.amount_cents,
+            tx_hash=record.tx_hash,
+            machine_id=record.machine_id,
+            claimed_at=record.claimed_at,
+        )
+        for record in db.scalars(
+            select(SettlementClaimRecord)
+            .where(SettlementClaimRecord.claim_kind == "platform_revenue")
+            .order_by(SettlementClaimRecord.claimed_at.desc(), SettlementClaimRecord.id.desc())
+        )
+        if _currency_from_token_address(record.token_address) == normalized_currency
+    ]
+    return PlatformRevenueOverviewResponse(
+        currency=normalized_currency,
+        projected_cents=projected_cents,
+        claimed_cents=claimed_cents,
+        claimable_cents=max(0, projected_cents - claimed_cents),
+        claim_history=claim_history,
+    )
 
 

@@ -282,5 +282,37 @@ def test_list_machine_revenue_projects_claimed_and_claimable_per_entry_fifo(clie
     assert newer_entry["claimable_cents"] == 250
 
 
+def test_platform_overview_reports_projected_claimed_and_claimable_by_currency(client: TestClient) -> None:
+    owner_user_id = "owner-platform-test"
+    _seed_machine_with_revenue(owner_user_id=owner_user_id, machine_share_cents=900, payment_currency="USDC")
+    container = get_container()
+    with container.session_factory() as db:
+        db.add(
+            SettlementClaimRecord(
+                event_id="evt-platform-claim-usdc",
+                claim_kind="platform_revenue",
+                claimant_user_id="platform",
+                account_address="0xtreasury",
+                token_address="0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
+                amount_cents=40,
+                tx_hash="0xplatformclaim",
+                machine_id=None,
+                claimed_at=datetime.now(timezone.utc),
+            )
+        )
+        db.commit()
+
+    response = client.get("/api/v1/revenue/platform/overview", params={"currency": "USDC"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["currency"] == "USDC"
+    assert payload["projected_cents"] == 100
+    assert payload["claimed_cents"] == 40
+    assert payload["claimable_cents"] == 60
+    assert payload["claim_history"][0]["claim_kind"] == "platform_revenue"
+    assert payload["claim_history"][0]["amount_cents"] == 40
+
+
 
 
