@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.enums import OrderState, PaymentState, PreviewState, SettlementState
 from app.domain.models import Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementRecord
+from app.domain.order_truth import set_authoritative_order_truth
 from app.domain.settlement_projection import ensure_confirmed_settlement_projection
 from app.indexer.events import (
     MachineAssetEvent,
@@ -148,19 +149,12 @@ class SqlProjectionStore:
         order_status: str,
         payload: OrderLifecycleEvent,
     ) -> None:
-        metadata = dict(order.execution_metadata or {})
-        metadata["authoritative_order_status"] = order_status
-        metadata["authoritative_order_event_id"] = event.event_id
-        metadata["authoritative_paid_projection"] = order_status in {
-            "PAID",
-            "PREVIEW_READY",
-            "CONFIRMED",
-            "REJECTED",
-            "REFUNDED",
-        }
-        if payload.cancelled_as_expired is not None:
-            metadata["cancelled_as_expired"] = payload.cancelled_as_expired
-        order.execution_metadata = metadata
+        set_authoritative_order_truth(
+            order,
+            order_status=order_status,
+            event_id=event.event_id,
+            cancelled_as_expired=payload.cancelled_as_expired,
+        )
 
     @staticmethod
     def _resolve_order_for_event(*, db, event: NormalizedEvent, payload: OrderLifecycleEvent) -> Order | None:

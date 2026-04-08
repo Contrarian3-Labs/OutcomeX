@@ -13,6 +13,7 @@ from app.core.config import get_settings
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.enums import PaymentState
 from app.domain.models import Machine, Order, Payment, utc_now
+from app.domain.order_truth import set_authoritative_order_truth
 from app.domain.rules import has_sufficient_payment, is_dividend_eligible
 from app.integrations.onchain_broadcaster import OnchainCreateOrderReceipt
 from app.integrations.onchain_payment_verifier import OnchainPaymentVerifier, get_onchain_payment_verifier
@@ -38,6 +39,7 @@ PWR_WEI_MULTIPLIER = Decimal("1000000000000000000")
 
 
 TERMINAL_PAYMENT_STATES = {PaymentState.SUCCEEDED, PaymentState.FAILED, PaymentState.REFUNDED}
+HSP_STABLECOIN_CURRENCIES = {"USDC", "USDT"}
 
 
 def _ensure_demo_write_allowed(*, detail: str) -> None:
@@ -314,7 +316,22 @@ def _backfill_order_chain_anchor_from_receipt(order: Order, receipt: OnchainCrea
     )
 
 
-@router.post("/orders/{order_id}/intent", response_model=PaymentIntentResponse, status_code=status.HTTP_201_CREATED)
+def _mark_authoritative_paid_projection(
+    order: Order,
+    *,
+    order_status: str,
+    event_id: str,
+) -> None:
+    set_authoritative_order_truth(order, order_status=order_status, event_id=event_id)
+
+
+@router.post(
+    "/orders/{order_id}/intent",
+    response_model=PaymentIntentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create HSP stablecoin checkout",
+    description="Formal stablecoin checkout path for OutcomeX. Supported stablecoins are USDC and USDT via HSP.",
+)
 def create_payment_intent(
     order_id: str,
     payload: PaymentIntentRequest,
@@ -325,6 +342,13 @@ def create_payment_intent(
     order = db.get(Order, order_id)
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    currency = payload.currency.upper()
+    if currency not in HSP_STABLECOIN_CURRENCIES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="HSP checkout only supports USDC or USDT stablecoins",
+        )
 
     if payload.amount_cents != order.quoted_amount_cents:
         raise HTTPException(
@@ -342,7 +366,7 @@ def create_payment_intent(
     merchant_order = container.hsp_adapter.create_payment_intent(
         order_id=order.id,
         amount_cents=payload.amount_cents,
-        currency=payload.currency.upper(),
+        currency=currency,
     )
     payment = Payment(
         order_id=order.id,
@@ -352,7 +376,7 @@ def create_payment_intent(
         flow_id=merchant_order.flow_id,
         checkout_url=merchant_order.payment_url,
         amount_cents=payload.amount_cents,
-        currency=payload.currency.upper(),
+        currency=currency,
         state=PaymentState.PENDING,
     )
     db.add(payment)
@@ -376,6 +400,9 @@ def create_payment_intent(
     "/orders/{order_id}/direct-intent",
     response_model=DirectPaymentIntentResponse,
     status_code=status.HTTP_201_CREATED,
+    summary="Create legacy direct payment intent",
+    description="Legacy compatibility route for direct onchain payment intents. Formal stablecoin checkout should use the HSP route instead.",
+    deprecated=True,
 )
 def create_direct_payment_intent(
     order_id: str,
@@ -391,6 +418,11 @@ def create_direct_payment_intent(
     currency = payload.currency.upper()
     if currency not in {"USDC", "USDT", "PWR"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported direct payment currency")
+    if currency in HSP_STABLECOIN_CURRENCIES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Direct stablecoin checkout is legacy-only; use the HSP payment intent route",
+        )
     if payload.amount_cents != order.quoted_amount_cents:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

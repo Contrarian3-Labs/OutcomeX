@@ -165,6 +165,24 @@
 
 优先级：`P0/P1`
 
+状态：`已完成（待合并到 main）`
+
+验证：
+
+- `code/backend`：`pytest -q code/backend/tests/api/test_hsp_webhooks.py code/backend/tests/api/test_direct_payments_api.py code/backend/tests/indexer/test_sql_projection_store.py code/backend/tests/api/test_execution_runs_api.py code/backend/tests/runtime/test_cost_service.py` → `37 passed`
+- `forge-yield-ai`：`npm test -- src/test/order-detail-hsp-payment.test.tsx src/test/order-detail-wallet-actions.test.tsx src/test/order-detail-direct-payment-copy.test.ts src/test/product-closure.test.tsx` → `23 passed`
+
+收口结果：
+
+- backend 已把稳定币默认支付意图收敛成 HSP 主路径，`/payments/orders/{order_id}/intent` 默认走 `USDC` 且仅接受 `USDC/USDT`
+- backend 已把 `direct-intent` 收敛成兼容性 PWR 入口，稳定币不再继续从该接口扩散
+- HSP webhook 与 SQL projection 已统一按 authoritative paid truth 回写，前端不再把 checkout 创建成功误当成支付成功
+- 前端 `OrderDetail` 已把 `USDC/USDT via HSP` 提升为正式主路径，并补齐 checkout 创建、projection pending、projection synced、失败重试与订单切换防串单保护
+
+残余风险：
+
+- 当前这一 slice 只收口了“稳定币主支付轨”，没有改变 HSP 适配器是否具备真实资金入账校验这一更底层安全问题；该问题仍在更高优先级审计项中单独跟踪
+
 #### 当前状态
 
 - 合约侧 `HSP adapter -> escrow -> mark paid` 路径已经比早期真实很多

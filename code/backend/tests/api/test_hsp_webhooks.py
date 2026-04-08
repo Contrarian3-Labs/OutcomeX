@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from app.core.config import reset_settings_cache
 from app.core.container import get_container, reset_container_cache
 from app.integrations.onchain_broadcaster import OnchainCreateOrderReceipt, get_onchain_broadcaster
-from app.domain.models import Payment
+from app.domain.models import Order, Payment
 from app.main import create_app
 from app.onchain.order_writer import OrderWriteResult, get_order_writer
 from app.onchain.tx_sender import get_onchain_transaction_sender
@@ -169,13 +169,38 @@ def _create_order(client: TestClient, machine_id: str, user_id: str = "user-2", 
     return payload
 
 
-def _create_payment_intent(client: TestClient, order_id: str, amount_cents: int = 500) -> dict:
+def _create_payment_intent(
+    client: TestClient,
+    order_id: str,
+    amount_cents: int = 500,
+    *,
+    currency: str = "usdc",
+) -> dict:
     response = client.post(
         f"/api/v1/payments/orders/{order_id}/intent",
-        json={"amount_cents": amount_cents, "currency": "usdc"},
+        json={"amount_cents": amount_cents, "currency": currency},
     )
     assert response.status_code == 201
     return response.json()
+
+
+def _anchor_order(
+    *,
+    order_id: str,
+    onchain_order_id: str,
+    create_order_tx_hash: str,
+    create_order_event_id: str,
+    create_order_block_number: int,
+) -> None:
+    with get_container().session_factory() as session:
+        order = session.get(Order, order_id)
+        assert order is not None
+        order.onchain_order_id = onchain_order_id
+        order.create_order_tx_hash = create_order_tx_hash
+        order.create_order_event_id = create_order_event_id
+        order.create_order_block_number = create_order_block_number
+        session.add(order)
+        session.commit()
 
 
 def test_hsp_webhook_is_idempotent_and_freezes_settlement_policy(
@@ -221,6 +246,9 @@ def test_hsp_webhook_is_idempotent_and_freezes_settlement_policy(
     assert order_after_payment.json()["settlement_beneficiary_user_id"] == "owner-1"
     assert order_after_payment.json()["settlement_is_self_use"] is False
     assert order_after_payment.json()["settlement_is_dividend_eligible"] is True
+    assert order_after_payment.json()["execution_metadata"]["authoritative_order_status"] == "PAID"
+    assert order_after_payment.json()["execution_metadata"]["authoritative_paid_projection"] is True
+    assert order_after_payment.json()["execution_metadata"]["authoritative_order_event_id"] == "OrderCreated:oc_98001:0xlivetx"
     assert spy_writer.create_and_mark_paid_calls == [
         {
             "order_id": order["id"],
@@ -243,6 +271,46 @@ def test_hsp_webhook_is_idempotent_and_freezes_settlement_policy(
         assert persisted_payment.callback_event_id == "evt_1"
         assert persisted_payment.callback_state == "completed"
         assert persisted_payment.callback_tx_hash == "0xabc123"
+
+
+def test_hsp_webhook_marks_authoritative_paid_projection_when_order_is_already_anchored(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
+) -> None:
+    test_client, spy_writer, spy_broadcaster, spy_sender = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine_id=machine["id"])
+    payment = _create_payment_intent(test_client, order_id=order["id"])
+    _anchor_order(
+        order_id=order["id"],
+        onchain_order_id="oc_existing",
+        create_order_tx_hash="0xexistingtx",
+        create_order_event_id="OrderCreated:oc_existing:0xexistingtx",
+        create_order_block_number=3330000,
+    )
+    payload = {
+        "event_id": "evt_existing_paid",
+        "merchant_order_id": payment["merchant_order_id"],
+        "flow_id": payment["flow_id"],
+        "status": "completed",
+        "amount_cents": 500,
+        "currency": "USDC",
+        "tx_hash": "0xexistingpaid",
+    }
+    body, headers = _sign_payload(payload)
+
+    response = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
+
+    assert response.status_code == 200
+    order_after_payment = test_client.get(f"/api/v1/orders/{order['id']}")
+    assert order_after_payment.status_code == 200
+    assert order_after_payment.json()["onchain_order_id"] == "oc_existing"
+    assert order_after_payment.json()["create_order_tx_hash"] == "0xexistingtx"
+    assert order_after_payment.json()["execution_metadata"]["authoritative_order_status"] == "PAID"
+    assert order_after_payment.json()["execution_metadata"]["authoritative_paid_projection"] is True
+    assert order_after_payment.json()["execution_metadata"]["authoritative_order_event_id"] == "evt_existing_paid"
+    assert spy_writer.create_and_mark_paid_calls == []
+    assert spy_broadcaster.create_paid_calls == []
+    assert spy_sender.calls == []
 
 
 def test_hsp_webhook_rejects_invalid_signatures(
@@ -325,6 +393,76 @@ def test_hsp_payment_intent_requires_exact_quote_and_single_active_intent(
     assert second.status_code == 409
     assert second.json()["detail"] == "An active HSP payment already exists for this order"
     assert first["payment_id"]
+
+
+def test_hsp_payment_intent_supports_usdt_checkout_and_success_webhook(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
+) -> None:
+    test_client, _spy_writer, _spy_broadcaster, _spy_sender = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine_id=machine["id"], quoted_amount_cents=500)
+    payment = _create_payment_intent(test_client, order_id=order["id"], amount_cents=500, currency="usdt")
+
+    assert payment["provider"] == "hsp"
+
+    payload = {
+        "event_id": "evt_usdt_success",
+        "merchant_order_id": payment["merchant_order_id"],
+        "flow_id": payment["flow_id"],
+        "status": "completed",
+        "amount_cents": 500,
+        "currency": "USDT",
+        "tx_hash": "0xusdtok",
+    }
+    body, headers = _sign_payload(payload)
+
+    response = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
+
+    assert response.status_code == 200
+    order_after_payment = test_client.get(f"/api/v1/orders/{order['id']}")
+    assert order_after_payment.status_code == 200
+    assert order_after_payment.json()["latest_success_payment_currency"] == "USDT"
+    assert order_after_payment.json()["execution_metadata"]["authoritative_paid_projection"] is True
+
+
+def test_hsp_payment_intent_defaults_to_usdc_and_rejects_non_stablecoin_checkout_currency(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
+) -> None:
+    test_client, _spy_writer, _spy_broadcaster, _spy_sender = client
+    machine = _create_machine(test_client)
+    unsupported_order = _create_order(test_client, machine_id=machine["id"], quoted_amount_cents=500)
+    default_order = _create_order(test_client, machine_id=machine["id"], quoted_amount_cents=500)
+
+    unsupported_currency = test_client.post(
+        f"/api/v1/payments/orders/{unsupported_order['id']}/intent",
+        json={"amount_cents": 500, "currency": "PWR"},
+    )
+    assert unsupported_currency.status_code == 400
+    assert unsupported_currency.json()["detail"] == "HSP checkout only supports USDC or USDT stablecoins"
+
+    default_currency = test_client.post(
+        f"/api/v1/payments/orders/{default_order['id']}/intent",
+        json={"amount_cents": 500},
+    )
+    assert default_currency.status_code == 201
+    assert default_currency.json()["provider"] == "hsp"
+    assert default_currency.json()["checkout_url"]
+
+
+def test_payment_openapi_marks_hsp_checkout_as_formal_stablecoin_route(client) -> None:
+    test_client, _spy_writer, _spy_broadcaster, _spy_sender = client
+
+    response = test_client.get("/openapi.json")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checkout_operation = payload["paths"]["/api/v1/payments/orders/{order_id}/intent"]["post"]
+    direct_operation = payload["paths"]["/api/v1/payments/orders/{order_id}/direct-intent"]["post"]
+    assert "hsp" in checkout_operation["summary"].lower()
+    assert "stablecoin" in checkout_operation["description"].lower()
+    assert direct_operation["deprecated"] is True
+    assert "legacy" in direct_operation["description"].lower()
+    assert "hsp" in direct_operation["description"].lower()
 
 
 def test_hsp_webhook_rejects_terminal_state_downgrade_after_success(

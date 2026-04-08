@@ -209,7 +209,7 @@ def _create_paid_order(
 
     payment_intent = client.post(
         f"/api/v1/payments/orders/{order_id}/intent",
-        json={"amount_cents": 1000, "currency": "USD"},
+        json={"amount_cents": 1000, "currency": "USDC"},
     )
     assert payment_intent.status_code == 201
     payment_id = payment_intent.json()["payment_id"]
@@ -242,7 +242,7 @@ def _create_paid_order_without_anchor(client: TestClient, machine_id: str) -> di
 
     payment_intent = client.post(
         f"/api/v1/payments/orders/{order_id}/intent",
-        json={"amount_cents": 1000, "currency": "USD"},
+        json={"amount_cents": 1000, "currency": "USDC"},
     )
     assert payment_intent.status_code == 201
     payment_id = payment_intent.json()["payment_id"]

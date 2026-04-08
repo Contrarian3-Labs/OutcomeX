@@ -4,8 +4,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import reset_settings_cache
-from app.core.container import reset_container_cache
+from app.core.container import get_container, reset_container_cache
 from app.domain.enums import PaymentState
+from app.domain.models import Order, Payment
 from app.integrations.onchain_payment_verifier import OnchainPaymentVerificationResult, get_onchain_payment_verifier
 from app.main import create_app
 from app.onchain.order_writer import OrderWriteResult, get_order_writer
@@ -175,34 +176,77 @@ def _create_order(client: TestClient, machine_id: str, quoted_amount_cents: int 
     return payload
 
 
-def test_create_direct_payment_intent_returns_router_call_spec(
+def _seed_legacy_direct_payment(
+    *,
+    order_id: str,
+    currency: str,
+    spy_writer: SpyOrderWriter,
+    wallet_address: str | None = None,
+) -> str:
+    with get_container().session_factory() as session:
+        order = session.get(Order, order_id)
+        assert order is not None
+        payment = Payment(
+            order_id=order.id,
+            provider="onchain_router",
+            amount_cents=order.quoted_amount_cents,
+            currency=currency,
+            state=PaymentState.PENDING,
+            merchant_order_id=order.id,
+            flow_id=f"legacy-{currency.lower()}-{order.id}",
+        )
+        session.add(payment)
+        session.flush()
+
+        direct_intent = spy_writer.build_direct_payment_intent(order, payment)
+        if currency == "USDC":
+            signing_request = {
+                "message": {
+                    "validAfter": "1712233000",
+                    "validBefore": "1712235000",
+                    "nonce": "0x" + "ab" * 32,
+                    "from": (wallet_address or "0x00000000000000000000000000000000000000aa").lower(),
+                }
+            }
+        elif currency == "USDT":
+            signing_request = {
+                "message": {
+                    "nonce": "12345",
+                    "deadline": "1712235000",
+                }
+            }
+        else:
+            signing_request = None
+        payment.provider_reference = direct_intent.method_name
+        payment.provider_payload = {
+            "direct_intent_payload": direct_intent.payload,
+            "signing_request": signing_request,
+        }
+        session.add(payment)
+        session.commit()
+        return payment.id
+
+
+def test_create_direct_payment_intent_rejects_legacy_stablecoin_checkout(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
 ) -> None:
     test_client, _spy_writer, _spy_verifier = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine["id"])
 
-    response = test_client.post(
+    usdc_response = test_client.post(
         f"/api/v1/payments/orders/{order['id']}/direct-intent",
         json={"amount_cents": 1000, "currency": "USDC", "wallet_address": "0x00000000000000000000000000000000000000aa"},
     )
+    assert usdc_response.status_code == 409
+    assert usdc_response.json()["detail"] == "Direct stablecoin checkout is legacy-only; use the HSP payment intent route"
 
-    assert response.status_code == 201
-    payload = response.json()
-    assert payload["provider"] == "onchain_router"
-    assert payload["order_id"] == order["id"]
-    assert payload["contract_name"] == "OrderPaymentRouter"
-    assert payload["contract_address"] == "0x0000000000000000000000000000000000000134"
-    assert payload["chain_id"] == 133
-    assert payload["method_name"] == "createOrderAndPayWithUSDC"
-    assert payload["signing_standard"] == "eip3009"
-    assert payload["finalize_required"] is True
-    assert payload["calldata"] is None
-    assert payload["submit_payload"] is None
-    assert payload["signing_request"]["primaryType"] == "ReceiveWithAuthorization"
-    assert payload["signing_request"]["domain"]["name"] == "USD Coin"
-    assert payload["signing_request"]["message"]["to"] == "0x0000000000000000000000000000000000000135"
-    assert payload["signing_request"]["message"]["value"] == "1000"
+    usdt_response = test_client.post(
+        f"/api/v1/payments/orders/{order['id']}/direct-intent",
+        json={"amount_cents": 1000, "currency": "USDT"},
+    )
+    assert usdt_response.status_code == 409
+    assert usdt_response.json()["detail"] == "Direct stablecoin checkout is legacy-only; use the HSP payment intent route"
 
 
 def test_create_direct_payment_intent_supports_pwr_when_anchor_exists(
@@ -232,44 +276,18 @@ def test_create_direct_payment_intent_supports_pwr_when_anchor_exists(
     assert payload["quote"]["pwr_anchor_price_cents"] == 25
 
 
-def test_create_direct_payment_intent_returns_wallet_envelope_for_usdt(
-    client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
-) -> None:
-    test_client, _spy_writer, _spy_verifier = client
-    machine = _create_machine(test_client)
-    order = _create_order(test_client, machine["id"])
-
-    response = test_client.post(
-        f"/api/v1/payments/orders/{order['id']}/direct-intent",
-        json={"amount_cents": 1000, "currency": "USDT"},
-    )
-
-    assert response.status_code == 201
-    payload = response.json()
-    assert payload["method_name"] == "createOrderAndPayWithUSDT"
-    assert payload["signing_standard"] == "permit2"
-    assert payload["finalize_required"] is True
-    assert payload["calldata"] is None
-    assert payload["submit_payload"] is None
-    assert payload["signing_request"]["primaryType"] == "PermitTransferFrom"
-    assert payload["signing_request"]["domain"]["name"] == "Permit2"
-    assert payload["signing_request"]["message"]["spender"] == payload["contract_address"]
-    assert payload["signing_request"]["message"]["permitted"]["token"] == "0x372325443233febaC1f6998aC750276468c83Cc6".lower()
-
-
 def test_finalize_usdc_direct_payment_intent_returns_wallet_envelope(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
 ) -> None:
-    test_client, _spy_writer, _spy_verifier = client
+    test_client, spy_writer, _spy_verifier = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine["id"])
-
-    intent = test_client.post(
-        f"/api/v1/payments/orders/{order['id']}/direct-intent",
-        json={"amount_cents": 1000, "currency": "USDC", "wallet_address": "0x00000000000000000000000000000000000000aa"},
+    payment_id = _seed_legacy_direct_payment(
+        order_id=order["id"],
+        currency="USDC",
+        spy_writer=spy_writer,
+        wallet_address="0x00000000000000000000000000000000000000aa",
     )
-    assert intent.status_code == 201
-    payment_id = intent.json()["payment_id"]
 
     response = test_client.post(
         f"/api/v1/payments/{payment_id}/finalize-intent",
@@ -291,16 +309,10 @@ def test_finalize_usdc_direct_payment_intent_returns_wallet_envelope(
 def test_finalize_usdt_direct_payment_intent_returns_wallet_envelope(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
 ) -> None:
-    test_client, _spy_writer, _spy_verifier = client
+    test_client, spy_writer, _spy_verifier = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine["id"])
-
-    intent = test_client.post(
-        f"/api/v1/payments/orders/{order['id']}/direct-intent",
-        json={"amount_cents": 1000, "currency": "USDT"},
-    )
-    assert intent.status_code == 201
-    payment_id = intent.json()["payment_id"]
+    payment_id = _seed_legacy_direct_payment(order_id=order["id"], currency="USDT", spy_writer=spy_writer)
 
     response = test_client.post(
         f"/api/v1/payments/{payment_id}/finalize-intent",
@@ -323,13 +335,7 @@ def test_sync_onchain_payment_records_correlation_without_route_side_state_mutat
     test_client, spy_writer, spy_verifier = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine["id"])
-
-    intent = test_client.post(
-        f"/api/v1/payments/orders/{order['id']}/direct-intent",
-        json={"amount_cents": 1000, "currency": "USDT"},
-    )
-    assert intent.status_code == 201
-    payment_id = intent.json()["payment_id"]
+    payment_id = _seed_legacy_direct_payment(order_id=order["id"], currency="USDT", spy_writer=spy_writer)
     spy_verifier.set_result(
         tx_hash="0xabc123",
         verification=OnchainPaymentVerificationResult(
@@ -420,16 +426,15 @@ def test_sync_onchain_pwr_payment_records_correlation_without_route_side_state_m
 def test_sync_onchain_rejects_unverified_event_mismatch(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
 ) -> None:
-    test_client, _spy_writer, spy_verifier = client
+    test_client, spy_writer, spy_verifier = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine["id"])
-
-    intent = test_client.post(
-        f"/api/v1/payments/orders/{order['id']}/direct-intent",
-        json={"amount_cents": 1000, "currency": "USDC", "wallet_address": "0x00000000000000000000000000000000000000aa"},
+    payment_id = _seed_legacy_direct_payment(
+        order_id=order["id"],
+        currency="USDC",
+        spy_writer=spy_writer,
+        wallet_address="0x00000000000000000000000000000000000000aa",
     )
-    assert intent.status_code == 201
-    payment_id = intent.json()["payment_id"]
     spy_verifier.set_result(
         tx_hash="0xmismatch",
         verification=OnchainPaymentVerificationResult(
@@ -459,16 +464,15 @@ def test_sync_onchain_rejects_unverified_event_mismatch(
 def test_sync_onchain_rejects_non_successful_verified_receipt(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
 ) -> None:
-    test_client, _spy_writer, spy_verifier = client
+    test_client, spy_writer, spy_verifier = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine["id"])
-
-    intent = test_client.post(
-        f"/api/v1/payments/orders/{order['id']}/direct-intent",
-        json={"amount_cents": 1000, "currency": "USDC", "wallet_address": "0x00000000000000000000000000000000000000aa"},
+    payment_id = _seed_legacy_direct_payment(
+        order_id=order["id"],
+        currency="USDC",
+        spy_writer=spy_writer,
+        wallet_address="0x00000000000000000000000000000000000000aa",
     )
-    assert intent.status_code == 201
-    payment_id = intent.json()["payment_id"]
     spy_verifier.set_result(
         tx_hash="0xfailed",
         verification=OnchainPaymentVerificationResult(

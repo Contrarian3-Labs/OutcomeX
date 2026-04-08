@@ -3,7 +3,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_dependency_container
-from app.api.routes.payments import _apply_payment_state, _backfill_order_chain_anchor_from_receipt
+from app.api.routes.payments import (
+    _apply_payment_state,
+    _backfill_order_chain_anchor_from_receipt,
+    _mark_authoritative_paid_projection,
+)
 from app.core.container import Container
 from app.domain.enums import PaymentState
 from app.domain.models import Order, Payment, utc_now
@@ -83,7 +87,18 @@ async def ingest_hsp_webhook(
             broadcasted_write = tx_sender.send(write_result)
             create_paid_receipt = onchain_broadcaster.broadcast_create_paid_order(write_result=broadcasted_write)
             _backfill_order_chain_anchor_from_receipt(order, create_paid_receipt)
-            db.add(order)
+            _mark_authoritative_paid_projection(
+                order,
+                order_status="PAID",
+                event_id=create_paid_receipt.event_id,
+            )
+        else:
+            _mark_authoritative_paid_projection(
+                order,
+                order_status="PAID",
+                event_id=event.event_id,
+            )
+        db.add(order)
     _apply_payment_state(payment, state=mapped_state, db=db, order_writer=order_writer, write_chain=False)
     payment.callback_event_id = event.event_id
     payment.callback_state = event.status

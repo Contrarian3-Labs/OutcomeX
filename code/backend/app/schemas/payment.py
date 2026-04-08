@@ -8,7 +8,7 @@ from app.schemas.quote import QuoteResponse
 
 class PaymentIntentRequest(BaseModel):
     amount_cents: int = Field(gt=0)
-    currency: str = Field(default="USD", min_length=3, max_length=8)
+    currency: str = Field(default="USDC", min_length=3, max_length=8)
 
 
 class PaymentIntentResponse(BaseModel):
