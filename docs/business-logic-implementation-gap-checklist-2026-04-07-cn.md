@@ -291,7 +291,6 @@
 - `CONFIRMED / REJECTED / REFUNDED` 三条 settlement 路径已经可以在 read model 里解释
 - 但以下 claim read model 仍不够完整或不够等价：
   - `PlatformRevenueClaimed`
-  - `MachineRevenueClaimed`
 - 当前已经有统一 claim ledger / projection 表来记录 claim 历史与 token 维度
 - refund claim 虽然链上事件没有 order id，但 backend 已通过 FIFO projection 补齐单个 order 的剩余退款读模型
 - platform claim 已补正式 overview read model；当前剩余主要是前端尚未消费该 platform-side API
@@ -322,7 +321,6 @@
 未完成项：
 
 - platform claim 的 backend overview 已具备，但前端还没有专门 platform-side dashboard
-- `AssetYield` 侧 machine claim history / overview 仍是 beneficiary 聚合问题，后续会与 `Slice D` 一起收口
 
 本轮新增验证：
 
