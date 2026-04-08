@@ -2,8 +2,17 @@
 pragma solidity ^0.8.24;
 
 interface IOrderPaymentRouter {
-    event OrderPaymentReceived(
-        uint256 indexed orderId, address indexed payer, address indexed token, uint256 amount, bytes32 paymentSource
+    event PaymentFinalized(
+        uint256 indexed orderId,
+        uint256 indexed machineId,
+        address indexed buyer,
+        address payer,
+        address paymentToken,
+        uint256 grossAmount,
+        bytes32 paymentSource,
+        address settlementBeneficiary,
+        bool dividendEligible,
+        bool refundAuthorized
     );
 
     function PAYMENT_SOURCE_USDC_EIP3009() external view returns (bytes32);

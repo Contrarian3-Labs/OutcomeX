@@ -10,8 +10,19 @@ import {OrderRecord, OrderStatus} from "../src/types/OutcomeXTypes.sol";
 import {TestBase} from "./utils/TestBase.sol";
 
 contract OutcomeXLifecycleTest is TestBase {
-    event RefundClaimed(address indexed buyer, address indexed token, uint256 amount);
-    event PlatformRevenueClaimed(address indexed treasury, address indexed token, uint256 amount);
+    event RefundClaimedDetailed(
+        address indexed buyer, address indexed token, uint256 amount, uint256 remainingRefundableAfter
+    );
+    event PlatformRevenueClaimedDetailed(
+        address indexed treasury, address indexed token, uint256 amount, uint256 remainingPlatformAccruedAfter
+    );
+    event MachineRevenueClaimedDetailed(
+        uint256 indexed machineId,
+        address indexed machineOwner,
+        uint256 amount,
+        uint256 remainingClaimableForMachineOwnerAfter,
+        uint256 remainingUnsettledRevenueByMachineAfter
+    );
 
     address internal constant ADMIN = address(0xA11CE);
     address internal constant PLATFORM_TREASURY = address(0xBEEF);
@@ -73,6 +84,8 @@ contract OutcomeXLifecycleTest is TestBase {
         machineAsset.transferFrom(MACHINE_OWNER, RECEIVER, machineId);
         vm.stopPrank();
 
+        vm.expectEmit(true, true, false, true, address(revenueVault));
+        emit MachineRevenueClaimedDetailed(machineId, MACHINE_OWNER, 900, 0, 0);
         vm.prank(MACHINE_OWNER);
         uint256 claimed = revenueVault.claim(machineId);
         assertEq(claimed, 900, "machine owner claim mismatch");
@@ -83,7 +96,7 @@ contract OutcomeXLifecycleTest is TestBase {
         assertEq(machineAsset.ownerOf(machineId), RECEIVER, "ownership should transfer after claim");
 
         vm.expectEmit(true, true, false, true, address(settlement));
-        emit PlatformRevenueClaimed(PLATFORM_TREASURY, address(0), 100);
+        emit PlatformRevenueClaimedDetailed(PLATFORM_TREASURY, address(0), 100, 0);
         vm.prank(PLATFORM_TREASURY);
         uint256 platformClaimed = settlement.claimPlatformRevenue();
         assertEq(platformClaimed, 100, "platform claim mismatch");
@@ -109,11 +122,13 @@ contract OutcomeXLifecycleTest is TestBase {
         assertEq(revenueVault.unsettledRevenueByMachine(machineId), 270, "machine share should be 27%");
 
         vm.expectEmit(true, true, false, true, address(settlement));
-        emit RefundClaimed(BUYER, address(0), 700);
+        emit RefundClaimedDetailed(BUYER, address(0), 700, 0);
         vm.prank(BUYER);
         uint256 buyerClaimed = settlement.claimRefund();
         assertEq(buyerClaimed, 700, "refund claim mismatch");
 
+        vm.expectEmit(true, true, false, true, address(revenueVault));
+        emit MachineRevenueClaimedDetailed(machineId, MACHINE_OWNER, 270, 0, 0);
         vm.prank(MACHINE_OWNER);
         uint256 machineClaimed = revenueVault.claim(machineId);
         assertEq(machineClaimed, 270, "machine claim mismatch");
@@ -142,7 +157,7 @@ contract OutcomeXLifecycleTest is TestBase {
         assertEq(revenueVault.unsettledRevenueByMachine(machineId), 0, "no machine accrual on failed preview");
 
         vm.expectEmit(true, true, false, true, address(settlement));
-        emit RefundClaimed(BUYER_TWO, address(0), 500);
+        emit RefundClaimedDetailed(BUYER_TWO, address(0), 500, 0);
         vm.prank(BUYER_TWO);
         uint256 buyerClaimed = settlement.claimRefund();
         assertEq(buyerClaimed, 500, "refund claim mismatch");

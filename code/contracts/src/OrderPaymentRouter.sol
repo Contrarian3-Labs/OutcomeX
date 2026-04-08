@@ -182,7 +182,7 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
 
         orderId = orderBook.createOrderForBuyer(buyer, machineId, amount);
         bool dividendEligible = _validateOrderForPayment(orderId, amount, buyer);
-        _markOrderPaid(orderId, amount, paymentToken, PAYMENT_SOURCE_HSP, dividendEligible, buyer);
+        _markOrderPaid(orderId, amount, paymentToken, PAYMENT_SOURCE_HSP, dividendEligible, msg.sender);
     }
 
     function _validateOrderForPayment(uint256 orderId, uint256 amount, address expectedBuyer)
@@ -208,9 +208,22 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
         bool dividendEligible,
         address payer
     ) internal {
+        OrderRecord memory order = orderBook.getOrder(orderId);
+        address settlementBeneficiary = orderBook.settlementBeneficiaryByOrder(orderId);
         paymentSourceByOrder[orderId] = paymentSource;
         orderBook.markOrderPaid(orderId, dividendEligible, true, token);
-        emit OrderPaymentReceived(orderId, payer, token, amount, paymentSource);
+        emit PaymentFinalized(
+            orderId,
+            order.machineId,
+            order.buyer,
+            payer,
+            token,
+            amount,
+            paymentSource,
+            settlementBeneficiary,
+            dividendEligible,
+            true
+        );
     }
 
     function _settlementEscrow() internal view returns (address escrow) {

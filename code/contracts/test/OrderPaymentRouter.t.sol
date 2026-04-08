@@ -14,8 +14,24 @@ import {OrderRecord, OrderStatus} from "../src/types/OutcomeXTypes.sol";
 import {TestBase} from "./utils/TestBase.sol";
 
 contract OrderPaymentRouterTest is TestBase {
-    event RefundClaimed(address indexed buyer, address indexed token, uint256 amount);
-    event PlatformRevenueClaimed(address indexed treasury, address indexed token, uint256 amount);
+    event PaymentFinalized(
+        uint256 indexed orderId,
+        uint256 indexed machineId,
+        address indexed buyer,
+        address payer,
+        address paymentToken,
+        uint256 grossAmount,
+        bytes32 paymentSource,
+        address settlementBeneficiary,
+        bool dividendEligible,
+        bool refundAuthorized
+    );
+    event RefundClaimedDetailed(
+        address indexed buyer, address indexed token, uint256 amount, uint256 remainingRefundableAfter
+    );
+    event PlatformRevenueClaimedDetailed(
+        address indexed treasury, address indexed token, uint256 amount, uint256 remainingPlatformAccruedAfter
+    );
 
     address internal constant ADMIN = address(0xA11CE);
     address internal constant PLATFORM_TREASURY = address(0xBEEF);
@@ -81,7 +97,7 @@ contract OrderPaymentRouterTest is TestBase {
         assertEq(settlement.refundableByToken(BUYER, address(usdc)), 1_000_000, "refund ledger mismatch");
 
         vm.expectEmit(true, true, false, true, address(settlement));
-        emit RefundClaimed(BUYER, address(usdc), 1_000_000);
+        emit RefundClaimedDetailed(BUYER, address(usdc), 1_000_000, 0);
         vm.prank(BUYER);
         uint256 claimed = settlement.claimRefund(address(usdc));
         assertEq(claimed, 1_000_000, "refund amount mismatch");
@@ -136,6 +152,19 @@ contract OrderPaymentRouterTest is TestBase {
         uint256 adminBalanceBefore = usdc.balanceOf(ADMIN);
         vm.startPrank(ADMIN);
         usdc.approve(address(router), 1_000_000);
+        vm.expectEmit(true, true, true, true, address(router));
+        emit PaymentFinalized(
+            1,
+            machineId,
+            BUYER,
+            ADMIN,
+            address(usdc),
+            1_000_000,
+            router.PAYMENT_SOURCE_HSP(),
+            MACHINE_OWNER,
+            true,
+            true
+        );
         uint256 orderId = router.createPaidOrderByAdapter(BUYER, machineId, 1_000_000, address(usdc));
         vm.stopPrank();
 
@@ -208,7 +237,7 @@ contract OrderPaymentRouterTest is TestBase {
         assertEq(usdt.balanceOf(address(settlement)), 1_000_000, "escrow should hold full reserve before claims");
 
         vm.expectEmit(true, true, false, true, address(settlement));
-        emit PlatformRevenueClaimed(PLATFORM_TREASURY, address(usdt), 100_000);
+        emit PlatformRevenueClaimedDetailed(PLATFORM_TREASURY, address(usdt), 100_000, 0);
         vm.prank(PLATFORM_TREASURY);
         uint256 claimed = settlement.claimPlatformRevenue(address(usdt));
         assertEq(claimed, 100_000, "platform claim amount mismatch");
@@ -264,7 +293,7 @@ contract OrderPaymentRouterTest is TestBase {
         assertEq(settlement.refundableByToken(BUYER, address(pwr)), 1_000, "refund ledger mismatch");
 
         vm.expectEmit(true, true, false, true, address(settlement));
-        emit RefundClaimed(BUYER, address(pwr), 1_000);
+        emit RefundClaimedDetailed(BUYER, address(pwr), 1_000, 0);
         vm.prank(BUYER);
         uint256 claimed = settlement.claimRefund(address(pwr));
         assertEq(claimed, 1_000, "refund amount mismatch");

@@ -102,7 +102,7 @@ def test_chat_plan_and_payment_intent_expose_quote_outputs(client: TestClient) -
     )
     assert intent_response.status_code == 201
     intent_payload = intent_response.json()
-    assert intent_payload["merchant_order_id"].startswith("merchant_")
+    assert intent_payload["merchant_order_id"] == order["id"]
     assert intent_payload["flow_id"].startswith("flow_")
     assert intent_payload["quote"] == {
         "runtime_cost_cents": 938,

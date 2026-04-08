@@ -17,7 +17,8 @@
 
 - `Slice A` 已完成并合并到 `main`
 - `Slice B` 已完成并合并到 `main`
-- 下一步进入 `Slice C`：`settlement / refund / claim projection` 与链上真值对齐
+- `Slice C` 继续推进中；本轮已完成 canonical event / indexer 对齐
+- 下一步继续围绕 `Slice C` 与其前端消费面收口
 
 ---
 
@@ -254,7 +255,7 @@
 
 优先级：`P1`
 
-状态：`进行中（backend/read-model 继续收口）`
+状态：`进行中（本轮已补 canonical event / indexer 对齐）`
 
 本轮已完成：
 
@@ -282,6 +283,20 @@
     - `claimed_cents`
     - `claimable_cents`
     - `claim_history`
+- 合约事件 schema 已进一步收口成更富业务语义的 canonical events：
+  - `OrderPaymentRouter.PaymentFinalized`
+  - `SettlementController.RefundClaimedDetailed`
+  - `SettlementController.PlatformRevenueClaimedDetailed`
+  - `RevenueVault.MachineRevenueClaimedDetailed`
+- backend live indexer/runtime 已对齐到上述 canonical events：
+  - 已把 `OrderPaymentRouter` 纳入 live subscription
+  - paid 真值优先来自 `PaymentFinalized`
+  - refund / platform / machine claim 的 remaining-after 真值可直接进入 projection
+- backend SQL projection 已按新事件字段收口：
+  - direct payment 即使只拿到 `PaymentFinalized` 也能回写 `onchain_order_id / onchain_machine_id`
+  - machine revenue claim 不再用“投影值减历史 claim”反推，而直接使用链上 claim amount
+  - `machine.has_unsettled_revenue` 不再在 claim 后一律置 `false`，而是跟随 `remainingUnsettledRevenueByMachineAfter`
+- backend `pyproject.toml` 已补 `web3` 依赖，以匹配 live indexer / smoke test 的真实运行需要
 - 验证目标：
   - `code/backend`：`pytest -q tests/indexer/test_sql_projection_store.py tests/api/test_revenue_claims_api.py tests/api/test_settlement_convergence_api.py tests/api/test_order_available_actions_api.py tests/indexer/test_event_normalization.py`
   - `code/contracts`：`forge test -vv`
@@ -289,8 +304,7 @@
 #### 当前状态
 
 - `CONFIRMED / REJECTED / REFUNDED` 三条 settlement 路径已经可以在 read model 里解释
-- 但以下 claim read model 仍不够完整或不够等价：
-  - `PlatformRevenueClaimed`
+- richer claim / remaining-after 真值已进 backend；当前剩余主要是前端尚未完整消费这些字段
 - 当前已经有统一 claim ledger / projection 表来记录 claim 历史与 token 维度
 - refund claim 虽然链上事件没有 order id，但 backend 已通过 FIFO projection 补齐单个 order 的剩余退款读模型
 - platform claim 已补正式 overview read model；当前剩余主要是前端尚未消费该 platform-side API
@@ -326,6 +340,8 @@
 
 - `code/backend`：`pytest -q tests/api/test_order_available_actions_api.py tests/api/test_hsp_webhooks.py tests/integrations/test_hsp_adapter.py tests/api/test_direct_payments_api.py tests/indexer/test_sql_projection_store.py` → `31 passed`
 - `code/backend`：`pytest -q tests/api/test_revenue_overview_api.py tests/api/test_revenue_claims_api.py tests/api/test_machines_api.py tests/indexer/test_sql_projection_store.py` → `21 passed`
+- `code/contracts`：`forge test -vv` → `24 passed`
+- `code/backend`：`source code/backend/.venv/bin/activate && PYTHONDONTWRITEBYTECODE=1 TMPDIR=/tmp pytest -p no:cacheprovider -q` → `195 passed`
 
 #### commit 主题
 

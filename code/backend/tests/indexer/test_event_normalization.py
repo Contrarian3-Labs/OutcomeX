@@ -122,12 +122,49 @@ def test_normalize_revenue_accrued_to_settlement_split_payload() -> None:
     assert normalized.payload.role == "MACHINE_OWNER_DIVIDEND"
 
 
-def test_normalize_refund_claimed_carries_token_and_claim_kind() -> None:
+def test_normalize_payment_finalized_carries_paid_order_context() -> None:
+    decoded = DecodedChainEvent(
+        chain_id=177,
+        contract_name="OrderPaymentRouter",
+        contract_address="0x6000000000000000000000000000000000000006",
+        event_name="PaymentFinalized",
+        block_number=91,
+        block_hash="0xblock-91",
+        transaction_hash="0xbbc",
+        log_index=6,
+        args={
+            "orderId": "12",
+            "machineId": "5",
+            "buyer": "0xB00000000000000000000000000000000000B000",
+            "payer": "0xA00000000000000000000000000000000000A000",
+            "paymentToken": "0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
+            "grossAmount": "1000",
+            "paymentSource": "0x1234",
+            "settlementBeneficiary": "0xC00000000000000000000000000000000000C000",
+            "dividendEligible": True,
+            "refundAuthorized": True,
+        },
+    )
+
+    normalized = normalize_decoded_event(decoded)
+
+    assert normalized.payload.order_id == "12"
+    assert normalized.payload.status == "PAID"
+    assert normalized.payload.buyer == "0xb00000000000000000000000000000000000b000"
+    assert normalized.payload.payer == "0xa00000000000000000000000000000000000a000"
+    assert normalized.payload.payment_token == "0x79aec4eea31d50792f61d1ca0733c18c89524c9e"
+    assert normalized.payload.payment_source == "0x1234"
+    assert normalized.payload.settlement_beneficiary == "0xc00000000000000000000000000000000000c000"
+    assert normalized.payload.dividend_eligible is True
+    assert normalized.payload.refund_authorized is True
+
+
+def test_normalize_refund_claimed_detailed_carries_token_and_remaining_balance() -> None:
     decoded = DecodedChainEvent(
         chain_id=177,
         contract_name="SettlementController",
         contract_address="0x5000000000000000000000000000000000000005",
-        event_name="RefundClaimed",
+        event_name="RefundClaimedDetailed",
         block_number=91,
         block_hash="0xblock-91",
         transaction_hash="0xbbc",
@@ -136,6 +173,7 @@ def test_normalize_refund_claimed_carries_token_and_claim_kind() -> None:
             "buyer": "0xB00000000000000000000000000000000000B000",
             "token": "0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
             "amount": "700",
+            "remainingRefundableAfter": "0",
         },
     )
 
@@ -145,14 +183,15 @@ def test_normalize_refund_claimed_carries_token_and_claim_kind() -> None:
     assert normalized.payload.claim_kind == "refund"
     assert normalized.payload.token_address == "0x79aec4eea31d50792f61d1ca0733c18c89524c9e"
     assert normalized.payload.amount_wei == 700
+    assert normalized.payload.remaining_account_balance_wei == 0
 
 
-def test_normalize_platform_claimed_carries_zero_address_token() -> None:
+def test_normalize_platform_claimed_detailed_carries_zero_address_token() -> None:
     decoded = DecodedChainEvent(
         chain_id=177,
         contract_name="SettlementController",
         contract_address="0x5000000000000000000000000000000000000005",
-        event_name="PlatformRevenueClaimed",
+        event_name="PlatformRevenueClaimedDetailed",
         block_number=92,
         block_hash="0xblock-92",
         transaction_hash="0xbbd",
@@ -161,6 +200,7 @@ def test_normalize_platform_claimed_carries_zero_address_token() -> None:
             "treasury": "0xC00000000000000000000000000000000000C000",
             "token": "0x0000000000000000000000000000000000000000",
             "amount": "100",
+            "remainingPlatformAccruedAfter": "0",
         },
     )
 
@@ -170,6 +210,7 @@ def test_normalize_platform_claimed_carries_zero_address_token() -> None:
     assert normalized.payload.claim_kind == "platform_revenue"
     assert normalized.payload.token_address == "0x0000000000000000000000000000000000000000"
     assert normalized.payload.amount_wei == 100
+    assert normalized.payload.remaining_account_balance_wei == 0
 
 
 def test_try_normalize_unknown_event_returns_none() -> None:

@@ -222,11 +222,12 @@ class SqlProjectionStore:
                     Order.create_order_tx_hash == event.transaction_hash,
                 )
             )
-            if order is not None and payload.status.upper() == "CREATED":
+            if order is not None:
                 order.onchain_order_id = payload.order_id
                 order.onchain_machine_id = payload.machine_id or order.onchain_machine_id
-                order.create_order_event_id = event.event_id
-                order.create_order_block_number = event.block_number
+                if payload.status.upper() == "CREATED" or order.create_order_event_id is None:
+                    order.create_order_event_id = event.event_id
+                    order.create_order_block_number = event.block_number
                 db.add(order)
         return order
 
@@ -350,30 +351,17 @@ class SqlProjectionStore:
                 )
             )
             if existing_claim is None:
-                projected_cents = (
-                    db.scalar(
-                        select(func.coalesce(func.sum(RevenueEntry.machine_share_cents), 0)).where(
-                            RevenueEntry.machine_id == machine.id
-                        )
-                    )
-                    or 0
-                )
-                claimed_cents = (
-                    db.scalar(
-                        select(func.coalesce(func.sum(MachineRevenueClaim.amount_cents), 0)).where(
-                            MachineRevenueClaim.machine_id == machine.id
-                        )
-                    )
-                    or 0
-                )
-                claim_amount_cents = max(0, projected_cents - claimed_cents)
                 db.add(
                     MachineRevenueClaim(
                         machine_id=machine.id,
-                        amount_cents=claim_amount_cents,
+                        amount_cents=payload.amount_wei,
                         tx_hash=event.transaction_hash,
                     )
                 )
-            machine.has_unsettled_revenue = False
+            machine.has_unsettled_revenue = (
+                payload.remaining_unsettled_wei > 0
+                if payload.remaining_unsettled_wei is not None
+                else False
+            )
             db.add(machine)
             db.commit()

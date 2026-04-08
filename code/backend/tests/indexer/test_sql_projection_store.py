@@ -213,7 +213,7 @@ def test_sql_projection_advances_direct_payment_from_created_and_paid_events() -
     )
     store.apply(
         _event(
-            event_name="OrderPaid",
+            event_name="PaymentFinalized",
             transaction_hash="0xpaytx",
             block_number=22,
             payload=OrderLifecycleEvent(
@@ -222,6 +222,12 @@ def test_sql_projection_advances_direct_payment_from_created_and_paid_events() -
                 buyer="0xbuyer",
                 status="PAID",
                 amount_wei=100,
+                payer="0xpayer",
+                payment_token="0x79aec4eea31d50792f61d1ca0733c18c89524c9e",
+                payment_source="0x1234",
+                settlement_beneficiary="0xowner",
+                dividend_eligible=True,
+                refund_authorized=True,
             ),
         )
     )
@@ -349,15 +355,17 @@ def test_sql_projection_records_machine_claim_from_revenue_claimed_event() -> No
     store = SqlProjectionStore(session_factory=session_factory)
     store.apply(
         _event(
-            event_name="RevenueClaimed",
+            event_name="MachineRevenueClaimedDetailed",
             transaction_hash="0xclaimtx",
             block_number=23,
             payload=RevenueClaimedEvent(
                 machine_id="7",
                 account="0xowner",
-                amount_wei=123,
+                amount_wei=900,
                 claim_nonce=None,
                 claim_kind="machine_revenue",
+                remaining_claimable_wei=0,
+                remaining_unsettled_wei=0,
             ),
         )
     )
@@ -369,6 +377,48 @@ def test_sql_projection_records_machine_claim_from_revenue_claimed_event() -> No
         assert len(claims) == 1
         assert claims[0].amount_cents == 900
         assert claims[0].tx_hash == "0xclaimtx"
+
+
+def test_sql_projection_keeps_machine_locked_when_claim_event_reports_remaining_unsettled() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+    with session_factory() as db:
+        machine = Machine(
+            id="m-1",
+            onchain_machine_id="7",
+            display_name="node",
+            owner_user_id="owner-1",
+            has_unsettled_revenue=True,
+        )
+        db.add(machine)
+        db.commit()
+
+    store = SqlProjectionStore(session_factory=session_factory)
+    store.apply(
+        _event(
+            event_name="MachineRevenueClaimedDetailed",
+            transaction_hash="0xclaimtx-2",
+            block_number=24,
+            payload=RevenueClaimedEvent(
+                machine_id="7",
+                account="0xowner",
+                amount_wei=400,
+                claim_nonce=None,
+                claim_kind="machine_revenue",
+                remaining_claimable_wei=0,
+                remaining_unsettled_wei=500,
+            ),
+        )
+    )
+
+    with session_factory() as db:
+        machine = db.get(Machine, "m-1")
+        claims = db.query(MachineRevenueClaim).filter(MachineRevenueClaim.machine_id == "m-1").all()
+        assert machine.has_unsettled_revenue is True
+        assert len(claims) == 1
+        assert claims[0].amount_cents == 400
 
 
 def test_sql_projection_creates_rejected_valid_preview_settlement_projection() -> None:
@@ -515,7 +565,7 @@ def test_sql_projection_records_refund_and_platform_claims_in_unified_claim_ledg
     )
     store.apply(
         _event(
-            event_name="RefundClaimed",
+            event_name="RefundClaimedDetailed",
             transaction_hash="0xrefundclaim",
             payload=RevenueClaimedEvent(
                 machine_id=None,
@@ -524,12 +574,13 @@ def test_sql_projection_records_refund_and_platform_claims_in_unified_claim_ledg
                 claim_nonce=None,
                 claim_kind="refund",
                 token_address="0x79aec4eea31d50792f61d1ca0733c18c89524c9e",
+                remaining_account_balance_wei=0,
             ),
         )
     )
     store.apply(
         _event(
-            event_name="PlatformRevenueClaimed",
+            event_name="PlatformRevenueClaimedDetailed",
             transaction_hash="0xplatformclaim",
             payload=RevenueClaimedEvent(
                 machine_id=None,
@@ -538,6 +589,7 @@ def test_sql_projection_records_refund_and_platform_claims_in_unified_claim_ledg
                 claim_nonce=None,
                 claim_kind="platform_revenue",
                 token_address="0x79aec4eea31d50792f61d1ca0733c18c89524c9e",
+                remaining_account_balance_wei=0,
             ),
         )
     )

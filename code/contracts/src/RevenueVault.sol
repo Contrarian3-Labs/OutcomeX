@@ -29,7 +29,13 @@ contract RevenueVault is Ownable, IRevenueVault {
         uint256 amount,
         bool dividendEligible
     );
-    event RevenueClaimed(uint256 indexed machineId, address indexed machineOwner, uint256 amount);
+    event MachineRevenueClaimedDetailed(
+        uint256 indexed machineId,
+        address indexed machineOwner,
+        uint256 amount,
+        uint256 remainingClaimableForMachineOwnerAfter,
+        uint256 remainingUnsettledRevenueByMachineAfter
+    );
 
     constructor(address initialOwner, address pwrTokenAddress, address machineAssetAddress) Ownable(initialOwner) {
         pwrToken = PWRToken(pwrTokenAddress);
@@ -81,7 +87,13 @@ contract RevenueVault is Ownable, IRevenueVault {
         bool success = pwrToken.transfer(msg.sender, amount);
         require(success, "PWR_TRANSFER_FAILED");
 
-        emit RevenueClaimed(machineId, msg.sender, amount);
+        emit MachineRevenueClaimedDetailed(
+            machineId,
+            msg.sender,
+            amount,
+            claimableByMachineOwner[machineId][msg.sender],
+            unsettledRevenueByMachine[machineId]
+        );
     }
 
     function hasUnsettledRevenue(uint256 machineId) external view returns (bool) {

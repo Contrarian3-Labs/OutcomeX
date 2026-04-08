@@ -13,18 +13,30 @@ _EVENT_SIGNATURES: dict[tuple[str, str], str] = {
     ("MachineAssetNFT", "Transfer"): "Transfer(address,address,uint256)",
     ("OrderBook", "OrderCreated"): "OrderCreated(uint256,uint256,address,uint256,address)",
     ("OrderBook", "OrderClassified"): "OrderClassified(uint256,bool,bool)",
-    ("OrderBook", "OrderPaid"): "OrderPaid(uint256,uint256,uint256)",
     ("OrderBook", "OrderCancelled"): "OrderCancelled(uint256,uint256,address,uint64,bool)",
     ("OrderBook", "PreviewReady"): "PreviewReady(uint256,uint256,bool)",
     ("OrderBook", "OrderSettled"): "OrderSettled(uint256,uint256,uint8,uint256,uint256,uint256,bool)",
     (
+        "OrderPaymentRouter",
+        "PaymentFinalized",
+    ): "PaymentFinalized(uint256,uint256,address,address,address,uint256,bytes32,address,bool,bool)",
+    (
         "SettlementController",
         "Settled",
     ): "Settled(uint256,uint256,uint8,address,address,uint256,uint256,uint256,uint256,bool)",
-    ("SettlementController", "RefundClaimed"): "RefundClaimed(address,address,uint256)",
-    ("SettlementController", "PlatformRevenueClaimed"): "PlatformRevenueClaimed(address,address,uint256)",
+    (
+        "SettlementController",
+        "RefundClaimedDetailed",
+    ): "RefundClaimedDetailed(address,address,uint256,uint256)",
+    (
+        "SettlementController",
+        "PlatformRevenueClaimedDetailed",
+    ): "PlatformRevenueClaimedDetailed(address,address,uint256,uint256)",
     ("RevenueVault", "RevenueAccrued"): "RevenueAccrued(uint256,uint256,address,uint256,bool)",
-    ("RevenueVault", "RevenueClaimed"): "RevenueClaimed(uint256,address,uint256)",
+    (
+        "RevenueVault",
+        "MachineRevenueClaimedDetailed",
+    ): "MachineRevenueClaimedDetailed(uint256,address,uint256,uint256,uint256)",
     ("PWRToken", "Transfer"): "Transfer(address,address,uint256)",
 }
 
@@ -33,20 +45,21 @@ _EVENT_TOPIC0_BY_SIGNATURE: dict[str, str] = {
     "Transfer(address,address,uint256)": "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
     "OrderCreated(uint256,uint256,address,uint256,address)": "0x10a337bf06bb798704a2c57575959ef9198b9a7c57e24ea27f8e728a620d272d",
     "OrderClassified(uint256,bool,bool)": "0x0214adacbe9e5548bb02fb8f97fce31e344b48dc0868d46d804fb0a07dda244d",
-    "OrderPaid(uint256,uint256,uint256)": "0xe575062745448617c648dfd40a6400faddf8c5a9ab45c59b0f8aaeb3135b23da",
     "OrderCancelled(uint256,uint256,address,uint64,bool)": "0x75745ade561ac203c37b0de71a179d5d1342edfca5fc690daefabbb9905ace65",
     "PreviewReady(uint256,uint256,bool)": "0x153aad31fe4dbe2c67053c077f5e7bf2749b197d34d3e36eaf9f2ee2326cc183",
     "OrderSettled(uint256,uint256,uint8,uint256,uint256,uint256,bool)": "0xe1f40c85f9bbf31b5c51006d63d7e0749be83f9edc49e1290159f1ceac9a48c7",
+    "PaymentFinalized(uint256,uint256,address,address,address,uint256,bytes32,address,bool,bool)": "0x850b624ea957fa98195ba9402674a7e91432c8c512c4ed1afb7d96d80feab57a",
     "Settled(uint256,uint256,uint8,address,address,uint256,uint256,uint256,uint256,bool)": "0xcb5ad5c3a251c59218f10948d147c1c5e275fa0e9f397ee51162ad3160a5f32a",
     "RevenueAccrued(uint256,uint256,address,uint256,bool)": "0x133741d3b1dc341b0ad5d327217a1c25c679f1a3af5000b388b703ffdc63fbc1",
-    "RevenueClaimed(uint256,address,uint256)": "0xb9e8470097faa00e83252475f2ee4b69007b0bb2405268ebec248676998a21b3",
-    "RefundClaimed(address,address,uint256)": "0x39bed68a008a68cbf907d7ff6bc3629912af6516cb837cfa3f871ad9f2b8a944",
-    "PlatformRevenueClaimed(address,address,uint256)": "0x2f48e090d0e0f4a9b71b6daf952883ac941749f52ee4f6adb8d18d25d6410921",
+    "RefundClaimedDetailed(address,address,uint256,uint256)": "0x10587e6af1b0fe52f3da9b47862326ef4ddc900298494f60d0b065f14d846630",
+    "PlatformRevenueClaimedDetailed(address,address,uint256,uint256)": "0xff68820b68e706e0f608a3cdbf9bd873e497069a7f1fca80aa1614050230f101",
+    "MachineRevenueClaimedDetailed(uint256,address,uint256,uint256,uint256)": "0xebe5911c4f80b9ac15afb5a4eca8e737e84e02be5c310106f58d771d8e1391f9",
 }
 
 _CONTRACT_ENV_KEYS: dict[str, str] = {
     "MachineAssetNFT": "OUTCOMEX_ONCHAIN_MACHINE_ASSET_ADDRESS",
     "OrderBook": "OUTCOMEX_ONCHAIN_ORDER_BOOK_ADDRESS",
+    "OrderPaymentRouter": "OUTCOMEX_ONCHAIN_ORDER_PAYMENT_ROUTER_ADDRESS",
     "SettlementController": "OUTCOMEX_ONCHAIN_SETTLEMENT_CONTROLLER_ADDRESS",
     "RevenueVault": "OUTCOMEX_ONCHAIN_REVENUE_VAULT_ADDRESS",
     "PWRToken": "OUTCOMEX_ONCHAIN_PWR_TOKEN_ADDRESS",
@@ -109,19 +122,6 @@ _EVENT_ABIS: dict[tuple[str, str], Mapping[str, Any]] = {
     },
     (
         "OrderBook",
-        "OrderPaid",
-    ): {
-        "type": "event",
-        "name": "OrderPaid",
-        "inputs": [
-            {"indexed": True, "name": "orderId", "type": "uint256"},
-            {"indexed": True, "name": "machineId", "type": "uint256"},
-            {"indexed": False, "name": "grossAmount", "type": "uint256"},
-        ],
-        "anonymous": False,
-    },
-    (
-        "OrderBook",
         "OrderCancelled",
     ): {
         "type": "event",
@@ -166,6 +166,26 @@ _EVENT_ABIS: dict[tuple[str, str], Mapping[str, Any]] = {
         "anonymous": False,
     },
     (
+        "OrderPaymentRouter",
+        "PaymentFinalized",
+    ): {
+        "type": "event",
+        "name": "PaymentFinalized",
+        "inputs": [
+            {"indexed": True, "name": "orderId", "type": "uint256"},
+            {"indexed": True, "name": "machineId", "type": "uint256"},
+            {"indexed": True, "name": "buyer", "type": "address"},
+            {"indexed": False, "name": "payer", "type": "address"},
+            {"indexed": False, "name": "paymentToken", "type": "address"},
+            {"indexed": False, "name": "grossAmount", "type": "uint256"},
+            {"indexed": False, "name": "paymentSource", "type": "bytes32"},
+            {"indexed": False, "name": "settlementBeneficiary", "type": "address"},
+            {"indexed": False, "name": "dividendEligible", "type": "bool"},
+            {"indexed": False, "name": "refundAuthorized", "type": "bool"},
+        ],
+        "anonymous": False,
+    },
+    (
         "SettlementController",
         "Settled",
     ): {
@@ -187,27 +207,29 @@ _EVENT_ABIS: dict[tuple[str, str], Mapping[str, Any]] = {
     },
     (
         "SettlementController",
-        "RefundClaimed",
+        "RefundClaimedDetailed",
     ): {
         "type": "event",
-        "name": "RefundClaimed",
+        "name": "RefundClaimedDetailed",
         "inputs": [
             {"indexed": True, "name": "buyer", "type": "address"},
             {"indexed": True, "name": "token", "type": "address"},
             {"indexed": False, "name": "amount", "type": "uint256"},
+            {"indexed": False, "name": "remainingRefundableAfter", "type": "uint256"},
         ],
         "anonymous": False,
     },
     (
         "SettlementController",
-        "PlatformRevenueClaimed",
+        "PlatformRevenueClaimedDetailed",
     ): {
         "type": "event",
-        "name": "PlatformRevenueClaimed",
+        "name": "PlatformRevenueClaimedDetailed",
         "inputs": [
             {"indexed": True, "name": "treasury", "type": "address"},
             {"indexed": True, "name": "token", "type": "address"},
             {"indexed": False, "name": "amount", "type": "uint256"},
+            {"indexed": False, "name": "remainingPlatformAccruedAfter", "type": "uint256"},
         ],
         "anonymous": False,
     },
@@ -228,14 +250,16 @@ _EVENT_ABIS: dict[tuple[str, str], Mapping[str, Any]] = {
     },
     (
         "RevenueVault",
-        "RevenueClaimed",
+        "MachineRevenueClaimedDetailed",
     ): {
         "type": "event",
-        "name": "RevenueClaimed",
+        "name": "MachineRevenueClaimedDetailed",
         "inputs": [
             {"indexed": True, "name": "machineId", "type": "uint256"},
             {"indexed": True, "name": "machineOwner", "type": "address"},
             {"indexed": False, "name": "amount", "type": "uint256"},
+            {"indexed": False, "name": "remainingClaimableForMachineOwnerAfter", "type": "uint256"},
+            {"indexed": False, "name": "remainingUnsettledRevenueByMachineAfter", "type": "uint256"},
         ],
         "anonymous": False,
     },

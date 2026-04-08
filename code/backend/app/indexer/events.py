@@ -14,6 +14,12 @@ def _normalize_address(value: Any) -> str:
     return str(value).lower()
 
 
+def _normalize_bytes32(value: Any) -> str:
+    if isinstance(value, bytes):
+        return f"0x{value.hex()}"
+    return str(value).lower()
+
+
 def _as_int(value: Any, *, field_name: str) -> int:
     if isinstance(value, int):
         return value
@@ -64,6 +70,12 @@ class OrderLifecycleEvent:
     amount_wei: int | None
     cancelled_at: int | None = None
     cancelled_as_expired: bool | None = None
+    payer: str | None = None
+    payment_token: str | None = None
+    payment_source: str | None = None
+    settlement_beneficiary: str | None = None
+    dividend_eligible: bool | None = None
+    refund_authorized: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +96,9 @@ class RevenueClaimedEvent:
     claim_nonce: int | None
     claim_kind: str
     token_address: str | None = None
+    remaining_account_balance_wei: int | None = None
+    remaining_claimable_wei: int | None = None
+    remaining_unsettled_wei: int | None = None
 
 
 @dataclass(frozen=True)
@@ -134,6 +149,7 @@ ORDER_EVENT_NAMES = {
     "OrderCreated",
     "OrderClassified",
     "OrderPaid",
+    "PaymentFinalized",
     "OrderCancelled",
     "PreviewReady",
     "OrderSettled",
@@ -197,6 +213,7 @@ def _normalize_order_payload(event_name: str, args: Mapping[str, Any]) -> OrderL
         "OrderCreated": "CREATED",
         "OrderClassified": "CLASSIFIED",
         "OrderPaid": "PAID",
+        "PaymentFinalized": "PAID",
         "OrderCancelled": "CANCELLED",
         "PreviewReady": "PREVIEW_READY",
     }
@@ -212,7 +229,7 @@ def _normalize_order_payload(event_name: str, args: Mapping[str, Any]) -> OrderL
         gross_amount = _pick(args, "grossAmount", "amountWei", required=False)
         if gross_amount is not None:
             amount_wei = _as_int(gross_amount, field_name="gross_amount")
-    elif event_name == "OrderPaid":
+    elif event_name in {"OrderPaid", "PaymentFinalized"}:
         gross_amount = _pick(args, "grossAmount", "amountWei", required=False)
         if gross_amount is not None:
             amount_wei = _as_int(gross_amount, field_name="gross_amount")
@@ -256,6 +273,36 @@ def _normalize_order_payload(event_name: str, args: Mapping[str, Any]) -> OrderL
             if _pick(args, "expired", required=False) is not None
             else None
         ),
+        payer=(
+            _normalize_address(_pick(args, "payer", required=False))
+            if _pick(args, "payer", required=False) is not None
+            else None
+        ),
+        payment_token=(
+            _normalize_address(_pick(args, "paymentToken", "token", required=False))
+            if _pick(args, "paymentToken", "token", required=False) is not None
+            else None
+        ),
+        payment_source=(
+            _normalize_bytes32(_pick(args, "paymentSource", required=False))
+            if _pick(args, "paymentSource", required=False) is not None
+            else None
+        ),
+        settlement_beneficiary=(
+            _normalize_address(_pick(args, "settlementBeneficiary", required=False))
+            if _pick(args, "settlementBeneficiary", required=False) is not None
+            else None
+        ),
+        dividend_eligible=(
+            _as_bool(_pick(args, "dividendEligible", required=False), field_name="dividend_eligible")
+            if _pick(args, "dividendEligible", required=False) is not None
+            else None
+        ),
+        refund_authorized=(
+            _as_bool(_pick(args, "refundAuthorized", required=False), field_name="refund_authorized")
+            if _pick(args, "refundAuthorized", required=False) is not None
+            else None
+        ),
     )
 
 
@@ -278,16 +325,29 @@ def _normalize_revenue_payload(event_name: str, args: Mapping[str, Any]) -> Sett
             bps=None,
         )
 
-    if event_name in {"RevenueClaimed", "RefundClaimed", "PlatformRevenueClaimed"}:
+    if event_name in {
+        "RevenueClaimed",
+        "RefundClaimed",
+        "PlatformRevenueClaimed",
+        "MachineRevenueClaimedDetailed",
+        "RefundClaimedDetailed",
+        "PlatformRevenueClaimedDetailed",
+    }:
         account_field_by_event = {
             "RevenueClaimed": ("machineOwner", "account"),
             "RefundClaimed": ("buyer", "account"),
             "PlatformRevenueClaimed": ("treasury", "account"),
+            "MachineRevenueClaimedDetailed": ("machineOwner", "account"),
+            "RefundClaimedDetailed": ("buyer", "account"),
+            "PlatformRevenueClaimedDetailed": ("treasury", "account"),
         }
         claim_kind_by_event = {
             "RevenueClaimed": "machine_revenue",
             "RefundClaimed": "refund",
             "PlatformRevenueClaimed": "platform_revenue",
+            "MachineRevenueClaimedDetailed": "machine_revenue",
+            "RefundClaimedDetailed": "refund",
+            "PlatformRevenueClaimedDetailed": "platform_revenue",
         }
         account_fields = account_field_by_event[event_name]
         return RevenueClaimedEvent(
@@ -303,6 +363,41 @@ def _normalize_revenue_payload(event_name: str, args: Mapping[str, Any]) -> Sett
             token_address=(
                 _normalize_address(_pick(args, "token", "tokenAddress", required=False))
                 if _pick(args, "token", "tokenAddress", required=False) is not None
+                else None
+            ),
+            remaining_account_balance_wei=(
+                _as_int(
+                    _pick(
+                        args,
+                        "remainingRefundableAfter",
+                        "remainingPlatformAccruedAfter",
+                        required=False,
+                    ),
+                    field_name="remaining_account_balance",
+                )
+                if _pick(
+                    args,
+                    "remainingRefundableAfter",
+                    "remainingPlatformAccruedAfter",
+                    required=False,
+                )
+                is not None
+                else None
+            ),
+            remaining_claimable_wei=(
+                _as_int(
+                    _pick(args, "remainingClaimableForMachineOwnerAfter", required=False),
+                    field_name="remaining_claimable",
+                )
+                if _pick(args, "remainingClaimableForMachineOwnerAfter", required=False) is not None
+                else None
+            ),
+            remaining_unsettled_wei=(
+                _as_int(
+                    _pick(args, "remainingUnsettledRevenueByMachineAfter", required=False),
+                    field_name="remaining_unsettled",
+                )
+                if _pick(args, "remainingUnsettledRevenueByMachineAfter", required=False) is not None
                 else None
             ),
         )
@@ -337,7 +432,15 @@ def normalize_decoded_event(event: DecodedChainEvent) -> NormalizedEvent:
         payload = _normalize_machine_asset_payload(event)
     elif event_name in ORDER_EVENT_NAMES:
         payload = _normalize_order_payload(event_name, event.args)
-    elif event_name in {"RevenueAccrued", "RevenueClaimed", "RefundClaimed", "PlatformRevenueClaimed"}:
+    elif event_name in {
+        "RevenueAccrued",
+        "RevenueClaimed",
+        "RefundClaimed",
+        "PlatformRevenueClaimed",
+        "MachineRevenueClaimedDetailed",
+        "RefundClaimedDetailed",
+        "PlatformRevenueClaimedDetailed",
+    }:
         payload = _normalize_revenue_payload(event_name, event.args)
     elif event_name == "Transfer" and contract_name in {"PWRToken", "SimpleERC20"}:
         payload = _normalize_token_payload(event)

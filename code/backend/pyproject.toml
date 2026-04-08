@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings>=2.5.2",
     "sqlalchemy>=2.0.34",
     "uvicorn[standard]>=0.30.6",
+    "web3>=7.13.0",
 ]
 
 [project.optional-dependencies]
