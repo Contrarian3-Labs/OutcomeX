@@ -14,6 +14,7 @@ from app.domain.rules import has_sufficient_payment
 from app.execution import ExecutionStrategy, IntentRequest
 from app.execution.service import ExecutionEngineService
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
+from app.onchain.claim_state_reader import SettlementClaimStateReader, get_settlement_claim_state_reader
 from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
 from app.onchain.order_writer import OrderWriter, get_order_writer
 from app.runtime.hardware_simulator import get_shared_hardware_simulator
@@ -331,19 +332,43 @@ def list_orders(
 
 
 @router.get("/{order_id}/available-actions", response_model=OrderAvailableActionsResponse)
-def get_order_available_actions(order_id: str, db: Session = Depends(get_db)) -> OrderAvailableActionsResponse:
+def get_order_available_actions(
+    order_id: str,
+    db: Session = Depends(get_db),
+    claim_state_reader: SettlementClaimStateReader = Depends(get_settlement_claim_state_reader),
+    onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
+) -> OrderAvailableActionsResponse:
     order = db.get(Order, order_id)
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    refund_claim_currency = order.latest_success_payment_currency.upper() if order.latest_success_payment_currency else None
+    refund_claim_amount_cents: int | None = None
+    can_claim_refund = False
+    if (
+        order.state == OrderState.CANCELLED
+        and order.settlement_state == SettlementState.DISTRIBUTED
+        and refund_claim_currency is not None
+    ):
+        if _onchain_settlement_enabled(order, onchain_lifecycle):
+            try:
+                refund_claim_amount_cents = claim_state_reader.refundable_amount(
+                    user_id=order.user_id,
+                    currency=refund_claim_currency,
+                )
+            except RuntimeError:
+                refund_claim_amount_cents = 0
+            can_claim_refund = refund_claim_amount_cents > 0
+        else:
+            can_claim_refund = True
     return OrderAvailableActionsResponse(
         order_id=order.id,
         preview_valid=_preview_valid(order),
         can_confirm_result=_can_confirm_result(order, db),
         can_reject_valid_preview=_can_reject_valid_preview(order, db),
         can_refund_failed_or_no_valid_preview=_can_refund_failed_or_no_valid_preview(order, db),
-        can_claim_refund=bool(
-            order.state == OrderState.CANCELLED and order.settlement_state == SettlementState.DISTRIBUTED
-        ),
+        can_claim_refund=can_claim_refund,
+        refund_claim_currency=refund_claim_currency,
+        refund_claim_amount_cents=refund_claim_amount_cents,
     )
 
 

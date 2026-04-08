@@ -14,6 +14,9 @@ import {OrderRecord, OrderStatus} from "../src/types/OutcomeXTypes.sol";
 import {TestBase} from "./utils/TestBase.sol";
 
 contract OrderPaymentRouterTest is TestBase {
+    event RefundClaimed(address indexed buyer, address indexed token, uint256 amount);
+    event PlatformRevenueClaimed(address indexed treasury, address indexed token, uint256 amount);
+
     address internal constant ADMIN = address(0xA11CE);
     address internal constant PLATFORM_TREASURY = address(0xBEEF);
     address internal constant MACHINE_OWNER = address(0xCAFE);
@@ -77,6 +80,8 @@ contract OrderPaymentRouterTest is TestBase {
         assertEq(uint256(order.status), uint256(OrderStatus.Refunded), "expected refunded status");
         assertEq(settlement.refundableByToken(BUYER, address(usdc)), 1_000_000, "refund ledger mismatch");
 
+        vm.expectEmit(true, true, false, true, address(settlement));
+        emit RefundClaimed(BUYER, address(usdc), 1_000_000);
         vm.prank(BUYER);
         uint256 claimed = settlement.claimRefund(address(usdc));
         assertEq(claimed, 1_000_000, "refund amount mismatch");
@@ -202,6 +207,8 @@ contract OrderPaymentRouterTest is TestBase {
         assertEq(revenueVault.unsettledRevenueByMachine(machineId), 900_000, "machine pwr claim mismatch");
         assertEq(usdt.balanceOf(address(settlement)), 1_000_000, "escrow should hold full reserve before claims");
 
+        vm.expectEmit(true, true, false, true, address(settlement));
+        emit PlatformRevenueClaimed(PLATFORM_TREASURY, address(usdt), 100_000);
         vm.prank(PLATFORM_TREASURY);
         uint256 claimed = settlement.claimPlatformRevenue(address(usdt));
         assertEq(claimed, 100_000, "platform claim amount mismatch");
@@ -256,6 +263,8 @@ contract OrderPaymentRouterTest is TestBase {
 
         assertEq(settlement.refundableByToken(BUYER, address(pwr)), 1_000, "refund ledger mismatch");
 
+        vm.expectEmit(true, true, false, true, address(settlement));
+        emit RefundClaimed(BUYER, address(pwr), 1_000);
         vm.prank(BUYER);
         uint256 claimed = settlement.claimRefund(address(pwr));
         assertEq(claimed, 1_000, "refund amount mismatch");

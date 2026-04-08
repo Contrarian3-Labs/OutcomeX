@@ -21,8 +21,8 @@ _EVENT_SIGNATURES: dict[tuple[str, str], str] = {
         "SettlementController",
         "Settled",
     ): "Settled(uint256,uint256,uint8,address,address,uint256,uint256,uint256,uint256,bool)",
-    ("SettlementController", "RefundClaimed"): "RefundClaimed(address,uint256)",
-    ("SettlementController", "PlatformRevenueClaimed"): "PlatformRevenueClaimed(address,uint256)",
+    ("SettlementController", "RefundClaimed"): "RefundClaimed(address,address,uint256)",
+    ("SettlementController", "PlatformRevenueClaimed"): "PlatformRevenueClaimed(address,address,uint256)",
     ("RevenueVault", "RevenueAccrued"): "RevenueAccrued(uint256,uint256,address,uint256,bool)",
     ("RevenueVault", "RevenueClaimed"): "RevenueClaimed(uint256,address,uint256)",
     ("PWRToken", "Transfer"): "Transfer(address,address,uint256)",
@@ -40,8 +40,8 @@ _EVENT_TOPIC0_BY_SIGNATURE: dict[str, str] = {
     "Settled(uint256,uint256,uint8,address,address,uint256,uint256,uint256,uint256,bool)": "0xcb5ad5c3a251c59218f10948d147c1c5e275fa0e9f397ee51162ad3160a5f32a",
     "RevenueAccrued(uint256,uint256,address,uint256,bool)": "0x133741d3b1dc341b0ad5d327217a1c25c679f1a3af5000b388b703ffdc63fbc1",
     "RevenueClaimed(uint256,address,uint256)": "0xb9e8470097faa00e83252475f2ee4b69007b0bb2405268ebec248676998a21b3",
-    "RefundClaimed(address,uint256)": "0x358fe4192934d3bf28ae181feda1f4bd08ca67f5e2fad55582cce5eb67304ae9",
-    "PlatformRevenueClaimed(address,uint256)": "0x62e7c8b581e0a5022d2d514d7e366fe69f77d8b356206261bd2058c838d84a8f",
+    "RefundClaimed(address,address,uint256)": "0x39bed68a008a68cbf907d7ff6bc3629912af6516cb837cfa3f871ad9f2b8a944",
+    "PlatformRevenueClaimed(address,address,uint256)": "0x2f48e090d0e0f4a9b71b6daf952883ac941749f52ee4f6adb8d18d25d6410921",
 }
 
 _CONTRACT_ENV_KEYS: dict[str, str] = {
@@ -193,6 +193,7 @@ _EVENT_ABIS: dict[tuple[str, str], Mapping[str, Any]] = {
         "name": "RefundClaimed",
         "inputs": [
             {"indexed": True, "name": "buyer", "type": "address"},
+            {"indexed": True, "name": "token", "type": "address"},
             {"indexed": False, "name": "amount", "type": "uint256"},
         ],
         "anonymous": False,
@@ -205,6 +206,7 @@ _EVENT_ABIS: dict[tuple[str, str], Mapping[str, Any]] = {
         "name": "PlatformRevenueClaimed",
         "inputs": [
             {"indexed": True, "name": "treasury", "type": "address"},
+            {"indexed": True, "name": "token", "type": "address"},
             {"indexed": False, "name": "amount", "type": "uint256"},
         ],
         "anonymous": False,

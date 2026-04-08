@@ -189,6 +189,28 @@
 
 - 当前这一 slice 只收口了“稳定币主支付轨”，没有改变 HSP 适配器是否具备真实资金入账校验这一更底层安全问题；该问题仍在更高优先级审计项中单独跟踪
 
+#### HSP 当前接入状态记录（2026-04-08）
+
+- backend 已按 `merchant-docs-all-in-one.pdf` 补齐真实接入骨架：
+  - Merchant API HMAC 请求签名
+  - `ES256K` 的 `merchant_authorization` JWT
+  - 文档格式的 webhook 验签：`X-Signature: t=...,v1=...`
+  - `.env.example` 模板
+- 当前代码仍未切到真实 HSP 线上联调，原因是部署环境变量尚未正式填写
+- 目前默认仍可在 `dev/test` 下走 mock-compatible checkout；只有当 HSP live 配置填完整后，才会真正调用 HashKey Merchant API
+- 当前尚未填写 / 尚未在服务器侧确认的关键项：
+  - `OUTCOMEX_HSP_APP_KEY`
+  - `OUTCOMEX_HSP_APP_SECRET`
+  - `OUTCOMEX_HSP_MERCHANT_PRIVATE_KEY_PEM`
+  - `OUTCOMEX_HSP_PAY_TO_ADDRESS`
+  - `OUTCOMEX_HSP_REDIRECT_URL`
+  - `OUTCOMEX_HSP_WEBHOOK_URL`
+- webhook 最终应配置为：
+  - 生产：`https://<backend-domain>/api/v1/payments/hsp/webhooks`
+  - 本地联调：`https://<public-tunnel-domain>/api/v1/payments/hsp/webhooks`
+- 注意：HashKey Merchant 文档要求 `webhook_url` 必须是 `HTTPS`，因此部署前不能用裸 `localhost`
+- 结论：HSP 代码层已到“待填环境变量 + 待服务器部署联调”的状态；最后收尾时只需要填好 `.env`、配置 merchant console 中的 webhook URL、再做一次真实 create-order / webhook smoke
+
 #### 当前状态
 
 - 合约侧 `HSP adapter -> escrow -> mark paid` 路径已经比早期真实很多
@@ -232,26 +254,43 @@
 
 优先级：`P1`
 
+状态：`进行中`
+
+本轮已完成：
+
+- backend projection 已补齐 `REJECTED` 路径的 read model 落地：
+  - `70% refund / 30% rejection fee`
+  - `10% platform / 90% machine` 的 rejection fee split
+  - `SettlementRecord / RevenueEntry / machine.has_unsettled_revenue` 现在可被完整解释
+- backend projection 已补齐 `REFUNDED` 路径的 read model 落地：
+  - `SettlementRecord / RevenueEntry` 会落成 `0 platform / 0 machine`
+  - direct payment 会同步标记为 `PaymentState.REFUNDED`
+  - order 会进入 `CANCELLED + DISTRIBUTED`，与退款完成后的按钮 gating 更一致
+- 合约 `RefundClaimed / PlatformRevenueClaimed` 事件已补 token 维度，便于后端对链上 claim 轨做 token-aware normalization
+- backend `available-actions` 已在链上 runtime 打开时改为读取 authoritative `refundableAmount`，前端也开始消费 `refund_claim_currency / refund_claim_amount_cents`
+- 验证目标：
+  - `code/backend`：`pytest -q tests/indexer/test_sql_projection_store.py tests/api/test_settlement_convergence_api.py tests/api/test_order_available_actions_api.py tests/indexer/test_event_normalization.py`
+  - `code/contracts`：`forge test -vv`
+
 #### 当前状态
 
-- `CONFIRMED` 路径的投影相对完整
-- 但以下路径仍不够完整或不够等价：
-  - `REJECTED`
-  - `REFUNDED`
+- `CONFIRMED / REJECTED / REFUNDED` 三条 settlement 路径已经可以在 read model 里解释
+- 但以下 claim read model 仍不够完整或不够等价：
   - `RefundClaimed`
   - `PlatformRevenueClaimed`
   - `MachineRevenueClaimed`
-- 当前 read model 仍不足以完整表达 settlement 真相
+- 当前还没有“统一 claim ledger / projection 表”来完整表达各类 claim 的历史、token 维度与已领取状态
 
 #### 涉及模块
 
 - 合约：
   - `code/contracts/src/SettlementController.sol`
   - `code/contracts/src/OrderBook.sol`
-  - 如果事件字段不足，再补事件
 - 后端：
   - `code/backend/app/indexer/events.py`
+  - `code/backend/app/indexer/evm_runtime.py`
   - `code/backend/app/indexer/sql_projection.py`
+  - `code/backend/app/api/routes/orders.py`
   - `code/backend/app/api/routes/settlement.py`
   - `code/backend/app/api/routes/revenue.py`
 - 前端：
@@ -264,6 +303,12 @@
 - settlement、reject、refund、claim 在 read model 层都可被完整解释
 - 前端所有相关状态与按钮开放逻辑都以后端 projection 为准
 - 不再靠页面本地公式或静态判断替代真实投影
+
+未完成项：
+
+- `RefundClaimed / PlatformRevenueClaimed / MachineRevenueClaimed` 仍未统一落到单一 claim read model 表
+- platform claim 历史仍主要停留在链上真值 + runtime read，尚未投影成前端可直接消费的 claim ledger
+- `AssetYield` 侧 machine claim history / overview 仍是 beneficiary 聚合问题，后续会与 `Slice D` 一起收口
 
 #### commit 主题
 

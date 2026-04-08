@@ -6,6 +6,7 @@ interface Vm {
     function startPrank(address caller) external;
     function stopPrank() external;
     function expectRevert(bytes calldata) external;
+    function expectEmit(bool, bool, bool, bool, address) external;
     function warp(uint256 newTimestamp) external;
 }
 

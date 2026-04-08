@@ -82,6 +82,8 @@ class RevenueClaimedEvent:
     account: str
     amount_wei: int
     claim_nonce: int | None
+    claim_kind: str
+    token_address: str | None = None
 
 
 @dataclass(frozen=True)
@@ -282,6 +284,11 @@ def _normalize_revenue_payload(event_name: str, args: Mapping[str, Any]) -> Sett
             "RefundClaimed": ("buyer", "account"),
             "PlatformRevenueClaimed": ("treasury", "account"),
         }
+        claim_kind_by_event = {
+            "RevenueClaimed": "machine_revenue",
+            "RefundClaimed": "refund",
+            "PlatformRevenueClaimed": "platform_revenue",
+        }
         account_fields = account_field_by_event[event_name]
         return RevenueClaimedEvent(
             machine_id=(
@@ -292,6 +299,12 @@ def _normalize_revenue_payload(event_name: str, args: Mapping[str, Any]) -> Sett
             account=_normalize_address(_pick(args, *account_fields)),
             amount_wei=_as_int(_pick(args, "amount", "amountWei", "amount_wei"), field_name="amount"),
             claim_nonce=None,
+            claim_kind=claim_kind_by_event[event_name],
+            token_address=(
+                _normalize_address(_pick(args, "token", "tokenAddress", required=False))
+                if _pick(args, "token", "tokenAddress", required=False) is not None
+                else None
+            ),
         )
 
     raise UnsupportedEventNameError(f"Unsupported revenue event_name '{event_name}'")

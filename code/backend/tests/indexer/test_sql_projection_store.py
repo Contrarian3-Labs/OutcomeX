@@ -348,6 +348,7 @@ def test_sql_projection_records_machine_claim_from_revenue_claimed_event() -> No
                 account="0xowner",
                 amount_wei=123,
                 claim_nonce=None,
+                claim_kind="machine_revenue",
             ),
         )
     )
@@ -359,3 +360,133 @@ def test_sql_projection_records_machine_claim_from_revenue_claimed_event() -> No
         assert len(claims) == 1
         assert claims[0].amount_cents == 900
         assert claims[0].tx_hash == "0xclaimtx"
+
+
+def test_sql_projection_creates_rejected_valid_preview_settlement_projection() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+    with session_factory() as db:
+        machine = Machine(id="m-1", display_name="node", owner_user_id="owner-1", has_active_tasks=True)
+        order = Order(
+            id="o-1",
+            onchain_order_id="42",
+            user_id="u-1",
+            machine_id="m-1",
+            chat_session_id="chat-1",
+            user_prompt="build",
+            recommended_plan_summary="plan",
+            quoted_amount_cents=1000,
+            settlement_state=SettlementState.LOCKED,
+            settlement_beneficiary_user_id="owner-1",
+            settlement_is_self_use=False,
+            settlement_is_dividend_eligible=True,
+        )
+        payment = Payment(
+            order_id="o-1",
+            provider="hsp",
+            amount_cents=1000,
+            currency="USDC",
+            state=PaymentState.SUCCEEDED,
+        )
+        db.add_all([machine, order, payment])
+        db.commit()
+
+    store = SqlProjectionStore(session_factory=session_factory)
+    store.apply(
+        _event(
+            event_name="OrderSettled",
+            payload=OrderLifecycleEvent(
+                order_id="42",
+                machine_id="m-1",
+                buyer="0xbuyer",
+                status="REJECTED",
+                amount_wei=1000,
+            ),
+        )
+    )
+
+    with session_factory() as db:
+        machine = db.get(Machine, "m-1")
+        order = db.get(Order, "o-1")
+        settlement = db.query(SettlementRecord).filter(SettlementRecord.order_id == "o-1").first()
+        entry = db.query(RevenueEntry).filter(RevenueEntry.order_id == "o-1").first()
+        assert machine.has_active_tasks is False
+        assert machine.has_unsettled_revenue is True
+        assert order.state == OrderState.CANCELLED
+        assert order.settlement_state == SettlementState.DISTRIBUTED
+        assert settlement is not None
+        assert settlement.gross_amount_cents == 1000
+        assert settlement.platform_fee_cents == 30
+        assert settlement.machine_share_cents == 270
+        assert entry is not None
+        assert entry.platform_fee_cents == 30
+        assert entry.machine_share_cents == 270
+        assert entry.beneficiary_user_id == "owner-1"
+
+
+def test_sql_projection_creates_refunded_settlement_projection_and_marks_payment_refunded() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+    with session_factory() as db:
+        machine = Machine(id="m-1", display_name="node", owner_user_id="owner-1", has_active_tasks=True)
+        order = Order(
+            id="o-1",
+            onchain_order_id="42",
+            user_id="u-1",
+            machine_id="m-1",
+            chat_session_id="chat-1",
+            user_prompt="build",
+            recommended_plan_summary="plan",
+            quoted_amount_cents=1000,
+            settlement_state=SettlementState.LOCKED,
+            settlement_beneficiary_user_id="owner-1",
+            settlement_is_self_use=False,
+            settlement_is_dividend_eligible=True,
+        )
+        payment = Payment(
+            order_id="o-1",
+            provider="onchain_router",
+            amount_cents=1000,
+            currency="USDC",
+            state=PaymentState.SUCCEEDED,
+        )
+        db.add_all([machine, order, payment])
+        db.commit()
+
+    store = SqlProjectionStore(session_factory=session_factory)
+    store.apply(
+        _event(
+            event_name="OrderSettled",
+            transaction_hash="0xrefundtx",
+            payload=OrderLifecycleEvent(
+                order_id="42",
+                machine_id="m-1",
+                buyer="0xbuyer",
+                status="REFUNDED",
+                amount_wei=1000,
+            ),
+        )
+    )
+
+    with session_factory() as db:
+        machine = db.get(Machine, "m-1")
+        order = db.get(Order, "o-1")
+        payment = db.query(Payment).filter(Payment.order_id == "o-1").first()
+        settlement = db.query(SettlementRecord).filter(SettlementRecord.order_id == "o-1").first()
+        entry = db.query(RevenueEntry).filter(RevenueEntry.order_id == "o-1").first()
+        assert machine.has_active_tasks is False
+        assert machine.has_unsettled_revenue is False
+        assert order.state == OrderState.CANCELLED
+        assert order.settlement_state == SettlementState.DISTRIBUTED
+        assert payment.state == PaymentState.REFUNDED
+        assert settlement is not None
+        assert settlement.gross_amount_cents == 1000
+        assert settlement.platform_fee_cents == 0
+        assert settlement.machine_share_cents == 0
+        assert entry is not None
+        assert entry.platform_fee_cents == 0
+        assert entry.machine_share_cents == 0
