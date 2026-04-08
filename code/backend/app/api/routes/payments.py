@@ -363,11 +363,19 @@ def create_payment_intent(
             detail="An active HSP payment already exists for this order",
         )
 
-    merchant_order = container.hsp_adapter.create_payment_intent(
-        order_id=order.id,
-        amount_cents=payload.amount_cents,
-        currency=currency,
-    )
+    try:
+        merchant_order = container.hsp_adapter.create_payment_intent(
+            order_id=order.id,
+            amount_cents=payload.amount_cents,
+            currency=currency,
+            expires_at=order.unpaid_expiry_at,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
     payment = Payment(
         order_id=order.id,
         provider=merchant_order.provider,
@@ -375,6 +383,7 @@ def create_payment_intent(
         merchant_order_id=merchant_order.merchant_order_id,
         flow_id=merchant_order.flow_id,
         checkout_url=merchant_order.payment_url,
+        provider_payload=merchant_order.provider_payload,
         amount_cents=payload.amount_cents,
         currency=currency,
         state=PaymentState.PENDING,

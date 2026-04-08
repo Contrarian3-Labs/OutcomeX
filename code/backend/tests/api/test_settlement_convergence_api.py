@@ -137,3 +137,43 @@ def test_distribute_revenue_requires_projection_and_then_returns_existing_projec
     assert payload["machine_id"] == machine_id
     assert payload["beneficiary_user_id"] == "owner-1"
     assert payload["machine_share_cents"] == 900
+
+
+def test_revenue_distribution_returns_projected_rejected_valid_preview_breakdown(client: TestClient) -> None:
+    machine_id, order_id = _seed_confirmed_paid_order()
+
+    container = get_container()
+    with container.session_factory() as db:
+        settlement = SettlementRecord(
+            id="settlement-rejected",
+            order_id=order_id,
+            gross_amount_cents=1000,
+            platform_fee_cents=30,
+            machine_share_cents=270,
+            state=SettlementState.DISTRIBUTED,
+            distributed_at=datetime.now(timezone.utc),
+        )
+        entry = RevenueEntry(
+            id="entry-rejected",
+            order_id=order_id,
+            settlement_id=settlement.id,
+            machine_id=machine_id,
+            beneficiary_user_id="owner-1",
+            gross_amount_cents=1000,
+            platform_fee_cents=30,
+            machine_share_cents=270,
+            is_self_use=False,
+            is_dividend_eligible=True,
+        )
+        order = db.get(Order, order_id)
+        order.state = OrderState.CANCELLED
+        order.settlement_state = SettlementState.DISTRIBUTED
+        db.add_all([settlement, entry, order])
+        db.commit()
+
+    response = client.post(f"/api/v1/revenue/orders/{order_id}/distribute")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["platform_fee_cents"] == 30
+    assert payload["machine_share_cents"] == 270

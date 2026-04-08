@@ -189,6 +189,28 @@
 
 - 当前这一 slice 只收口了“稳定币主支付轨”，没有改变 HSP 适配器是否具备真实资金入账校验这一更底层安全问题；该问题仍在更高优先级审计项中单独跟踪
 
+#### HSP 当前接入状态记录（2026-04-08）
+
+- backend 已按 `merchant-docs-all-in-one.pdf` 补齐真实接入骨架：
+  - Merchant API HMAC 请求签名
+  - `ES256K` 的 `merchant_authorization` JWT
+  - 文档格式的 webhook 验签：`X-Signature: t=...,v1=...`
+  - `.env.example` 模板
+- 当前代码仍未切到真实 HSP 线上联调，原因是部署环境变量尚未正式填写
+- 目前默认仍可在 `dev/test` 下走 mock-compatible checkout；只有当 HSP live 配置填完整后，才会真正调用 HashKey Merchant API
+- 当前尚未填写 / 尚未在服务器侧确认的关键项：
+  - `OUTCOMEX_HSP_APP_KEY`
+  - `OUTCOMEX_HSP_APP_SECRET`
+  - `OUTCOMEX_HSP_MERCHANT_PRIVATE_KEY_PEM`
+  - `OUTCOMEX_HSP_PAY_TO_ADDRESS`
+  - `OUTCOMEX_HSP_REDIRECT_URL`
+  - `OUTCOMEX_HSP_WEBHOOK_URL`
+- webhook 最终应配置为：
+  - 生产：`https://<backend-domain>/api/v1/payments/hsp/webhooks`
+  - 本地联调：`https://<public-tunnel-domain>/api/v1/payments/hsp/webhooks`
+- 注意：HashKey Merchant 文档要求 `webhook_url` 必须是 `HTTPS`，因此部署前不能用裸 `localhost`
+- 结论：HSP 代码层已到“待填环境变量 + 待服务器部署联调”的状态；最后收尾时只需要填好 `.env`、配置 merchant console 中的 webhook URL、再做一次真实 create-order / webhook smoke
+
 #### 当前状态
 
 - 合约侧 `HSP adapter -> escrow -> mark paid` 路径已经比早期真实很多
@@ -231,6 +253,28 @@
 ### 4.3 Slice C - settlement / refund / claim projection 还不等价于链上真相
 
 优先级：`P1`
+
+状态：`进行中`
+
+本轮已完成：
+
+- backend projection 已补齐 `REJECTED` 路径的 read model 落地：
+  - `70% refund / 30% rejection fee`
+  - `10% platform / 90% machine` 的 rejection fee split
+  - `SettlementRecord / RevenueEntry / machine.has_unsettled_revenue` 现在可被完整解释
+- backend projection 已补齐 `REFUNDED` 路径的 read model 落地：
+  - `SettlementRecord / RevenueEntry` 会落成 `0 platform / 0 machine`
+  - direct payment 会同步标记为 `PaymentState.REFUNDED`
+  - order 会进入 `CANCELLED + DISTRIBUTED`，与退款完成后的按钮 gating 更一致
+- 验证：
+  - `code/backend`：`pytest -q tests/indexer/test_sql_projection_store.py tests/api/test_settlement_convergence_api.py tests/api/test_revenue_overview_api.py tests/indexer/test_event_normalization.py` → `19 passed`
+
+本轮未完成：
+
+- `RefundClaimed`
+- `PlatformRevenueClaimed`
+- `MachineRevenueClaimed` 的“统一 claim read model”
+- 这三条仍缺少统一的 projection/accounting 表达；尤其 `RefundClaimed / PlatformRevenueClaimed` 现有链上事件字段不含 token / order 维度，若要完全对齐 read model，可能需要补合约事件字段或补专门 claim projection 表
 
 #### 当前状态
 

@@ -17,9 +17,9 @@ from app.onchain.tx_sender import TransactionSender, get_onchain_transaction_sen
 
 router = APIRouter()
 
-SUCCESS_STATUSES = {"completed", "confirmed", "succeeded"}
-FAILED_STATUSES = {"cancelled", "failed", "rejected"}
-PENDING_STATUSES = {"created", "pending", "processing"}
+SUCCESS_STATUSES = {"completed", "confirmed", "succeeded", "payment-successful"}
+FAILED_STATUSES = {"cancelled", "failed", "rejected", "payment-failed"}
+PENDING_STATUSES = {"created", "pending", "processing", "payment-included"}
 
 
 def _map_hsp_status(status_value: str) -> PaymentState:
@@ -43,15 +43,23 @@ async def ingest_hsp_webhook(
     tx_sender: TransactionSender = Depends(get_onchain_transaction_sender),
 ) -> dict[str, object]:
     body = await request.body()
-    signature = request.headers.get("x-hsp-signature")
-    timestamp = request.headers.get("x-hsp-timestamp")
-    if not container.hsp_adapter.verify_webhook_signature(body=body, signature=signature, timestamp=timestamp):
+    signature_header = request.headers.get("x-signature")
+    legacy_signature = request.headers.get("x-hsp-signature")
+    legacy_timestamp = request.headers.get("x-hsp-timestamp")
+    if not container.hsp_adapter.verify_webhook_signature(
+        body=body,
+        signature_header=signature_header,
+        legacy_signature=legacy_signature,
+        legacy_timestamp=legacy_timestamp,
+    ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid HSP signature")
 
     event = container.hsp_adapter.parse_webhook(body)
-    payment = db.scalar(select(Payment).where(Payment.flow_id == event.flow_id))
+    payment = db.scalar(select(Payment).where(Payment.provider_reference == event.payment_request_id))
     if payment is None:
-        payment = db.scalar(select(Payment).where(Payment.merchant_order_id == event.merchant_order_id))
+        payment = db.scalar(select(Payment).where(Payment.merchant_order_id == event.cart_mandate_id))
+    if payment is None and event.flow_id:
+        payment = db.scalar(select(Payment).where(Payment.flow_id == event.flow_id))
     if payment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found")
 
