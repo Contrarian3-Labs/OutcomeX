@@ -334,8 +334,16 @@
   - `projected_cents` 按 `RevenueEntry.beneficiary_user_id`
   - `claimed_cents / withdraw_history` 按统一 claim ledger 中的 `machine_revenue` + `claimant_user_id`
 - 因此“机器转手后，旧 beneficiary 的历史收益 / 已领取记录消失”这个问题已被修正
+- `GET /api/v1/machines` 现已补充机器级锁定金额真值：
+  - `locked_unsettled_revenue_cents`
+  - `locked_unsettled_revenue_pwr`
+  - `locked_beneficiary_user_ids`
+- `MyMachines` / `NodeDetail` 已开始直接消费这组字段，明确区分：
+  - 谁拥有这笔收益（beneficiary）
+  - 是多少未领取收益仍在锁住机器转移（asset-level locked amount）
 - 验证：
   - `code/backend`：`pytest -q tests/api/test_revenue_overview_api.py tests/api/test_revenue_claims_api.py tests/indexer/test_sql_projection_store.py` → `13 passed`
+  - `code/backend`：`pytest -q tests/api/test_machines_api.py tests/api/test_revenue_overview_api.py tests/api/test_revenue_claims_api.py` → `10 passed`
 
 #### 当前状态
 
@@ -344,10 +352,10 @@
   - `claimableByMachineOwner`
 - backend 当前仍有两类近似：
   - machine-level summary 仍主要按 machine aggregate 聚合
-  - transfer readiness 仍偏布尔近似，不是金额级递减
+  - transfer readiness 虽然已经改成 read model 权威字段，但更细的锁定金额变化仍依赖 projection 刷新时效
 - 这会导致：
-  - 某些 machine 页面展示仍未完全区分“asset-level locked amount”与“beneficiary-level revenue ownership”
-  - claim 后 transfer guard 与合约 guard 可能不完全一致
+  - claim 后 transfer guard 与合约 guard 可能在极短同步窗口内不完全一致
+  - 某些后续页面仍可能继续复用旧的布尔心智，而不是直接展示锁定金额
 
 #### 涉及模块
 
@@ -369,6 +377,7 @@
 - revenue overview 按 beneficiary 口径聚合
 - unsettled revenue / claim 后余额按 amount 真值变化
 - transfer readiness 只由权威 read model 决定
+- machine 页面显式展示锁定金额与 beneficiary 提示，不再只给布尔 blocked / unblocked
 
 #### commit 主题
 
