@@ -3,6 +3,7 @@ import hmac
 import json
 import os
 from datetime import datetime, timezone
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -127,17 +128,45 @@ def client(tmp_path) -> tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster,
 
 def _sign_payload(payload: dict) -> tuple[bytes, dict[str, str]]:
     body = json.dumps(payload).encode("utf-8")
-    timestamp = "1712233445"
+    timestamp = str(int(time.time()))
     signature = hmac.new(
         b"dev-key",
         msg=f"{timestamp}.".encode("utf-8") + body,
         digestmod=hashlib.sha256,
     ).hexdigest()
     return body, {
-        "x-hsp-signature": signature,
-        "x-hsp-timestamp": timestamp,
+        "x-signature": f"t={timestamp},v1={signature}",
         "content-type": "application/json",
     }
+
+
+def _webhook_payload(
+    payment: dict,
+    *,
+    status: str,
+    amount_cents: int = 500,
+    currency: str = "USDC",
+    tx_signature: str | None = None,
+    request_id: str = "req_1",
+) -> dict:
+    payload = {
+        "event_type": "payment",
+        "payment_request_id": payment["provider_reference"],
+        "request_id": request_id,
+        "cart_mandate_id": payment["merchant_order_id"],
+        "payer_address": "0x1234567890abcdef1234567890abcdef12345678",
+        "amount": str(amount_cents * 10_000),
+        "token": currency,
+        "token_address": "0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
+        "chain": "eip155:133",
+        "network": "hashkey-testnet",
+        "status": status,
+        "created_at": "2026-04-08T12:00:00Z",
+    }
+    if tx_signature:
+        payload["tx_signature"] = tx_signature
+        payload["completed_at"] = "2026-04-08T12:00:30Z"
+    return payload
 
 
 def _create_machine(client: TestClient, owner_user_id: str = "owner-1") -> dict:
@@ -210,15 +239,7 @@ def test_hsp_webhook_is_idempotent_and_freezes_settlement_policy(
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine_id=machine["id"])
     payment = _create_payment_intent(test_client, order_id=order["id"])
-    payload = {
-        "event_id": "evt_1",
-        "merchant_order_id": payment["merchant_order_id"],
-        "flow_id": payment["flow_id"],
-        "status": "completed",
-        "amount_cents": 500,
-        "currency": "USDC",
-        "tx_hash": "0xabc123",
-    }
+    payload = _webhook_payload(payment, status="payment-successful", currency="USDC", tx_signature="0xabc123", request_id="evt_1")
     body, headers = _sign_payload(payload)
 
     first_response = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
@@ -269,7 +290,7 @@ def test_hsp_webhook_is_idempotent_and_freezes_settlement_policy(
         persisted_payment = session.get(Payment, payment["payment_id"])
         assert persisted_payment is not None
         assert persisted_payment.callback_event_id == "evt_1"
-        assert persisted_payment.callback_state == "completed"
+        assert persisted_payment.callback_state == "payment-successful"
         assert persisted_payment.callback_tx_hash == "0xabc123"
 
 
@@ -287,15 +308,13 @@ def test_hsp_webhook_marks_authoritative_paid_projection_when_order_is_already_a
         create_order_event_id="OrderCreated:oc_existing:0xexistingtx",
         create_order_block_number=3330000,
     )
-    payload = {
-        "event_id": "evt_existing_paid",
-        "merchant_order_id": payment["merchant_order_id"],
-        "flow_id": payment["flow_id"],
-        "status": "completed",
-        "amount_cents": 500,
-        "currency": "USDC",
-        "tx_hash": "0xexistingpaid",
-    }
+    payload = _webhook_payload(
+        payment,
+        status="payment-successful",
+        currency="USDC",
+        tx_signature="0xexistingpaid",
+        request_id="evt_existing_paid",
+    )
     body, headers = _sign_payload(payload)
 
     response = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
@@ -325,17 +344,11 @@ def test_hsp_webhook_rejects_invalid_signatures(
         "/api/v1/payments/hsp/webhooks",
         content=json.dumps(
             {
-                "event_id": "evt_invalid",
-                "merchant_order_id": payment["merchant_order_id"],
-                "flow_id": payment["flow_id"],
-                "status": "completed",
-                "amount_cents": 500,
-                "currency": "USDC",
+                **_webhook_payload(payment, status="payment-successful", currency="USDC", request_id="evt_invalid"),
             }
         ),
         headers={
-            "x-hsp-signature": "bad-signature",
-            "x-hsp-timestamp": "1712233445",
+            "x-signature": "t=1712233445,v1=bad-signature",
             "content-type": "application/json",
         },
     )
@@ -351,15 +364,13 @@ def test_hsp_webhook_rejects_unresolved_buyer_wallet(
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine_id=machine["id"], user_id="user-unmapped")
     payment = _create_payment_intent(test_client, order_id=order["id"])
-    payload = {
-        "event_id": "evt_unmapped",
-        "merchant_order_id": payment["merchant_order_id"],
-        "flow_id": payment["flow_id"],
-        "status": "completed",
-        "amount_cents": 500,
-        "currency": "USDC",
-        "tx_hash": "0xdeadbeef",
-    }
+    payload = _webhook_payload(
+        payment,
+        status="payment-successful",
+        currency="USDC",
+        tx_signature="0xdeadbeef",
+        request_id="evt_unmapped",
+    )
     body, headers = _sign_payload(payload)
 
     response = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
@@ -405,15 +416,13 @@ def test_hsp_payment_intent_supports_usdt_checkout_and_success_webhook(
 
     assert payment["provider"] == "hsp"
 
-    payload = {
-        "event_id": "evt_usdt_success",
-        "merchant_order_id": payment["merchant_order_id"],
-        "flow_id": payment["flow_id"],
-        "status": "completed",
-        "amount_cents": 500,
-        "currency": "USDT",
-        "tx_hash": "0xusdtok",
-    }
+    payload = _webhook_payload(
+        payment,
+        status="payment-successful",
+        currency="USDT",
+        tx_signature="0xusdtok",
+        request_id="evt_usdt_success",
+    )
     body, headers = _sign_payload(payload)
 
     response = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
@@ -473,28 +482,24 @@ def test_hsp_webhook_rejects_terminal_state_downgrade_after_success(
     order = _create_order(test_client, machine_id=machine["id"])
     payment = _create_payment_intent(test_client, order_id=order["id"])
 
-    success_payload = {
-        "event_id": "evt_success",
-        "merchant_order_id": payment["merchant_order_id"],
-        "flow_id": payment["flow_id"],
-        "status": "completed",
-        "amount_cents": 500,
-        "currency": "USDC",
-        "tx_hash": "0xok",
-    }
+    success_payload = _webhook_payload(
+        payment,
+        status="payment-successful",
+        currency="USDC",
+        tx_signature="0xok",
+        request_id="evt_success",
+    )
     success_body, success_headers = _sign_payload(success_payload)
     success_response = test_client.post("/api/v1/payments/hsp/webhooks", content=success_body, headers=success_headers)
     assert success_response.status_code == 200
 
-    failed_payload = {
-        "event_id": "evt_failed_late",
-        "merchant_order_id": payment["merchant_order_id"],
-        "flow_id": payment["flow_id"],
-        "status": "failed",
-        "amount_cents": 500,
-        "currency": "USDC",
-        "tx_hash": "0xfail",
-    }
+    failed_payload = _webhook_payload(
+        payment,
+        status="payment-failed",
+        currency="USDC",
+        tx_signature="0xfail",
+        request_id="evt_failed_late",
+    )
     failed_body, failed_headers = _sign_payload(failed_payload)
     failed_response = test_client.post("/api/v1/payments/hsp/webhooks", content=failed_body, headers=failed_headers)
     assert failed_response.status_code == 409

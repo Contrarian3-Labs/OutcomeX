@@ -44,6 +44,18 @@ class Container:
         self.hsp_adapter = HSPAdapter(
             base_url=settings.hsp_base_url,
             api_key=settings.hsp_api_key,
+            api_base_url=settings.hsp_api_base_url,
+            app_key=settings.hsp_app_key,
+            app_secret=settings.hsp_app_secret,
+            merchant_name=settings.hsp_merchant_name,
+            merchant_private_key_pem=settings.hsp_merchant_private_key_pem,
+            network=settings.hsp_network,
+            chain_id=settings.onchain_chain_id,
+            pay_to_address=settings.hsp_pay_to_address,
+            redirect_url=settings.hsp_redirect_url,
+            webhook_tolerance_seconds=settings.hsp_webhook_tolerance_seconds,
+            usdc_address=settings.onchain_usdc_address,
+            usdt_address=settings.onchain_usdt_address,
         )
         self.buyer_address_resolver = BuyerAddressResolver.from_json(settings.buyer_wallet_map_json)
         self.user_signer_registry = UserSignerRegistry.from_json(settings.user_signer_private_keys_json)

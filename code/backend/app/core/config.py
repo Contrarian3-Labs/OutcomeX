@@ -15,6 +15,16 @@ class Settings(BaseSettings):
     auto_create_tables: bool = True
     hsp_base_url: str = "https://mock-hsp.local"
     hsp_api_key: str = "dev-key"
+    hsp_api_base_url: str = "https://merchant-qa.hashkeymerchant.com"
+    hsp_app_key: str = ""
+    hsp_app_secret: str = ""
+    hsp_webhook_url: str = ""
+    hsp_redirect_url: str = ""
+    hsp_merchant_name: str = "OutcomeX"
+    hsp_merchant_private_key_pem: str = ""
+    hsp_network: str = "hashkey-testnet"
+    hsp_pay_to_address: str = ""
+    hsp_webhook_tolerance_seconds: int = 300
     dashscope_api_key: str = ""
     dashscope_base_url: str = "https://dashscope-intl.aliyuncs.com"
     dashscope_compatible_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
