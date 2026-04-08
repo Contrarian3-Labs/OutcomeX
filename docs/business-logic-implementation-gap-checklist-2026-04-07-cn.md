@@ -268,8 +268,12 @@
   - order 会进入 `CANCELLED + DISTRIBUTED`，与退款完成后的按钮 gating 更一致
 - 合约 `RefundClaimed / PlatformRevenueClaimed` 事件已补 token 维度，便于后端对链上 claim 轨做 token-aware normalization
 - backend `available-actions` 已在链上 runtime 打开时改为读取 authoritative `refundableAmount`，前端也开始消费 `refund_claim_currency / refund_claim_amount_cents`
+- backend 已新增统一 claim ledger 投影与查询接口：
+  - `SettlementClaimRecord` 统一记录 `refund / platform_revenue / machine_revenue`
+  - `GET /api/v1/revenue/accounts/{user_id}/claims` 可返回按时间倒序的 claim history
+  - `SpendWallet` 已开始消费该接口，`Refund Records / PWR Settlement Ledger` 不再完全是 placeholder
 - 验证目标：
-  - `code/backend`：`pytest -q tests/indexer/test_sql_projection_store.py tests/api/test_settlement_convergence_api.py tests/api/test_order_available_actions_api.py tests/indexer/test_event_normalization.py`
+  - `code/backend`：`pytest -q tests/indexer/test_sql_projection_store.py tests/api/test_revenue_claims_api.py tests/api/test_settlement_convergence_api.py tests/api/test_order_available_actions_api.py tests/indexer/test_event_normalization.py`
   - `code/contracts`：`forge test -vv`
 
 #### 当前状态
@@ -279,7 +283,8 @@
   - `RefundClaimed`
   - `PlatformRevenueClaimed`
   - `MachineRevenueClaimed`
-- 当前还没有“统一 claim ledger / projection 表”来完整表达各类 claim 的历史、token 维度与已领取状态
+- 当前已经有统一 claim ledger / projection 表来记录 claim 历史与 token 维度
+- 但它仍缺少 order 维度，因此 refund claim 暂时只能做到“账户级 / 币种级”已领取状态，而不是精确回写到单个 order
 
 #### 涉及模块
 
@@ -306,8 +311,8 @@
 
 未完成项：
 
-- `RefundClaimed / PlatformRevenueClaimed / MachineRevenueClaimed` 仍未统一落到单一 claim read model 表
-- platform claim 历史仍主要停留在链上真值 + runtime read，尚未投影成前端可直接消费的 claim ledger
+- refund claim 仍未精确绑定到单个 order，因为现有链上事件没有 order 维度
+- platform claim 虽已进入统一 claim ledger，但前端还没有专门 platform-side dashboard
 - `AssetYield` 侧 machine claim history / overview 仍是 beneficiary 聚合问题，后续会与 `Slice D` 一起收口
 
 #### commit 主题

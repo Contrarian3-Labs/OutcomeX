@@ -4,7 +4,16 @@ from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timezone
 
 from app.domain.enums import OrderState, PaymentState, PreviewState, SettlementState
-from app.domain.models import Base, Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementRecord
+from app.domain.models import (
+    Base,
+    Machine,
+    MachineRevenueClaim,
+    Order,
+    Payment,
+    RevenueEntry,
+    SettlementClaimRecord,
+    SettlementRecord,
+)
 from app.indexer.events import (
     MachineAssetEvent,
     NormalizedEvent,
@@ -490,3 +499,55 @@ def test_sql_projection_creates_refunded_settlement_projection_and_marks_payment
         assert entry is not None
         assert entry.platform_fee_cents == 0
         assert entry.machine_share_cents == 0
+
+
+def test_sql_projection_records_refund_and_platform_claims_in_unified_claim_ledger() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+    store = SqlProjectionStore(
+        session_factory=session_factory,
+        owner_resolver=lambda wallet: {
+            "0xbuyer000000000000000000000000000000000000": "buyer-1",
+            "0xtreasury00000000000000000000000000000000": "platform",
+        }.get(wallet),
+    )
+    store.apply(
+        _event(
+            event_name="RefundClaimed",
+            transaction_hash="0xrefundclaim",
+            payload=RevenueClaimedEvent(
+                machine_id=None,
+                account="0xbuyer000000000000000000000000000000000000",
+                amount_wei=700,
+                claim_nonce=None,
+                claim_kind="refund",
+                token_address="0x79aec4eea31d50792f61d1ca0733c18c89524c9e",
+            ),
+        )
+    )
+    store.apply(
+        _event(
+            event_name="PlatformRevenueClaimed",
+            transaction_hash="0xplatformclaim",
+            payload=RevenueClaimedEvent(
+                machine_id=None,
+                account="0xtreasury00000000000000000000000000000000",
+                amount_wei=30,
+                claim_nonce=None,
+                claim_kind="platform_revenue",
+                token_address="0x79aec4eea31d50792f61d1ca0733c18c89524c9e",
+            ),
+        )
+    )
+
+    with session_factory() as db:
+        claims = db.query(SettlementClaimRecord).order_by(SettlementClaimRecord.claimed_at.asc()).all()
+        assert len(claims) == 2
+        assert claims[0].claim_kind == "refund"
+        assert claims[0].claimant_user_id == "buyer-1"
+        assert claims[0].amount_cents == 700
+        assert claims[1].claim_kind == "platform_revenue"
+        assert claims[1].claimant_user_id == "platform"
+        assert claims[1].amount_cents == 30

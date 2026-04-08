@@ -3,11 +3,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.config import get_settings
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.enums import PaymentState, SettlementState
-from app.domain.models import Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementRecord
+from app.domain.models import Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementClaimRecord, SettlementRecord
 from app.domain.rules import has_sufficient_payment
 from app.schemas.revenue import (
+    RevenueClaimHistoryItem,
     RevenueAccountOverviewResponse,
     RevenueDistributionResponse,
     RevenueEntryResponse,
@@ -94,6 +96,21 @@ def _machine_claimable_cents(*, machine_id: str, db: Session) -> int:
         or 0
     )
     return max(0, projected - claimed)
+
+
+def _currency_from_token_address(token_address: str | None) -> str | None:
+    if token_address is None:
+        return None
+    normalized = token_address.lower()
+    if normalized == "0x0000000000000000000000000000000000000000":
+        return "USDT"
+    settings = get_settings()
+    mapping = {
+        settings.onchain_usdc_address.lower(): "USDC",
+        settings.onchain_usdt_address.lower(): "USDT",
+        settings.onchain_pwr_token_address.lower(): "PWR",
+    }
+    return mapping.get(normalized)
 
 
 @router.post("/orders/{order_id}/distribute", response_model=RevenueDistributionResponse)
@@ -186,5 +203,31 @@ def revenue_account_overview(owner_user_id: str, db: Session = Depends(get_db)) 
         currency=_user_primary_currency(user_id=owner_user_id, db=db),
         withdraw_history=withdraw_history,
     )
+
+
+@router.get("/accounts/{user_id}/claims", response_model=list[RevenueClaimHistoryItem])
+def list_revenue_claims(user_id: str, db: Session = Depends(get_db)) -> list[RevenueClaimHistoryItem]:
+    records = list(
+        db.scalars(
+            select(SettlementClaimRecord)
+            .where(SettlementClaimRecord.claimant_user_id == user_id)
+            .order_by(SettlementClaimRecord.claimed_at.desc(), SettlementClaimRecord.id.desc())
+        )
+    )
+    return [
+        RevenueClaimHistoryItem(
+            id=record.id,
+            claim_kind=record.claim_kind,
+            claimant_user_id=record.claimant_user_id,
+            account_address=record.account_address,
+            token_address=record.token_address,
+            currency=_currency_from_token_address(record.token_address),
+            amount_cents=record.amount_cents,
+            tx_hash=record.tx_hash,
+            machine_id=record.machine_id,
+            claimed_at=record.claimed_at,
+        )
+        for record in records
+    ]
 
 
