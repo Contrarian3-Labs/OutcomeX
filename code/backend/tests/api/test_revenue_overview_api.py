@@ -46,7 +46,7 @@ def client(tmp_path) -> TestClient:
     reset_container_cache()
 
 
-def _seed_machine_with_revenue(*, owner_user_id: str, machine_share_cents: int) -> Machine:
+def _seed_machine_with_revenue(*, owner_user_id: str, machine_share_cents: int, payment_currency: str = "USD") -> Machine:
     container = get_container()
     with container.session_factory() as db:
         machine = Machine(
@@ -76,7 +76,7 @@ def _seed_machine_with_revenue(*, owner_user_id: str, machine_share_cents: int) 
             order_id=order.id,
             provider="hsp",
             amount_cents=quoted_amount_cents,
-            currency="USD",
+            currency=payment_currency,
             state=PaymentState.SUCCEEDED,
         )
         db.add(payment)
@@ -210,5 +210,77 @@ def test_revenue_overview_stays_with_beneficiary_after_machine_owner_changes(cli
     assert new_owner_payload["projected_cents"] == 0
     assert new_owner_payload["claimed_cents"] == 0
     assert new_owner_payload["claimable_cents"] == 0
+
+
+def test_list_machine_revenue_projects_claimed_and_claimable_per_entry_fifo(client: TestClient) -> None:
+    owner_user_id = "owner-machine-fifo"
+    machine = _seed_machine_with_revenue(owner_user_id=owner_user_id, machine_share_cents=400)
+    container = get_container()
+    with container.session_factory() as db:
+        second_order = Order(
+            user_id=owner_user_id,
+            machine_id=machine.id,
+            chat_session_id="chat-yield-2",
+            user_prompt="Produce another deliverable",
+            recommended_plan_summary="Yield test 2",
+            quoted_amount_cents=500,
+            state=OrderState.RESULT_CONFIRMED,
+            settlement_state=SettlementState.DISTRIBUTED,
+        )
+        db.add(second_order)
+        db.flush()
+        second_settlement = SettlementRecord(
+            order_id=second_order.id,
+            gross_amount_cents=500,
+            platform_fee_cents=100,
+            machine_share_cents=300,
+            state=SettlementState.DISTRIBUTED,
+            distributed_at=datetime.now(timezone.utc),
+        )
+        db.add(second_settlement)
+        db.flush()
+        db.add(
+            RevenueEntry(
+                order_id=second_order.id,
+                settlement_id=second_settlement.id,
+                machine_id=machine.id,
+                beneficiary_user_id=owner_user_id,
+                gross_amount_cents=500,
+                platform_fee_cents=100,
+                machine_share_cents=300,
+                is_self_use=False,
+                is_dividend_eligible=True,
+            )
+        )
+        db.add(
+            SettlementClaimRecord(
+                event_id="evt-machine-fifo-claim",
+                claim_kind="machine_revenue",
+                claimant_user_id=owner_user_id,
+                account_address="0xownerfifo",
+                token_address="0x0000000000000000000000000000000000000A11",
+                amount_cents=450,
+                tx_hash="0xfifo-claim",
+                machine_id=machine.id,
+                claimed_at=datetime.now(timezone.utc),
+            )
+        )
+        db.commit()
+
+    response = client.get(f"/api/v1/revenue/machines/{machine.id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 2
+    older_entry = payload[1]
+    newer_entry = payload[0]
+    assert older_entry["machine_share_cents"] == 400
+    assert older_entry["claimed_cents"] == 400
+    assert older_entry["claimable_cents"] == 0
+    assert newer_entry["machine_share_cents"] == 300
+    assert newer_entry["claimed_cents"] == 50
+    assert newer_entry["claimable_cents"] == 250
+
+
 
 

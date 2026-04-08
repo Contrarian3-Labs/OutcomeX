@@ -25,6 +25,8 @@ class RevenueEntryResponse(BaseModel):
     gross_amount_cents: int
     platform_fee_cents: int
     machine_share_cents: int
+    claimed_cents: int = 0
+    claimable_cents: int = 0
     is_self_use: bool
     is_dividend_eligible: bool
     created_at: datetime

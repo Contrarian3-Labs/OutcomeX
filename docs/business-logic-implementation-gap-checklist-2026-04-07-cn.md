@@ -287,7 +287,7 @@
   - `MachineRevenueClaimed`
 - 当前已经有统一 claim ledger / projection 表来记录 claim 历史与 token 维度
 - refund claim 虽然链上事件没有 order id，但 backend 已通过 FIFO projection 补齐单个 order 的剩余退款读模型
-- 当前仍未完全补齐的，是 platform / machine revenue claim 的 entry / order 级分摊视图
+- 当前仍未完全补齐的，是 platform claim 的正式 overview read model 与前端消费
 
 #### 涉及模块
 
@@ -331,7 +331,7 @@
 
 优先级：`P1`
 
-状态：`进行中`
+状态：`已完成（已合并到 main）`
 
 本轮已完成：
 
@@ -347,21 +347,24 @@
 - `MyMachines` / `NodeDetail` 已开始直接消费这组字段，明确区分：
   - 谁拥有这笔收益（beneficiary）
   - 是多少未领取收益仍在锁住机器转移（asset-level locked amount）
+- `GET /api/v1/revenue/machines/{machine_id}` 现已补 entry/order 级 machine claim FIFO projection：
+  - 每条 `RevenueEntry` 会显式返回 `claimed_cents / claimable_cents`
+  - 多笔 `machine_revenue` claim 不再只体现在账户 overview 聚合值里，也能下钻到具体 order entry
 - 验证：
   - `code/backend`：`pytest -q tests/api/test_revenue_overview_api.py tests/api/test_revenue_claims_api.py tests/indexer/test_sql_projection_store.py` → `13 passed`
   - `code/backend`：`pytest -q tests/api/test_machines_api.py tests/api/test_revenue_overview_api.py tests/api/test_revenue_claims_api.py` → `10 passed`
+  - `code/backend`：`pytest -q tests/api/test_revenue_overview_api.py tests/api/test_revenue_claims_api.py tests/api/test_machines_api.py tests/indexer/test_sql_projection_store.py` → `21 passed`
 
 #### 当前状态
 
 - 合约真值在 `RevenueVault`：
   - `unsettledRevenueByMachine`
   - `claimableByMachineOwner`
-- backend 当前仍有两类近似：
-  - machine-level summary 仍主要按 machine aggregate 聚合
-  - transfer readiness 虽然已经改成 read model 权威字段，但更细的锁定金额变化仍依赖 projection 刷新时效
-- 这会导致：
-  - claim 后 transfer guard 与合约 guard 可能在极短同步窗口内不完全一致
-  - 某些后续页面仍可能继续复用旧的布尔心智，而不是直接展示锁定金额
+- backend 现在已经同时具备：
+  - beneficiary 口径的 owner overview
+  - machine 口径的 locked amount 真值
+  - entry/order 口径的 machine claim FIFO projection
+- 因此 `Slice D` 当前不再是主 blocker
 
 #### 涉及模块
 
@@ -384,6 +387,7 @@
 - unsettled revenue / claim 后余额按 amount 真值变化
 - transfer readiness 只由权威 read model 决定
 - machine 页面显式展示锁定金额与 beneficiary 提示，不再只给布尔 blocked / unblocked
+- revenue entry 列表可下钻到 order/entry 级 claimed / claimable 真值
 
 #### commit 主题
 

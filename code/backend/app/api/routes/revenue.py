@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.core.config import get_settings
 from app.domain.accounting import effective_paid_amount_cents
+from app.domain.claim_projection import project_machine_entry_claims
 from app.domain.enums import PaymentState, SettlementState
 from app.domain.models import Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementClaimRecord, SettlementRecord
 from app.domain.rules import has_sufficient_payment
@@ -160,14 +161,24 @@ def distribute_revenue(order_id: str, db: Session = Depends(get_db)) -> RevenueD
 
 
 @router.get("/machines/{machine_id}", response_model=list[RevenueEntryResponse])
-def list_machine_revenue(machine_id: str, db: Session = Depends(get_db)) -> list[RevenueEntry]:
-    return list(
+def list_machine_revenue(machine_id: str, db: Session = Depends(get_db)) -> list[RevenueEntryResponse]:
+    entries = list(
         db.scalars(
             select(RevenueEntry)
             .where(RevenueEntry.machine_id == machine_id)
-            .order_by(RevenueEntry.created_at.desc())
+            .order_by(RevenueEntry.created_at.desc(), RevenueEntry.id.desc())
         )
     )
+    projection = project_machine_entry_claims(machine_id=machine_id, db=db)
+    return [
+        RevenueEntryResponse.model_validate(entry).model_copy(
+            update={
+                "claimed_cents": projection.get(entry.id).claimed_cents if projection.get(entry.id) else 0,
+                "claimable_cents": projection.get(entry.id).claimable_cents if projection.get(entry.id) else entry.machine_share_cents,
+            }
+        )
+        for entry in entries
+    ]
 
 
 @router.get("/accounts/{owner_user_id}/overview", response_model=RevenueAccountOverviewResponse)

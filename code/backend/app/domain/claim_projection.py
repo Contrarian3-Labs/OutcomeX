@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.domain.enums import OrderState, PaymentState, SettlementState
-from app.domain.models import Order, SettlementClaimRecord, SettlementRecord
+from app.domain.models import Order, RevenueEntry, SettlementClaimRecord, SettlementRecord
 
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
@@ -16,6 +16,12 @@ ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 class OrderRefundClaimProjection:
     currency: str | None
     refundable_cents: int
+    claimed_cents: int
+    claimable_cents: int
+
+
+@dataclass(frozen=True)
+class RevenueEntryClaimProjection:
     claimed_cents: int
     claimable_cents: int
 
@@ -81,6 +87,44 @@ def refund_claimed_total_for_currency(*, claimant_user_id: str, currency: str, d
         )
     )
     return sum(record.amount_cents for record in rows if _claim_record_matches_currency(record.token_address, currency))
+
+
+def project_machine_entry_claims(*, machine_id: str, db: Session) -> dict[str, RevenueEntryClaimProjection]:
+    entries = list(
+        db.scalars(
+            select(RevenueEntry)
+            .where(RevenueEntry.machine_id == machine_id)
+            .order_by(RevenueEntry.created_at.asc(), RevenueEntry.id.asc())
+        )
+    )
+    claims = list(
+        db.scalars(
+            select(SettlementClaimRecord)
+            .where(
+                SettlementClaimRecord.machine_id == machine_id,
+                SettlementClaimRecord.claim_kind == "machine_revenue",
+            )
+            .order_by(SettlementClaimRecord.claimed_at.asc(), SettlementClaimRecord.id.asc())
+        )
+    )
+    remaining_by_claimant: dict[str, int] = {}
+    for claim in claims:
+        if claim.claimant_user_id is None:
+            continue
+        remaining_by_claimant[claim.claimant_user_id] = (
+            remaining_by_claimant.get(claim.claimant_user_id, 0) + claim.amount_cents
+        )
+
+    projection: dict[str, RevenueEntryClaimProjection] = {}
+    for entry in entries:
+        remaining = remaining_by_claimant.get(entry.beneficiary_user_id, 0)
+        claimed_cents = min(entry.machine_share_cents, remaining)
+        remaining_by_claimant[entry.beneficiary_user_id] = max(0, remaining - claimed_cents)
+        projection[entry.id] = RevenueEntryClaimProjection(
+            claimed_cents=claimed_cents,
+            claimable_cents=max(0, entry.machine_share_cents - claimed_cents),
+        )
+    return projection
 
 
 def _refund_due_cents(settlement: SettlementRecord) -> int:
