@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -6,12 +7,13 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.core.container import get_container
-from app.domain.models import Machine, MachineRevenueClaim, RevenueEntry
+from app.domain.models import Machine, MachineListing, MachineRevenueClaim, RevenueEntry
 from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
 from app.runtime.cost_service import get_runtime_cost_service
 from app.runtime.hardware_simulator import get_shared_hardware_simulator
 from app.schemas.machine import (
     MachineCreateRequest,
+    MachineListingSummaryResponse,
     MachineResponse,
     MachineRuntimeSnapshotResponse,
 )
@@ -90,6 +92,37 @@ def _locked_beneficiaries_by_machine(*, machine_ids: list[str], db: Session) -> 
     return summary
 
 
+def _active_listings_by_machine(*, machine_ids: list[str], db: Session) -> dict[str, MachineListing]:
+    if not machine_ids:
+        return {}
+
+    now = datetime.now(timezone.utc)
+    rows = (
+        db.execute(
+            select(MachineListing)
+            .where(
+                MachineListing.machine_id.in_(machine_ids),
+                MachineListing.state == "active",
+            )
+            .order_by(MachineListing.listed_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+
+    summary: dict[str, MachineListing] = {}
+    for listing in rows:
+        if listing.machine_id is None:
+            continue
+        expires_at = listing.expires_at
+        if expires_at is not None:
+            normalized_expires_at = expires_at if expires_at.tzinfo is not None else expires_at.replace(tzinfo=timezone.utc)
+            if normalized_expires_at <= now:
+                continue
+        summary.setdefault(listing.machine_id, listing)
+    return summary
+
+
 def _runtime_snapshot_response(machine_id: str | None = None) -> MachineRuntimeSnapshotResponse:
     snapshot = get_shared_hardware_simulator(machine_id).snapshot()
     capacity_utilization = (
@@ -132,11 +165,29 @@ def _availability_from_runtime(snapshot: MachineRuntimeSnapshotResponse) -> int:
     return max(0, min(100, int(round((1 - pressure) * 100))))
 
 
+def _to_listing_response(listing: MachineListing) -> MachineListingSummaryResponse:
+    return MachineListingSummaryResponse(
+        onchain_listing_id=listing.onchain_listing_id,
+        seller_chain_address=listing.seller_chain_address,
+        buyer_chain_address=listing.buyer_chain_address,
+        payment_token_address=listing.payment_token_address,
+        payment_token_symbol=listing.payment_token_symbol,
+        payment_token_decimals=listing.payment_token_decimals,
+        price_units=int(listing.price_units),
+        state=listing.state,
+        expires_at=listing.expires_at,
+        listed_at=listing.listed_at,
+        cancelled_at=listing.cancelled_at,
+        filled_at=listing.filled_at,
+    )
+
+
 def _to_machine_response(
     machine: Machine,
     *,
     revenue_summary: dict[str, int] | None = None,
     locked_beneficiary_user_ids: list[str] | None = None,
+    active_listing: MachineListing | None = None,
 ) -> MachineResponse:
     summary = revenue_summary or {"projected_cents": 0, "claimed_cents": 0, "claimable_cents": 0}
     blocking_reasons = _transfer_blocking_reasons(machine)
@@ -170,6 +221,7 @@ def _to_machine_response(
         confirmed_revenue_30d_pwr=_cents_to_pwr(summary["projected_cents"]),
         claimable_pwr=_cents_to_pwr(summary["claimable_cents"]),
         indicative_apr=_indicative_apr(summary["projected_cents"]),
+        active_listing=_to_listing_response(active_listing) if active_listing is not None else None,
         runtime_snapshot=runtime_snapshot,
         created_at=machine.created_at,
         updated_at=machine.updated_at,
@@ -218,11 +270,13 @@ def list_machines(db: Session = Depends(get_db)) -> list[MachineResponse]:
     machines = list(db.scalars(select(Machine).order_by(Machine.created_at.desc())))
     revenue_summary = _machine_revenue_summary(machine_ids=[machine.id for machine in machines], db=db)
     locked_beneficiaries = _locked_beneficiaries_by_machine(machine_ids=[machine.id for machine in machines], db=db)
+    active_listings = _active_listings_by_machine(machine_ids=[machine.id for machine in machines], db=db)
     return [
         _to_machine_response(
             machine,
             revenue_summary=revenue_summary.get(machine.id),
             locked_beneficiary_user_ids=locked_beneficiaries.get(machine.id),
+            active_listing=active_listings.get(machine.id),
         )
         for machine in machines
     ]

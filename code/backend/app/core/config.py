@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     onchain_order_book_address: str = "0x0000000000000000000000000000000000000133"
     onchain_order_payment_router_address: str = "0x0000000000000000000000000000000000000134"
     onchain_machine_asset_address: str = "0x0000000000000000000000000000000000000132"
+    onchain_machine_marketplace_address: str = "0x0000000000000000000000000000000000000137"
     onchain_settlement_controller_address: str = "0x0000000000000000000000000000000000000135"
     onchain_revenue_vault_address: str = "0x0000000000000000000000000000000000000136"
     onchain_pwr_token_address: str = "0x0000000000000000000000000000000000000A11"

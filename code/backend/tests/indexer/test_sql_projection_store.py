@@ -7,6 +7,7 @@ from app.domain.enums import OrderState, PaymentState, PreviewState, SettlementS
 from app.domain.models import (
     Base,
     Machine,
+    MachineListing,
     MachineRevenueClaim,
     Order,
     Payment,
@@ -16,6 +17,7 @@ from app.domain.models import (
 )
 from app.indexer.events import (
     MachineAssetEvent,
+    MarketplaceListingEvent,
     NormalizedEvent,
     OrderLifecycleEvent,
     RevenueClaimedEvent,
@@ -24,12 +26,20 @@ from app.indexer.events import (
 from app.indexer.sql_projection import SqlProjectionStore
 
 
-def _event(*, payload, event_name: str, transaction_hash: str = "0xabc", block_number: int = 10) -> NormalizedEvent:
+def _event(
+    *,
+    payload,
+    event_name: str,
+    transaction_hash: str = "0xabc",
+    block_number: int = 10,
+    contract_name: str = "OrderBook",
+    contract_address: str = "0x3000000000000000000000000000000000000003",
+) -> NormalizedEvent:
     return NormalizedEvent(
         event_id=f"133:{block_number}:{transaction_hash}:1",
         chain_id=133,
-        contract_name="OrderBook",
-        contract_address="0x3000000000000000000000000000000000000003",
+        contract_name=contract_name,
+        contract_address=contract_address,
         event_name=event_name,
         block_number=block_number,
         block_hash="0xblock",
@@ -68,6 +78,72 @@ def test_sql_projection_updates_machine_owner_from_chain_projection() -> None:
         assert machine.owner_user_id == "owner-2"
         assert machine.owner_chain_address == "0x2222222222222222222222222222222222222222"
         assert machine.ownership_source == "chain"
+
+
+def test_sql_projection_tracks_marketplace_listing_lifecycle() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+    with session_factory() as db:
+        db.add(Machine(id="m-1", onchain_machine_id="7", display_name="node", owner_user_id="owner-1"))
+        db.commit()
+
+    store = SqlProjectionStore(session_factory=session_factory)
+    store.apply(
+        _event(
+            event_name="ListingCreated",
+            contract_name="MachineMarketplace",
+            contract_address="0x3000000000000000000000000000000000000099",
+            transaction_hash="0xlisting-created",
+            payload=MarketplaceListingEvent(
+                listing_id="11",
+                machine_id="7",
+                seller="0xseller0000000000000000000000000000000000",
+                buyer=None,
+                payment_token="0x79aec4eea31d50792f61d1ca0733c18c89524c9e",
+                price_wei=1_250_000,
+                expiry_timestamp=int(datetime.now(timezone.utc).timestamp()) + 3600,
+                status="ACTIVE",
+            ),
+        )
+    )
+
+    with session_factory() as db:
+        listing = db.query(MachineListing).filter(MachineListing.onchain_listing_id == "11").one()
+        assert listing.machine_id == "m-1"
+        assert listing.onchain_machine_id == "7"
+        assert listing.seller_chain_address == "0xseller0000000000000000000000000000000000"
+        assert listing.payment_token_address == "0x79aec4eea31d50792f61d1ca0733c18c89524c9e"
+        assert listing.price_units == 1_250_000
+        assert listing.state == "active"
+        assert listing.buyer_chain_address is None
+
+    store.apply(
+        _event(
+            event_name="ListingPurchased",
+            contract_name="MachineMarketplace",
+            contract_address="0x3000000000000000000000000000000000000099",
+            transaction_hash="0xlisting-purchased",
+            block_number=11,
+            payload=MarketplaceListingEvent(
+                listing_id="11",
+                machine_id="7",
+                seller="0xseller0000000000000000000000000000000000",
+                buyer="0xbuyer000000000000000000000000000000000000",
+                payment_token="0x79aec4eea31d50792f61d1ca0733c18c89524c9e",
+                price_wei=1_250_000,
+                expiry_timestamp=int(datetime.now(timezone.utc).timestamp()) + 3600,
+                status="FILLED",
+            ),
+        )
+    )
+
+    with session_factory() as db:
+        listing = db.query(MachineListing).filter(MachineListing.onchain_listing_id == "11").one()
+        assert listing.state == "filled"
+        assert listing.buyer_chain_address == "0xbuyer000000000000000000000000000000000000"
+        assert listing.filled_at is not None
 
 
 def test_sql_projection_releases_active_task_when_order_confirmed_onchain() -> None:

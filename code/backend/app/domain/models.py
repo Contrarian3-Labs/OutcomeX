@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.domain.enums import (
@@ -51,8 +51,41 @@ class Machine(Base):
 
     orders: Mapped[list["Order"]] = relationship(back_populates="machine")
     revenue_entries: Mapped[list["RevenueEntry"]] = relationship(back_populates="machine")
-
+    listings: Mapped[list["MachineListing"]] = relationship(back_populates="machine")
     claims: Mapped[list["MachineRevenueClaim"]] = relationship(back_populates="machine")
+
+
+class MachineListing(Base):
+    __tablename__ = "machine_listings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    onchain_listing_id: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    machine_id: Mapped[str | None] = mapped_column(ForeignKey("machines.id"), index=True, nullable=True)
+    onchain_machine_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    seller_chain_address: Mapped[str] = mapped_column(String(42), nullable=False, index=True)
+    buyer_chain_address: Mapped[str | None] = mapped_column(String(42), nullable=True, index=True)
+    payment_token_address: Mapped[str] = mapped_column(String(42), nullable=False)
+    payment_token_symbol: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    payment_token_decimals: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    price_units: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), default="active", nullable=False, index=True)
+    last_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    listed_tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    cancel_tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    filled_tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    listed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+    machine: Mapped["Machine | None"] = relationship(back_populates="listings")
 
 
 class Order(Base):

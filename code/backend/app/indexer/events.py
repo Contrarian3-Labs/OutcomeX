@@ -62,6 +62,18 @@ class MachineAssetEvent:
 
 
 @dataclass(frozen=True)
+class MarketplaceListingEvent:
+    listing_id: str
+    machine_id: str | None
+    seller: str | None
+    buyer: str | None
+    payment_token: str | None
+    price_wei: int | None
+    expiry_timestamp: int | None
+    status: str
+
+
+@dataclass(frozen=True)
 class OrderLifecycleEvent:
     order_id: str
     machine_id: str | None
@@ -123,6 +135,7 @@ class UnsupportedEventNameError(ValueError):
 
 DomainPayload = (
     MachineAssetEvent
+    | MarketplaceListingEvent
     | OrderLifecycleEvent
     | SettlementSplitEvent
     | RevenueClaimedEvent
@@ -154,6 +167,12 @@ ORDER_EVENT_NAMES = {
     "PreviewReady",
     "OrderSettled",
     "Settled",
+}
+
+MARKETPLACE_EVENT_NAMES = {
+    "ListingCreated",
+    "ListingCancelled",
+    "ListingPurchased",
 }
 
 
@@ -306,6 +325,52 @@ def _normalize_order_payload(event_name: str, args: Mapping[str, Any]) -> OrderL
     )
 
 
+def _normalize_marketplace_payload(event_name: str, args: Mapping[str, Any]) -> MarketplaceListingEvent:
+    status_by_event = {
+        "ListingCreated": "ACTIVE",
+        "ListingCancelled": "CANCELLED",
+        "ListingPurchased": "FILLED",
+    }
+    status = status_by_event.get(event_name)
+    if status is None:
+        raise UnsupportedEventNameError(f"Unsupported marketplace event_name '{event_name}'")
+
+    return MarketplaceListingEvent(
+        listing_id=str(_as_int(_pick(args, "listingId", "listing_id"), field_name="listing_id")),
+        machine_id=(
+            str(_as_int(_pick(args, "machineId", "machine_id", required=False), field_name="machine_id"))
+            if _pick(args, "machineId", "machine_id", required=False) is not None
+            else None
+        ),
+        seller=(
+            _normalize_address(_pick(args, "seller", required=False))
+            if _pick(args, "seller", required=False) is not None
+            else None
+        ),
+        buyer=(
+            _normalize_address(_pick(args, "buyer", required=False))
+            if _pick(args, "buyer", required=False) is not None
+            else None
+        ),
+        payment_token=(
+            _normalize_address(_pick(args, "paymentToken", "token", required=False))
+            if _pick(args, "paymentToken", "token", required=False) is not None
+            else None
+        ),
+        price_wei=(
+            _as_int(_pick(args, "price", "grossAmount", required=False), field_name="price")
+            if _pick(args, "price", "grossAmount", required=False) is not None
+            else None
+        ),
+        expiry_timestamp=(
+            _as_int(_pick(args, "expiry", "expiresAt", required=False), field_name="expiry")
+            if _pick(args, "expiry", "expiresAt", required=False) is not None
+            else None
+        ),
+        status=status,
+    )
+
+
 def _normalize_revenue_payload(event_name: str, args: Mapping[str, Any]) -> SettlementSplitEvent | RevenueClaimedEvent:
     if event_name == "RevenueAccrued":
         dividend_eligible = _as_bool(
@@ -432,6 +497,8 @@ def normalize_decoded_event(event: DecodedChainEvent) -> NormalizedEvent:
         payload = _normalize_machine_asset_payload(event)
     elif event_name in ORDER_EVENT_NAMES:
         payload = _normalize_order_payload(event_name, event.args)
+    elif event_name in MARKETPLACE_EVENT_NAMES:
+        payload = _normalize_marketplace_payload(event_name, event.args)
     elif event_name in {
         "RevenueAccrued",
         "RevenueClaimed",

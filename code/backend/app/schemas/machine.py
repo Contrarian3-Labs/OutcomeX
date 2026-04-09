@@ -23,6 +23,21 @@ class MachineRuntimeSnapshotResponse(BaseModel):
     max_queue_depth: int
 
 
+class MachineListingSummaryResponse(BaseModel):
+    onchain_listing_id: str
+    seller_chain_address: str
+    buyer_chain_address: str | None
+    payment_token_address: str
+    payment_token_symbol: str | None
+    payment_token_decimals: int | None
+    price_units: int
+    state: str
+    expires_at: datetime | None
+    listed_at: datetime
+    cancelled_at: datetime | None
+    filled_at: datetime | None
+
+
 class MachineResponse(BaseModel):
     id: str
     onchain_machine_id: str | None
@@ -51,6 +66,7 @@ class MachineResponse(BaseModel):
     confirmed_revenue_30d_pwr: float
     claimable_pwr: float
     indicative_apr: float
+    active_listing: MachineListingSummaryResponse | None = None
     runtime_snapshot: MachineRuntimeSnapshotResponse
     created_at: datetime
     updated_at: datetime

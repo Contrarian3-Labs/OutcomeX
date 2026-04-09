@@ -24,6 +24,7 @@ class ContractsRegistry:
         order_book_address: str | None = None,
         order_payment_router_address: str | None = None,
         machine_asset_address: str | None = None,
+        machine_marketplace_address: str | None = None,
         settlement_controller_address: str | None = None,
         revenue_vault_address: str | None = None,
         pwr_token_address: str | None = None,
@@ -38,6 +39,7 @@ class ContractsRegistry:
         resolved_order_book = order_book_address or runtime_settings.onchain_order_book_address
         resolved_router = order_payment_router_address or runtime_settings.onchain_order_payment_router_address
         resolved_machine_asset = machine_asset_address or runtime_settings.onchain_machine_asset_address
+        resolved_machine_marketplace = machine_marketplace_address or runtime_settings.onchain_machine_marketplace_address
         resolved_settlement = settlement_controller_address or runtime_settings.onchain_settlement_controller_address
         resolved_revenue_vault = revenue_vault_address or runtime_settings.onchain_revenue_vault_address
         resolved_pwr_token = pwr_token_address or runtime_settings.onchain_pwr_token_address
@@ -62,6 +64,11 @@ class ContractsRegistry:
                 chain_id=resolved_chain_id,
                 contract_name="MachineAssetNFT",
                 contract_address=_normalize_address(resolved_machine_asset),
+            ),
+            "MachineMarketplace": ContractTarget(
+                chain_id=resolved_chain_id,
+                contract_name="MachineMarketplace",
+                contract_address=_normalize_address(resolved_machine_marketplace),
             ),
             "SettlementController": ContractTarget(
                 chain_id=resolved_chain_id,
@@ -106,6 +113,9 @@ class ContractsRegistry:
 
     def settlement_controller(self) -> ContractTarget:
         return self.contract("SettlementController")
+
+    def machine_marketplace(self) -> ContractTarget:
+        return self.contract("MachineMarketplace")
 
     def revenue_vault(self) -> ContractTarget:
         return self.contract("RevenueVault")

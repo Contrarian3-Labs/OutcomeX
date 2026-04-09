@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import reset_settings_cache
 from app.core.container import reset_container_cache, get_container
-from app.domain.models import Machine, MachineRevenueClaim, Order, RevenueEntry, SettlementRecord
+from app.domain.models import Machine, MachineListing, MachineRevenueClaim, Order, RevenueEntry, SettlementRecord
 from app.runtime.hardware_simulator import WorkloadSpec
 from app.main import create_app
 
@@ -217,6 +217,42 @@ def test_list_machines_includes_revenue_summary_and_projection_metadata(client: 
     assert payload["locked_unsettled_revenue_cents"] == 650
     assert payload["locked_unsettled_revenue_pwr"] == 26.0
     assert payload["locked_beneficiary_user_ids"] == ["owner-1"]
+    assert payload["active_listing"] is None
+
+
+def test_list_machines_includes_active_market_listing_summary(client: TestClient) -> None:
+    machine = _create_machine(client)
+    container = get_container()
+    with container.session_factory() as db:
+        db_machine = db.get(Machine, machine["id"])
+        db_machine.onchain_machine_id = "7"
+        db_machine.owner_chain_address = "0xseller0000000000000000000000000000000000"
+        db.add(db_machine)
+        db.flush()
+
+        db.add(
+            MachineListing(
+                onchain_listing_id="11",
+                machine_id=db_machine.id,
+                onchain_machine_id="7",
+                seller_chain_address="0xseller0000000000000000000000000000000000",
+                payment_token_address="0x79aec4eea31d50792f61d1ca0733c18c89524c9e",
+                payment_token_symbol="USDC",
+                payment_token_decimals=6,
+                price_units=1_250_000,
+                state="active",
+            )
+        )
+        db.commit()
+
+    payload = _get_machine(client, machine["id"])
+    assert payload["active_listing"] is not None
+    assert payload["active_listing"]["onchain_listing_id"] == "11"
+    assert payload["active_listing"]["seller_chain_address"] == "0xseller0000000000000000000000000000000000"
+    assert payload["active_listing"]["payment_token_symbol"] == "USDC"
+    assert payload["active_listing"]["payment_token_decimals"] == 6
+    assert payload["active_listing"]["price_units"] == 1_250_000
+    assert payload["active_listing"]["state"] == "active"
 
 
 def test_list_machines_exposes_mock_spec_and_runtime_snapshot(client: TestClient) -> None:

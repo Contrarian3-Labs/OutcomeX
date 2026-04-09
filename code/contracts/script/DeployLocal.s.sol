@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {MachineAssetNFT} from "../src/MachineAssetNFT.sol";
+import {MachineMarketplace} from "../src/MachineMarketplace.sol";
 import {OrderBook} from "../src/OrderBook.sol";
 import {OrderPaymentRouter} from "../src/OrderPaymentRouter.sol";
 import {PWRToken} from "../src/PWRToken.sol";
@@ -25,6 +26,7 @@ contract DeployLocal {
         address permit2;
         address pwr;
         address machineAsset;
+        address machineMarketplace;
         address revenueVault;
         address settlementController;
         address orderBook;
@@ -57,6 +59,10 @@ contract DeployLocal {
         MockPermit2 permit2 = new MockPermit2();
         PWRToken pwr = new PWRToken(initialOwner);
         MachineAssetNFT machineAsset = new MachineAssetNFT(initialOwner);
+        address[] memory supportedTokens = new address[](2);
+        supportedTokens[0] = address(usdc);
+        supportedTokens[1] = address(usdt);
+        MachineMarketplace machineMarketplace = new MachineMarketplace(initialOwner, address(machineAsset), supportedTokens);
         RevenueVault revenueVault = new RevenueVault(initialOwner, address(pwr), address(machineAsset));
         SettlementController settlementController =
             new SettlementController(initialOwner, address(revenueVault), platformTreasury);
@@ -95,6 +101,7 @@ contract DeployLocal {
             permit2: address(permit2),
             pwr: address(pwr),
             machineAsset: address(machineAsset),
+            machineMarketplace: address(machineMarketplace),
             revenueVault: address(revenueVault),
             settlementController: address(settlementController),
             orderBook: address(orderBook),
@@ -107,6 +114,7 @@ contract DeployLocal {
         emit DeploymentAddress("Permit2", deployed.permit2);
         emit DeploymentAddress("PWRToken", deployed.pwr);
         emit DeploymentAddress("MachineAssetNFT", deployed.machineAsset);
+        emit DeploymentAddress("MachineMarketplace", deployed.machineMarketplace);
         emit DeploymentAddress("RevenueVault", deployed.revenueVault);
         emit DeploymentAddress("SettlementController", deployed.settlementController);
         emit DeploymentAddress("OrderBook", deployed.orderBook);

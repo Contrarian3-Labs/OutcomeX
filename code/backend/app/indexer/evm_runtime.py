@@ -11,6 +11,15 @@ from app.onchain.adapter import EventDecoder, EventSubscription, RawLog
 _EVENT_SIGNATURES: dict[tuple[str, str], str] = {
     ("MachineAssetNFT", "MachineMinted"): "MachineMinted(uint256,address,string)",
     ("MachineAssetNFT", "Transfer"): "Transfer(address,address,uint256)",
+    (
+        "MachineMarketplace",
+        "ListingCreated",
+    ): "ListingCreated(uint256,uint256,address,address,uint256,uint64)",
+    ("MachineMarketplace", "ListingCancelled"): "ListingCancelled(uint256,uint256,address)",
+    (
+        "MachineMarketplace",
+        "ListingPurchased",
+    ): "ListingPurchased(uint256,uint256,address,address,address,uint256)",
     ("OrderBook", "OrderCreated"): "OrderCreated(uint256,uint256,address,uint256,address)",
     ("OrderBook", "OrderClassified"): "OrderClassified(uint256,bool,bool)",
     ("OrderBook", "OrderCancelled"): "OrderCancelled(uint256,uint256,address,uint64,bool)",
@@ -43,6 +52,9 @@ _EVENT_SIGNATURES: dict[tuple[str, str], str] = {
 _EVENT_TOPIC0_BY_SIGNATURE: dict[str, str] = {
     "MachineMinted(uint256,address,string)": "0x1dc7a4274503103baffb2f8cf9ab4b87fd7e3751dd8471358351d3bc324e8758",
     "Transfer(address,address,uint256)": "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+    "ListingCreated(uint256,uint256,address,address,uint256,uint64)": "0x7abd1a4c3d1e5765e811a7e4020f3293a052e114c357b4d06ef2e4d8281c25fb",
+    "ListingCancelled(uint256,uint256,address)": "0x5f0be1e06429123bb18a91b02cae2672c631c3d0eef488ee77e1e9870a6e2cb4",
+    "ListingPurchased(uint256,uint256,address,address,address,uint256)": "0x909cd07b57d37abc276b9584da754de2d6a91ab6b26b4ce8e70c9702aef31bb4",
     "OrderCreated(uint256,uint256,address,uint256,address)": "0x10a337bf06bb798704a2c57575959ef9198b9a7c57e24ea27f8e728a620d272d",
     "OrderClassified(uint256,bool,bool)": "0x0214adacbe9e5548bb02fb8f97fce31e344b48dc0868d46d804fb0a07dda244d",
     "OrderCancelled(uint256,uint256,address,uint64,bool)": "0x75745ade561ac203c37b0de71a179d5d1342edfca5fc690daefabbb9905ace65",
@@ -58,6 +70,7 @@ _EVENT_TOPIC0_BY_SIGNATURE: dict[str, str] = {
 
 _CONTRACT_ENV_KEYS: dict[str, str] = {
     "MachineAssetNFT": "OUTCOMEX_ONCHAIN_MACHINE_ASSET_ADDRESS",
+    "MachineMarketplace": "OUTCOMEX_ONCHAIN_MACHINE_MARKETPLACE_ADDRESS",
     "OrderBook": "OUTCOMEX_ONCHAIN_ORDER_BOOK_ADDRESS",
     "OrderPaymentRouter": "OUTCOMEX_ONCHAIN_ORDER_PAYMENT_ROUTER_ADDRESS",
     "SettlementController": "OUTCOMEX_ONCHAIN_SETTLEMENT_CONTROLLER_ADDRESS",
@@ -89,6 +102,51 @@ _EVENT_ABIS: dict[tuple[str, str], Mapping[str, Any]] = {
             {"indexed": True, "name": "from", "type": "address"},
             {"indexed": True, "name": "to", "type": "address"},
             {"indexed": True, "name": "tokenId", "type": "uint256"},
+        ],
+        "anonymous": False,
+    },
+    (
+        "MachineMarketplace",
+        "ListingCreated",
+    ): {
+        "type": "event",
+        "name": "ListingCreated",
+        "inputs": [
+            {"indexed": True, "name": "listingId", "type": "uint256"},
+            {"indexed": True, "name": "machineId", "type": "uint256"},
+            {"indexed": True, "name": "seller", "type": "address"},
+            {"indexed": False, "name": "paymentToken", "type": "address"},
+            {"indexed": False, "name": "price", "type": "uint256"},
+            {"indexed": False, "name": "expiry", "type": "uint64"},
+        ],
+        "anonymous": False,
+    },
+    (
+        "MachineMarketplace",
+        "ListingCancelled",
+    ): {
+        "type": "event",
+        "name": "ListingCancelled",
+        "inputs": [
+            {"indexed": True, "name": "listingId", "type": "uint256"},
+            {"indexed": True, "name": "machineId", "type": "uint256"},
+            {"indexed": True, "name": "cancelledBy", "type": "address"},
+        ],
+        "anonymous": False,
+    },
+    (
+        "MachineMarketplace",
+        "ListingPurchased",
+    ): {
+        "type": "event",
+        "name": "ListingPurchased",
+        "inputs": [
+            {"indexed": True, "name": "listingId", "type": "uint256"},
+            {"indexed": True, "name": "machineId", "type": "uint256"},
+            {"indexed": True, "name": "buyer", "type": "address"},
+            {"indexed": False, "name": "seller", "type": "address"},
+            {"indexed": False, "name": "paymentToken", "type": "address"},
+            {"indexed": False, "name": "price", "type": "uint256"},
         ],
         "anonymous": False,
     },

@@ -7,9 +7,19 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
+from app.core.config import get_settings
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.enums import OrderState, PaymentState, PreviewState, SettlementState
-from app.domain.models import Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementClaimRecord, SettlementRecord
+from app.domain.models import (
+    Machine,
+    MachineListing,
+    MachineRevenueClaim,
+    Order,
+    Payment,
+    RevenueEntry,
+    SettlementClaimRecord,
+    SettlementRecord,
+)
 from app.domain.order_truth import set_authoritative_order_truth
 from app.domain.rules import (
     calculate_failed_or_no_valid_preview_breakdown,
@@ -18,6 +28,7 @@ from app.domain.rules import (
 from app.domain.settlement_projection import ensure_confirmed_settlement_projection, ensure_settlement_projection
 from app.indexer.events import (
     MachineAssetEvent,
+    MarketplaceListingEvent,
     NormalizedEvent,
     OrderLifecycleEvent,
     RevenueClaimedEvent,
@@ -25,6 +36,35 @@ from app.indexer.events import (
 )
 from app.indexer.projections import InMemoryProjectionStore
 from app.integrations.machine_ownership_projection import MachineOwnershipProjectionIntegrator
+
+
+def _timestamp_to_datetime(timestamp: int | None) -> datetime | None:
+    if timestamp is None:
+        return None
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+
+
+def _payment_token_symbol(address: str | None) -> str | None:
+    if address is None:
+        return None
+    settings = get_settings()
+    normalized = address.lower()
+    if normalized == settings.onchain_usdc_address.lower():
+        return "USDC"
+    if normalized == settings.onchain_usdt_address.lower():
+        return "USDT"
+    if normalized == settings.onchain_pwr_token_address.lower():
+        return "PWR"
+    return None
+
+
+def _payment_token_decimals(address: str | None) -> int | None:
+    symbol = _payment_token_symbol(address)
+    if symbol in {"USDC", "USDT"}:
+        return 6
+    if symbol == "PWR":
+        return 18
+    return None
 
 
 class SqlProjectionStore:
@@ -46,6 +86,9 @@ class SqlProjectionStore:
         payload = event.payload
         if isinstance(payload, MachineAssetEvent):
             self._apply_machine_event(machine_id=payload.machine_id, chain_owner=payload.owner, event_id=event.event_id)
+            return
+        if isinstance(payload, MarketplaceListingEvent):
+            self._apply_marketplace_listing_event(event=event, payload=payload)
             return
         if isinstance(payload, OrderLifecycleEvent):
             self._apply_order_event(event=event, payload=payload)
@@ -79,6 +122,84 @@ class SqlProjectionStore:
                 chain_owner=chain_owner,
                 event_id=event_id,
             )
+
+    def _apply_marketplace_listing_event(self, *, event: NormalizedEvent, payload: MarketplaceListingEvent) -> None:
+        with self._session_factory() as db:
+            listing = db.scalar(
+                select(MachineListing).where(
+                    MachineListing.onchain_listing_id == payload.listing_id,
+                )
+            )
+            machine = None
+            if payload.machine_id is not None:
+                machine = db.scalar(
+                    select(Machine).where(
+                        (Machine.onchain_machine_id == payload.machine_id) | (Machine.id == payload.machine_id),
+                    )
+                )
+
+            now = datetime.now(timezone.utc)
+            if listing is None:
+                if payload.status != "ACTIVE":
+                    return
+                if payload.seller is None or payload.payment_token is None or payload.price_wei is None:
+                    return
+                listing = MachineListing(
+                    onchain_listing_id=payload.listing_id,
+                    machine_id=machine.id if machine is not None else None,
+                    onchain_machine_id=payload.machine_id,
+                    seller_chain_address=payload.seller,
+                    buyer_chain_address=payload.buyer,
+                    payment_token_address=payload.payment_token,
+                    payment_token_symbol=_payment_token_symbol(payload.payment_token),
+                    payment_token_decimals=_payment_token_decimals(payload.payment_token),
+                    price_units=payload.price_wei,
+                    state="active",
+                    listed_tx_hash=event.transaction_hash,
+                    expires_at=_timestamp_to_datetime(payload.expiry_timestamp),
+                    listed_at=now,
+                    last_event_id=event.event_id,
+                )
+                db.add(listing)
+                db.commit()
+                return
+
+            if machine is not None and listing.machine_id is None:
+                listing.machine_id = machine.id
+            if payload.machine_id is not None:
+                listing.onchain_machine_id = payload.machine_id
+            if payload.seller is not None:
+                listing.seller_chain_address = payload.seller
+            if payload.buyer is not None:
+                listing.buyer_chain_address = payload.buyer
+            if payload.payment_token is not None:
+                listing.payment_token_address = payload.payment_token
+                listing.payment_token_symbol = _payment_token_symbol(payload.payment_token)
+                listing.payment_token_decimals = _payment_token_decimals(payload.payment_token)
+            if payload.price_wei is not None:
+                listing.price_units = payload.price_wei
+            if payload.expiry_timestamp is not None:
+                listing.expires_at = _timestamp_to_datetime(payload.expiry_timestamp)
+
+            if payload.status == "ACTIVE":
+                listing.state = "active"
+                listing.listed_tx_hash = event.transaction_hash
+                listing.cancel_tx_hash = None
+                listing.filled_tx_hash = None
+                listing.cancelled_at = None
+                listing.filled_at = None
+            elif payload.status == "CANCELLED":
+                listing.state = "cancelled"
+                listing.cancel_tx_hash = event.transaction_hash
+                listing.cancelled_at = now
+            elif payload.status == "FILLED":
+                listing.state = "filled"
+                listing.filled_tx_hash = event.transaction_hash
+                listing.filled_at = now
+
+            listing.last_event_id = event.event_id
+            db.add(listing)
+            db.commit()
 
     def _apply_order_event(self, *, event: NormalizedEvent, payload: OrderLifecycleEvent) -> None:
         with self._session_factory() as db:
