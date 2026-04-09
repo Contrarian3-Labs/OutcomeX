@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.core.config import Settings
 from app.integrations.onchain_indexer import (
     NullOnchainIndexer,
     RpcPollingOnchainIndexer,
@@ -50,17 +51,17 @@ def test_null_onchain_indexer_returns_none_poll_outcome() -> None:
     assert indexer.status.reason == "disabled-for-test"
 
 
-def test_get_onchain_indexer_poll_seconds_uses_default_for_invalid_value(monkeypatch) -> None:
-    monkeypatch.setenv("OUTCOMEX_ONCHAIN_INDEXER_POLL_SECONDS", "invalid")
-    assert get_onchain_indexer_poll_seconds(default=3.5) == 3.5
+def test_get_onchain_indexer_poll_seconds_uses_default_for_non_positive_settings_value() -> None:
+    settings = Settings(onchain_indexer_poll_seconds=0)
+    assert get_onchain_indexer_poll_seconds(default=3.5, settings=settings) == 3.5
 
 
-def test_create_onchain_indexer_returns_null_when_rpc_missing(monkeypatch) -> None:
-    monkeypatch.delenv("OUTCOMEX_ONCHAIN_RPC_URL", raising=False)
+def test_create_onchain_indexer_returns_null_when_rpc_missing() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+    settings = Settings(onchain_rpc_url="")
 
-    indexer = create_onchain_indexer(session_factory=session_factory)
+    indexer = create_onchain_indexer(session_factory=session_factory, settings=settings)
 
     assert isinstance(indexer, NullOnchainIndexer)
     assert indexer.status.reason == "rpc_url_missing"

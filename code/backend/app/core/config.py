@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     onchain_indexer_confirmation_depth: int = 0
     onchain_indexer_bootstrap_block: int = 0
     onchain_indexer_max_block_span: int = 2000
+    execution_sync_enabled: bool = True
     execution_sync_poll_seconds: float = 2.0
 
     model_config = SettingsConfigDict(

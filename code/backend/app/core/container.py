@@ -68,6 +68,7 @@ class Container:
         self.onchain_indexer = create_onchain_indexer(
             session_factory=self.session_factory,
             owner_resolver=self.buyer_address_resolver.resolve_user_id,
+            settings=self.settings,
         )
 
 

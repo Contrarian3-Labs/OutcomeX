@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Protocol
 
+from app.core.config import Settings, get_settings
 from sqlalchemy.orm import sessionmaker
 
 from app.indexer.cursor import SqlCursorStore, SqlProcessedEventStore
 from app.indexer.evm_runtime import (
     Web3AbiEventDecoder,
-    build_subscriptions_from_env,
-    load_runtime_config_from_env,
+    build_subscriptions,
+    load_runtime_config,
 )
 from app.indexer.replay import IndexerConfig, ReplayIndexer, ReplayOutcome
 from app.indexer.sql_projection import SqlProjectionStore
@@ -61,16 +61,22 @@ class RpcPollingOnchainIndexer:
         return self._replay_indexer.replay_once(chain_id=self._chain_id)
 
 
-def create_onchain_indexer(*, session_factory: sessionmaker, owner_resolver=None) -> OnchainIndexer:
-    if not _is_indexer_enabled():
+def create_onchain_indexer(
+    *,
+    session_factory: sessionmaker,
+    owner_resolver=None,
+    settings: Settings | None = None,
+) -> OnchainIndexer:
+    resolved = settings or get_settings()
+    if not resolved.onchain_indexer_enabled:
         return NullOnchainIndexer(reason="indexer_disabled")
 
-    runtime = load_runtime_config_from_env()
+    runtime = load_runtime_config(resolved)
     if not runtime.rpc_url:
         return NullOnchainIndexer(reason="rpc_url_missing")
 
     try:
-        subscriptions = build_subscriptions_from_env()
+        subscriptions = build_subscriptions(resolved)
         if not subscriptions:
             return NullOnchainIndexer(reason="subscriptions_missing")
         adapter = Web3ChainAdapter.from_rpc_url(
@@ -96,16 +102,10 @@ def create_onchain_indexer(*, session_factory: sessionmaker, owner_resolver=None
     return RpcPollingOnchainIndexer(replay_indexer=replay_indexer, chain_id=runtime.chain_id)
 
 
-def get_onchain_indexer_poll_seconds(default: float = 2.0) -> float:
-    raw = os.getenv("OUTCOMEX_ONCHAIN_INDEXER_POLL_SECONDS", str(default))
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
+def get_onchain_indexer_poll_seconds(default: float = 2.0, *, settings: Settings | None = None) -> float:
+    value = (settings or get_settings()).onchain_indexer_poll_seconds
     return value if value > 0 else default
 
 
 def _is_indexer_enabled() -> bool:
-    raw = os.getenv("OUTCOMEX_ONCHAIN_INDEXER_ENABLED", "true").strip().lower()
-    return raw not in {"0", "false", "off", "no"}
-
+    return get_settings().onchain_indexer_enabled

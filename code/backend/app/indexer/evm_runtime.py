@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from app.core.config import Settings, get_settings
 from app.onchain.adapter import EventDecoder, EventSubscription, RawLog
 
 _EVENT_SIGNATURES: dict[tuple[str, str], str] = {
@@ -347,27 +347,36 @@ class EvmIndexerRuntimeConfig:
     max_block_span: int
 
 
-def load_runtime_config_from_env() -> EvmIndexerRuntimeConfig:
-    chain_id = int(os.getenv("OUTCOMEX_ONCHAIN_CHAIN_ID", "133"))
-    rpc_url = os.getenv("OUTCOMEX_ONCHAIN_RPC_URL", "").strip()
-    poll_seconds = float(os.getenv("OUTCOMEX_ONCHAIN_INDEXER_POLL_SECONDS", "2"))
-    confirmation_depth = int(os.getenv("OUTCOMEX_ONCHAIN_INDEXER_CONFIRMATION_DEPTH", "0"))
-    bootstrap_block = int(os.getenv("OUTCOMEX_ONCHAIN_INDEXER_BOOTSTRAP_BLOCK", "0"))
-    max_block_span = int(os.getenv("OUTCOMEX_ONCHAIN_INDEXER_MAX_BLOCK_SPAN", "2000"))
+def load_runtime_config(settings: Settings | None = None) -> EvmIndexerRuntimeConfig:
+    resolved = settings or get_settings()
     return EvmIndexerRuntimeConfig(
-        chain_id=chain_id,
-        rpc_url=rpc_url,
-        poll_seconds=poll_seconds,
-        confirmation_depth=confirmation_depth,
-        bootstrap_block=bootstrap_block,
-        max_block_span=max_block_span,
+        chain_id=resolved.onchain_chain_id,
+        rpc_url=resolved.onchain_rpc_url.strip(),
+        poll_seconds=resolved.onchain_indexer_poll_seconds,
+        confirmation_depth=resolved.onchain_indexer_confirmation_depth,
+        bootstrap_block=resolved.onchain_indexer_bootstrap_block,
+        max_block_span=resolved.onchain_indexer_max_block_span,
     )
 
 
-def build_subscriptions_from_env() -> tuple[EventSubscription, ...]:
+def load_runtime_config_from_env() -> EvmIndexerRuntimeConfig:
+    return load_runtime_config()
+
+
+def build_subscriptions(settings: Settings | None = None) -> tuple[EventSubscription, ...]:
+    resolved = settings or get_settings()
+    configured_addresses = {
+        "MachineAssetNFT": resolved.onchain_machine_asset_address,
+        "MachineMarketplace": resolved.onchain_machine_marketplace_address,
+        "OrderBook": resolved.onchain_order_book_address,
+        "OrderPaymentRouter": resolved.onchain_order_payment_router_address,
+        "SettlementController": resolved.onchain_settlement_controller_address,
+        "RevenueVault": resolved.onchain_revenue_vault_address,
+        "PWRToken": resolved.onchain_pwr_token_address,
+    }
     subscriptions: list[EventSubscription] = []
-    for contract_name, env_key in _CONTRACT_ENV_KEYS.items():
-        address = _normalize_address(os.getenv(env_key, "").strip())
+    for contract_name in _CONTRACT_ENV_KEYS:
+        address = _normalize_address(str(configured_addresses.get(contract_name, "")).strip())
         if not address:
             continue
         for (abi_contract, event_name), signature in _EVENT_SIGNATURES.items():
@@ -382,6 +391,10 @@ def build_subscriptions_from_env() -> tuple[EventSubscription, ...]:
                 )
             )
     return tuple(subscriptions)
+
+
+def build_subscriptions_from_env() -> tuple[EventSubscription, ...]:
+    return build_subscriptions()
 
 
 class Web3AbiEventDecoder(EventDecoder):

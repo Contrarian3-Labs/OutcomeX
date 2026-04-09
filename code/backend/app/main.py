@@ -1,11 +1,11 @@
 import asyncio
-import os
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 
 from app.api.router import create_api_router
 from app.core.container import get_container
+from app.core.config import Settings
 from app.db.base import Base
 from app.indexer.execution_sync import sync_execution_runs_once
 from app.integrations.onchain_indexer import get_onchain_indexer_poll_seconds
@@ -21,7 +21,7 @@ async def lifespan(_: FastAPI):
     onchain_indexer = container.onchain_indexer
     _ensure_onchain_runtime_ready(container=container, onchain_indexer=onchain_indexer)
 
-    if _is_feature_enabled("OUTCOMEX_EXECUTION_SYNC_ENABLED", default=True):
+    if container.settings.execution_sync_enabled:
         tasks.append(
             asyncio.create_task(
                 _execution_sync_worker(container=container),
@@ -32,7 +32,7 @@ async def lifespan(_: FastAPI):
     if getattr(onchain_indexer, "status", None) and onchain_indexer.status.enabled:
         tasks.append(
             asyncio.create_task(
-                _onchain_indexer_worker(onchain_indexer=onchain_indexer),
+                _onchain_indexer_worker(onchain_indexer=onchain_indexer, settings=container.settings),
                 name="outcomex-onchain-indexer-worker",
             )
         )
@@ -47,7 +47,7 @@ async def lifespan(_: FastAPI):
 
 
 async def _execution_sync_worker(*, container) -> None:
-    interval_seconds = _env_positive_float("OUTCOMEX_EXECUTION_SYNC_POLL_SECONDS", default=2.0)
+    interval_seconds = _execution_sync_poll_seconds(container.settings)
     while True:
         try:
             await asyncio.to_thread(
@@ -62,8 +62,8 @@ async def _execution_sync_worker(*, container) -> None:
         await asyncio.sleep(interval_seconds)
 
 
-async def _onchain_indexer_worker(*, onchain_indexer) -> None:
-    interval_seconds = get_onchain_indexer_poll_seconds(default=2.0)
+async def _onchain_indexer_worker(*, onchain_indexer, settings: Settings) -> None:
+    interval_seconds = get_onchain_indexer_poll_seconds(default=2.0, settings=settings)
     while True:
         try:
             await asyncio.to_thread(onchain_indexer.poll_once)
@@ -92,18 +92,8 @@ def _ensure_onchain_runtime_ready(*, container, onchain_indexer) -> None:
     raise RuntimeError(f"Onchain runtime required in prod: unhealthy:{details}")
 
 
-def _env_positive_float(name: str, *, default: float) -> float:
-    raw = os.getenv(name, str(default))
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    return value if value > 0 else default
-
-
-def _is_feature_enabled(name: str, *, default: bool) -> bool:
-    raw = os.getenv(name, "true" if default else "false").strip().lower()
-    return raw not in {"0", "false", "off", "no"}
+def _execution_sync_poll_seconds(settings: Settings, *, default: float = 2.0) -> float:
+    return settings.execution_sync_poll_seconds if settings.execution_sync_poll_seconds > 0 else default
 
 
 def create_app() -> FastAPI:
