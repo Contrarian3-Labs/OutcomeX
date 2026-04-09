@@ -13,6 +13,13 @@ class EventReadResult:
     next_cursor: int
 
 
+@dataclass(frozen=True)
+class LogReadResult:
+    file: str
+    content: str
+    next_offset: int
+
+
 def _to_path(value: str | Path | None) -> Path | None:
     if value is None:
         return None
@@ -52,7 +59,7 @@ def read_events_after_seq(events_path: str | Path | None, *, after_seq: int) -> 
     if path is None or not path.exists() or not path.is_file():
         return EventReadResult(items=items, next_cursor=next_cursor)
 
-    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
         line = raw_line.strip()
         if not line:
             continue
@@ -62,9 +69,12 @@ def read_events_after_seq(events_path: str | Path | None, *, after_seq: int) -> 
             continue
         if not isinstance(payload, dict):
             continue
-        seq = _coerce_seq(payload.get("seq"))
+        raw_seq = payload.get("seq")
+        seq = _coerce_seq(raw_seq)
         if seq is None:
-            continue
+            if "seq" in payload and raw_seq is not None:
+                continue
+            seq = line_number
         next_cursor = max(next_cursor, seq)
         if seq <= after_seq:
             continue
@@ -103,3 +113,43 @@ def list_log_files(
         seen_paths.add(resolved)
 
     return files
+
+
+def resolve_log_path(
+    *,
+    run_dir: str | Path | None,
+    stdout_path: str | Path | None,
+    stderr_path: str | Path | None,
+    file_name: str,
+) -> Path | None:
+    normalized = file_name.strip()
+    if not normalized:
+        return None
+    for entry in list_log_files(run_dir=run_dir, stdout_path=stdout_path, stderr_path=stderr_path):
+        if entry["name"] == normalized:
+            return Path(entry["path"])
+    return None
+
+
+def resolve_logs_root_path(run_dir: str | Path | None) -> str | None:
+    run_dir_path = _to_path(run_dir)
+    if run_dir_path is None:
+        return None
+    logs_dir = run_dir_path / "logs"
+    if not logs_dir.exists() or not logs_dir.is_dir():
+        return None
+    return str(logs_dir)
+
+
+def read_log_chunk(path: str | Path | None, *, offset: int) -> LogReadResult:
+    file_path = _to_path(path)
+    if file_path is None:
+        return LogReadResult(file="", content="", next_offset=max(0, int(offset)))
+
+    safe_offset = max(0, int(offset))
+    if not file_path.exists() or not file_path.is_file():
+        return LogReadResult(file=file_path.name, content="", next_offset=safe_offset)
+
+    raw = file_path.read_text(encoding="utf-8", errors="replace")
+    content = raw[safe_offset:]
+    return LogReadResult(file=file_path.name, content=content, next_offset=len(raw))
