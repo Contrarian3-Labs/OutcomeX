@@ -4,6 +4,7 @@ from pathlib import Path
 
 from app.core.config import Settings
 from app.execution.contracts import ExecutionStrategy
+from app.execution.observability import read_events_after_seq
 import app.integrations.agentskillos_execution_service as execution_module
 from app.integrations.agentskillos_execution_service import AgentSkillOSExecutionService
 
@@ -83,10 +84,14 @@ def test_execution_service_submit_and_poll_reads_run_record(tmp_path: Path) -> N
     assert snapshot.stdout_log_path.endswith("stdout.log")
     assert snapshot.stderr_log_path.endswith("stderr.log")
     assert snapshot.events_log_path.endswith("events.ndjson")
-    assert snapshot.event_cursor == 0
-    assert snapshot.log_files == ()
     assert snapshot.plan_candidates == ()
+    assert snapshot.dag is None
+    assert snapshot.active_node_id is None
     assert snapshot.logs_root_path is None
+    assert snapshot.log_files == ()
+    assert snapshot.event_cursor == 0
+    assert snapshot.stalled is False
+    assert snapshot.stalled_reason is None
 
 
 
@@ -169,7 +174,7 @@ def test_get_run_exposes_observability_snapshot_fields(tmp_path: Path, monkeypat
                 "data": {},
             }
         )
-        + "\\n",
+        + "\n",
         encoding="utf-8",
     )
     record_path = run_dir / "run.json"
@@ -233,8 +238,36 @@ def test_get_run_exposes_observability_snapshot_fields(tmp_path: Path, monkeypat
     assert snapshot.stalled is True
     assert snapshot.stalled_reason == "no_progress_for_110s"
 
+    persisted_event = json.loads(events_log.read_text(encoding="utf-8").strip())
+    assert persisted_event["event"] == "plan_candidates_generated"
+    assert set(persisted_event) >= {"seq", "timestamp", "run_id", "phase", "event", "level", "message", "data"}
+
+
+def test_structured_events_round_trip_from_persisted_file(tmp_path: Path) -> None:
+    events_path = tmp_path / "events.ndjson"
+    events_path.write_text(
+        "\n".join(
+            [
+                '{"seq":1,"timestamp":"2026-04-06T07:00:00+00:00","run_id":"aso-run-1","phase":"starting","event":"run_started","level":"info","message":"started","data":{}}',
+                '{"seq":2,"timestamp":"2026-04-06T07:00:01+00:00","run_id":"aso-run-1","phase":"skill_discovery","event":"skills_discovered","level":"info","message":"Discovered 2 skills","data":{"skills":["a","b"]}}',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = read_events_after_seq(events_path, after_seq=0)
+
+    assert result.next_cursor == 2
+    assert len(result.items) == 2
+    required = {"seq", "timestamp", "run_id", "phase", "event", "level", "message", "data"}
+    assert required.issubset(result.items[0].keys())
+
 
 def test_embedded_execution_script_compiles() -> None:
+    assert "list_log_files(" not in execution_module._EXECUTION_SCRIPT
+    assert "discover_log_sources(" in execution_module._EXECUTION_SCRIPT
+    assert "initial.update(failed)" in execution_module._EXECUTION_SCRIPT
+    assert "initial.update(final)" in execution_module._EXECUTION_SCRIPT
     compile(execution_module._EXECUTION_SCRIPT, "<agentskillos_execution_script>", "exec")
 
 
