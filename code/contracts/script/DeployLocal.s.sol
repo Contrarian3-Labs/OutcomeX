@@ -54,60 +54,46 @@ contract DeployLocal {
     {
         vm.startBroadcast();
 
-        MockUSDCWithAuthorization usdc = new MockUSDCWithAuthorization();
-        MockUSDT usdt = new MockUSDT();
-        MockPermit2 permit2 = new MockPermit2();
-        PWRToken pwr = new PWRToken(initialOwner);
-        MachineAssetNFT machineAsset = new MachineAssetNFT(initialOwner);
+        deployed.usdc = address(new MockUSDCWithAuthorization());
+        deployed.usdt = address(new MockUSDT());
+        deployed.permit2 = address(new MockPermit2());
+        deployed.pwr = address(new PWRToken(initialOwner));
+        deployed.machineAsset = address(new MachineAssetNFT(initialOwner));
         address[] memory supportedTokens = new address[](2);
-        supportedTokens[0] = address(usdc);
-        supportedTokens[1] = address(usdt);
-        MachineMarketplace machineMarketplace = new MachineMarketplace(initialOwner, address(machineAsset), supportedTokens);
-        RevenueVault revenueVault = new RevenueVault(initialOwner, address(pwr), address(machineAsset));
-        SettlementController settlementController =
-            new SettlementController(initialOwner, address(revenueVault), platformTreasury);
-        OrderBook orderBook = new OrderBook(initialOwner, address(machineAsset));
-        OrderPaymentRouter router = new OrderPaymentRouter(
+        supportedTokens[0] = deployed.usdc;
+        supportedTokens[1] = deployed.usdt;
+        deployed.machineMarketplace = address(new MachineMarketplace(initialOwner, deployed.machineAsset, supportedTokens));
+        deployed.revenueVault = address(new RevenueVault(initialOwner, deployed.pwr, deployed.machineAsset));
+        deployed.settlementController =
+            address(new SettlementController(initialOwner, deployed.revenueVault, platformTreasury));
+        deployed.orderBook = address(new OrderBook(initialOwner, deployed.machineAsset));
+        deployed.orderPaymentRouter = address(new OrderPaymentRouter(
             initialOwner,
-            address(orderBook),
-            address(usdc),
-            address(usdt),
-            address(pwr),
-            address(permit2)
-        );
+            deployed.orderBook,
+            deployed.usdc,
+            deployed.usdt,
+            deployed.pwr,
+            deployed.permit2
+        ));
 
-        pwr.setMinter(address(revenueVault), true);
-        pwr.setMinter(initialOwner, true);
-        pwr.mint(initialOwner, 1_000_000 ether);
-        pwr.setMinter(initialOwner, false);
+        PWRToken(deployed.pwr).setMinter(deployed.revenueVault, true);
+        PWRToken(deployed.pwr).setMinter(initialOwner, true);
+        PWRToken(deployed.pwr).mint(initialOwner, 1_000_000 ether);
+        PWRToken(deployed.pwr).setMinter(initialOwner, false);
 
-        usdc.mint(initialOwner, 10_000_000 * 10 ** 6);
-        usdt.mint(initialOwner, 10_000_000 * 10 ** 6);
+        MockUSDCWithAuthorization(deployed.usdc).mint(initialOwner, 10_000_000 * 10 ** 6);
+        MockUSDT(deployed.usdt).mint(initialOwner, 10_000_000 * 10 ** 6);
 
-        revenueVault.setSettlementController(address(settlementController));
-        router.setSettlementEscrow(address(settlementController));
-        settlementController.setOrderBook(address(orderBook));
-        orderBook.setSettlementController(address(settlementController));
-        orderBook.setRevenueVault(address(revenueVault));
-        orderBook.setPaymentAdapter(address(router));
-        machineAsset.setTransferGuard(address(orderBook));
-        uint256 machineId = machineAsset.mintMachine(machineOwner, "ipfs://local-machine-001");
+        RevenueVault(deployed.revenueVault).setSettlementController(deployed.settlementController);
+        OrderPaymentRouter(deployed.orderPaymentRouter).setSettlementEscrow(deployed.settlementController);
+        SettlementController(deployed.settlementController).setOrderBook(deployed.orderBook);
+        OrderBook(deployed.orderBook).setSettlementController(deployed.settlementController);
+        OrderBook(deployed.orderBook).setRevenueVault(deployed.revenueVault);
+        OrderBook(deployed.orderBook).setPaymentAdapter(deployed.orderPaymentRouter);
+        MachineAssetNFT(deployed.machineAsset).setTransferGuard(deployed.orderBook);
+        deployed.sampleMachineId = MachineAssetNFT(deployed.machineAsset).mintMachine(machineOwner, "ipfs://local-machine-001");
 
         vm.stopBroadcast();
-
-        deployed = Deployment({
-            usdc: address(usdc),
-            usdt: address(usdt),
-            permit2: address(permit2),
-            pwr: address(pwr),
-            machineAsset: address(machineAsset),
-            machineMarketplace: address(machineMarketplace),
-            revenueVault: address(revenueVault),
-            settlementController: address(settlementController),
-            orderBook: address(orderBook),
-            orderPaymentRouter: address(router),
-            sampleMachineId: machineId
-        });
 
         emit DeploymentAddress("USDC", deployed.usdc);
         emit DeploymentAddress("USDT", deployed.usdt);
