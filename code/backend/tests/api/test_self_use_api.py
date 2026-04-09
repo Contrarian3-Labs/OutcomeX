@@ -7,10 +7,14 @@ from fastapi.testclient import TestClient
 from app.core.config import reset_settings_cache
 from app.core.container import get_container, reset_container_cache
 from app.domain.enums import ExecutionRunStatus
+from app.domain.models import Machine
 from app.execution.contracts import ExecutionStrategy
 from app.indexer.execution_sync import sync_execution_runs_once
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
 from app.main import create_app
+
+OWNER_WALLET = "0x1111111111111111111111111111111111111111"
+OTHER_WALLET = "0x2222222222222222222222222222222222222222"
 
 
 class _ExecutionServiceStub:
@@ -142,7 +146,16 @@ def _create_machine(client: TestClient) -> dict:
         json={"display_name": "GANA node", "owner_user_id": "owner-1"},
     )
     assert response.status_code == 201
-    return response.json()
+    payload = response.json()
+    with get_container().session_factory() as db:
+        machine = db.get(Machine, payload["id"])
+        assert machine is not None
+        machine.owner_chain_address = OWNER_WALLET.lower()
+        db.add(machine)
+        db.commit()
+        db.refresh(machine)
+        payload["owner_chain_address"] = machine.owner_chain_address
+    return payload
 
 
 def test_self_use_plans_forbid_non_owner(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
@@ -152,7 +165,7 @@ def test_self_use_plans_forbid_non_owner(client: tuple[TestClient, _ExecutionSer
     response = test_client.post(
         "/api/v1/self-use/plans",
         json={
-            "viewer_user_id": "not-owner",
+            "viewer_wallet_address": OTHER_WALLET,
             "machine_id": machine["id"],
             "prompt": "Create a private diagnostics report",
             "execution_strategy": "quality",
@@ -166,11 +179,12 @@ def test_self_use_owner_flow_without_order_side_effects(client: tuple[TestClient
     test_client, stub = client
     machine = _create_machine(test_client)
     owner_user_id = "owner-1"
+    owner_wallet = OWNER_WALLET
 
     plans_response = test_client.post(
         "/api/v1/self-use/plans",
         json={
-            "viewer_user_id": owner_user_id,
+            "viewer_wallet_address": owner_wallet,
             "machine_id": machine["id"],
             "prompt": "Build owner dashboard",
             "execution_strategy": "efficiency",
@@ -193,7 +207,7 @@ def test_self_use_owner_flow_without_order_side_effects(client: tuple[TestClient
     create_run = test_client.post(
         "/api/v1/self-use/runs",
         json={
-            "viewer_user_id": owner_user_id,
+            "viewer_wallet_address": owner_wallet,
             "machine_id": machine["id"],
             "prompt": "Build owner dashboard",
             "execution_strategy": "simplicity",
@@ -206,8 +220,9 @@ def test_self_use_owner_flow_without_order_side_effects(client: tuple[TestClient
     assert run_payload["run_kind"] == "self_use"
     assert run_payload["order_id"] is None
     assert run_payload["machine_id"] == machine["id"]
-    assert run_payload["viewer_user_id"] == owner_user_id
-    assert run_payload["external_order_id"] == f"self-use:{machine['id']}:{owner_user_id}"
+    assert run_payload["viewer_wallet_address"] == owner_wallet.lower()
+    assert run_payload["viewer_user_id"] is None
+    assert run_payload["external_order_id"] == f"self-use:{machine['id']}:{owner_wallet.lower()}"
     assert run_payload["submission_payload"]["selected_plan_index"] == 2
     assert stub.submit_calls[0]["selected_plan_index"] == 2
 
@@ -217,7 +232,7 @@ def test_self_use_owner_flow_without_order_side_effects(client: tuple[TestClient
 
     read_run = test_client.get(
         f"/api/v1/self-use/runs/{run_payload['id']}",
-        params={"viewer_user_id": owner_user_id},
+        params={"viewer_wallet_address": owner_wallet},
     )
     assert read_run.status_code == 200
     read_payload = read_run.json()
@@ -225,11 +240,12 @@ def test_self_use_owner_flow_without_order_side_effects(client: tuple[TestClient
     assert read_payload["run_kind"] == "self_use"
     assert read_payload["order_id"] is None
     assert read_payload["machine_id"] == machine["id"]
-    assert read_payload["viewer_user_id"] == owner_user_id
+    assert read_payload["viewer_wallet_address"] == owner_wallet.lower()
+    assert read_payload["viewer_user_id"] is None
 
     forbidden_read = test_client.get(
         f"/api/v1/self-use/runs/{run_payload['id']}",
-        params={"viewer_user_id": "not-owner"},
+        params={"viewer_wallet_address": OTHER_WALLET},
     )
     assert forbidden_read.status_code == 403
 
@@ -255,7 +271,7 @@ def test_self_use_rejects_native_plan_index_mismatch(client: tuple[TestClient, _
     plans_response = test_client.post(
         "/api/v1/self-use/plans",
         json={
-            "viewer_user_id": "owner-1",
+            "viewer_wallet_address": OWNER_WALLET,
             "machine_id": machine["id"],
             "prompt": "Build owner dashboard",
             "execution_strategy": "simplicity",
@@ -268,7 +284,7 @@ def test_self_use_rejects_native_plan_index_mismatch(client: tuple[TestClient, _
     response = test_client.post(
         "/api/v1/self-use/runs",
         json={
-            "viewer_user_id": "owner-1",
+            "viewer_wallet_address": OWNER_WALLET,
             "machine_id": machine["id"],
             "prompt": "Build owner dashboard",
             "execution_strategy": "simplicity",

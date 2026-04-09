@@ -19,6 +19,7 @@ router = APIRouter()
 def build_execution_run_response(run: ExecutionRun, snapshot, order: Order | None) -> ExecutionRunResponse:
     machine_id = run.machine_id or (order.machine_id if order is not None else None)
     viewer_user_id = run.viewer_user_id or (order.user_id if order is not None else None)
+    viewer_wallet_address = run.viewer_user_id if run.run_kind == "self_use" else None
     snapshot_submission_payload = getattr(snapshot, "submission_payload", None)
     response_submission_payload = merge_submission_payload(
         order=order,
@@ -33,7 +34,8 @@ def build_execution_run_response(run: ExecutionRun, snapshot, order: Order | Non
     response = ExecutionRunResponse.model_validate(run).model_copy(
         update={
             "machine_id": machine_id,
-            "viewer_user_id": viewer_user_id,
+            "viewer_user_id": None if run.run_kind == "self_use" else viewer_user_id,
+            "viewer_wallet_address": viewer_wallet_address,
             "run_kind": run.run_kind or "order",
             "status": getattr(snapshot, "status", run.status),
             "submission_payload": response_submission_payload,

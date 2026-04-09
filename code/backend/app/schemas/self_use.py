@@ -5,7 +5,7 @@ from app.schemas.chat_plan import RecommendedPlanResponse
 
 
 class SelfUsePlansRequest(BaseModel):
-    viewer_user_id: str = Field(min_length=1, max_length=64)
+    viewer_wallet_address: str = Field(min_length=42, max_length=42, pattern=r"^0x[a-fA-F0-9]{40}$")
     machine_id: str = Field(min_length=1, max_length=36)
     prompt: str = Field(min_length=1)
     execution_strategy: ExecutionStrategy = ExecutionStrategy.QUALITY
@@ -13,7 +13,7 @@ class SelfUsePlansRequest(BaseModel):
 
 
 class SelfUsePlansResponse(BaseModel):
-    viewer_user_id: str
+    viewer_wallet_address: str
     machine_id: str
     prompt: str
     execution_strategy: ExecutionStrategy
@@ -23,7 +23,7 @@ class SelfUsePlansResponse(BaseModel):
 
 
 class SelfUseRunCreateRequest(BaseModel):
-    viewer_user_id: str = Field(min_length=1, max_length=64)
+    viewer_wallet_address: str = Field(min_length=42, max_length=42, pattern=r"^0x[a-fA-F0-9]{40}$")
     machine_id: str = Field(min_length=1, max_length=36)
     prompt: str = Field(min_length=1)
     execution_strategy: ExecutionStrategy = ExecutionStrategy.QUALITY

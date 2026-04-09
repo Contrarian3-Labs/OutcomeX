@@ -10,6 +10,7 @@ class ExecutionRunResponse(BaseModel):
     order_id: str | None
     machine_id: str | None = None
     viewer_user_id: str | None = None
+    viewer_wallet_address: str | None = None
     run_kind: str
     external_order_id: str
     status: ExecutionRunStatus

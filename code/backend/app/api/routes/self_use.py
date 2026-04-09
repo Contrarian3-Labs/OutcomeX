@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
@@ -16,19 +18,27 @@ from app.schemas.self_use import SelfUsePlansRequest, SelfUsePlansResponse, Self
 router = APIRouter()
 
 _RUN_KIND_SELF_USE = "self_use"
+_EVM_ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
 
-def _resolve_owner_machine(*, db: Session, machine_id: str, viewer_user_id: str) -> Machine:
+def _normalize_wallet_address(wallet_address: str) -> str:
+    if not _EVM_ADDRESS_RE.match(wallet_address):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid viewer wallet address")
+    return wallet_address.lower()
+
+
+def _resolve_owner_machine(*, db: Session, machine_id: str, viewer_wallet_address: str) -> Machine:
     machine = db.get(Machine, machine_id)
     if machine is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
-    if machine.owner_user_id != viewer_user_id:
+    owner_wallet_address = (machine.owner_chain_address or "").lower()
+    if not owner_wallet_address or owner_wallet_address != _normalize_wallet_address(viewer_wallet_address):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Self-use is owner-only")
     return machine
 
 
-def _self_use_external_order_id(*, machine_id: str, viewer_user_id: str) -> str:
-    return f"self-use:{machine_id}:{viewer_user_id}"
+def _self_use_external_order_id(*, machine_id: str, viewer_wallet_address: str) -> str:
+    return f"self-use:{machine_id}:{_normalize_wallet_address(viewer_wallet_address)}"
 
 
 @router.post("/plans", response_model=SelfUsePlansResponse)
@@ -36,17 +46,25 @@ def create_self_use_plans(
     payload: SelfUsePlansRequest,
     db: Session = Depends(get_db),
 ) -> SelfUsePlansResponse:
-    machine = _resolve_owner_machine(db=db, machine_id=payload.machine_id, viewer_user_id=payload.viewer_user_id)
+    normalized_viewer_wallet = _normalize_wallet_address(payload.viewer_wallet_address)
+    machine = _resolve_owner_machine(
+        db=db,
+        machine_id=payload.machine_id,
+        viewer_wallet_address=normalized_viewer_wallet,
+    )
     recommended_plans = build_recommended_plans(
-        user_id=payload.viewer_user_id,
-        chat_session_id=_self_use_external_order_id(machine_id=machine.id, viewer_user_id=payload.viewer_user_id),
+        user_id=normalized_viewer_wallet,
+        chat_session_id=_self_use_external_order_id(
+            machine_id=machine.id,
+            viewer_wallet_address=normalized_viewer_wallet,
+        ),
         user_message=payload.prompt,
         preferred_strategy=payload.execution_strategy,
         input_files=tuple(payload.input_files),
     )
     top_plan = recommended_plans[0]
     return SelfUsePlansResponse(
-        viewer_user_id=payload.viewer_user_id,
+        viewer_wallet_address=normalized_viewer_wallet,
         machine_id=machine.id,
         prompt=payload.prompt,
         execution_strategy=payload.execution_strategy,
@@ -75,10 +93,18 @@ def create_self_use_run(
     db: Session = Depends(get_db),
     execution_service=Depends(get_agentskillos_execution_service),
 ) -> ExecutionRunResponse:
-    machine = _resolve_owner_machine(db=db, machine_id=payload.machine_id, viewer_user_id=payload.viewer_user_id)
+    normalized_viewer_wallet = _normalize_wallet_address(payload.viewer_wallet_address)
+    machine = _resolve_owner_machine(
+        db=db,
+        machine_id=payload.machine_id,
+        viewer_wallet_address=normalized_viewer_wallet,
+    )
     recommended_plans = build_recommended_plans(
-        user_id=payload.viewer_user_id,
-        chat_session_id=_self_use_external_order_id(machine_id=machine.id, viewer_user_id=payload.viewer_user_id),
+        user_id=normalized_viewer_wallet,
+        chat_session_id=_self_use_external_order_id(
+            machine_id=machine.id,
+            viewer_wallet_address=normalized_viewer_wallet,
+        ),
         user_message=payload.prompt,
         preferred_strategy=payload.execution_strategy,
         input_files=tuple(payload.input_files),
@@ -108,7 +134,10 @@ def create_self_use_run(
             status_code=status.HTTP_409_CONFLICT,
             detail="Selected native plan index does not match selected plan",
         )
-    external_order_id = _self_use_external_order_id(machine_id=machine.id, viewer_user_id=payload.viewer_user_id)
+    external_order_id = _self_use_external_order_id(
+        machine_id=machine.id,
+        viewer_wallet_address=normalized_viewer_wallet,
+    )
     dispatch_context = {"machine_id": machine.id}
     if selected_native_plan_index is not None:
         dispatch_context["selected_native_plan_index"] = str(selected_native_plan_index)
@@ -139,7 +168,7 @@ def create_self_use_run(
         id=dispatch.run_id,
         order_id=None,
         machine_id=machine.id,
-        viewer_user_id=payload.viewer_user_id,
+        viewer_user_id=normalized_viewer_wallet,
         run_kind=_RUN_KIND_SELF_USE,
         external_order_id=external_order_id,
         status=run_status,
@@ -166,20 +195,21 @@ def create_self_use_run(
 @router.get("/runs/{run_id}", response_model=ExecutionRunResponse)
 def get_self_use_run(
     run_id: str,
-    viewer_user_id: str = Query(min_length=1, max_length=64),
+    viewer_wallet_address: str = Query(min_length=42, max_length=42, pattern=r"^0x[a-fA-F0-9]{40}$"),
     db: Session = Depends(get_db),
     execution_service=Depends(get_agentskillos_execution_service),
 ) -> ExecutionRunResponse:
     run = db.get(ExecutionRun, run_id)
     if run is None or run.run_kind != _RUN_KIND_SELF_USE:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Self-use run not found")
-    if run.viewer_user_id != viewer_user_id:
+    normalized_viewer_wallet = _normalize_wallet_address(viewer_wallet_address)
+    if run.viewer_user_id != normalized_viewer_wallet:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Self-use is owner-only")
 
     machine = db.get(Machine, run.machine_id) if run.machine_id is not None else None
     if machine is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
-    if machine.owner_user_id != viewer_user_id:
+    if (machine.owner_chain_address or "").lower() != normalized_viewer_wallet:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Self-use is owner-only")
 
     snapshot = execution_service.get_run(run_id)
