@@ -158,6 +158,26 @@ class _ExecutionServiceStub:
                 "last_heartbeat_at": datetime.now(timezone.utc),
                 "current_phase": "finished",
                 "current_step": "docx",
+                "plan_candidates": [
+                    {"index": 0, "name": "Quality-First", "description": "Deep validation path", "strategy": "quality"},
+                    {"index": 1, "name": "Efficiency-First", "description": "Fast path", "strategy": "efficiency"},
+                ],
+                "dag": {"nodes": [{"id": "n1", "status": "running"}], "edges": []},
+                "active_node_id": "n1",
+                "logs_root_path": "/tmp/run-dir/logs",
+                "log_files": [
+                    {
+                        "kind": "raw_file",
+                        "name": "planner.log",
+                        "path": "/tmp/run-dir/logs/planner.log",
+                        "size": 10,
+                        "updated_at": datetime.now(timezone.utc),
+                    }
+                ],
+                "event_cursor": 12,
+                "last_progress_at": datetime.now(timezone.utc),
+                "stalled": False,
+                "stalled_reason": None,
             },
         )()
 
@@ -375,6 +395,112 @@ def test_start_execution_creates_run_and_run_endpoint_returns_snapshot_without_m
     assert order_after_second_poll.status_code == 200
     assert order_after_second_poll.json()["state"] == "executing"
     assert order_after_second_poll.json()["settlement_state"] == "not_ready"
+
+
+def test_execution_run_snapshot_includes_observability_fields(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
+    test_client, _stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order(test_client, machine["id"])
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert start.status_code == 200
+
+    response = test_client.get("/api/v1/execution-runs/aso-run-test")
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert "plan_candidates" in payload
+    assert "dag" in payload
+    assert "active_node_id" in payload
+    assert "logs_root_path" in payload
+    assert "log_files" in payload
+    assert "event_cursor" in payload
+    assert "last_progress_at" in payload
+    assert "stalled" in payload
+    assert payload["event_cursor"] == 12
+    assert payload["active_node_id"] == "n1"
+    assert payload["stalled"] is False
+    assert isinstance(payload["log_files"], list)
+    assert payload["plan_candidates"][0]["index"] == 0
+    assert payload["plan_candidates"][0]["name"] == "Quality-First"
+    assert payload["plan_candidates"][0]["description"] == "Deep validation path"
+    assert payload["plan_candidates"][0]["strategy"] == "quality"
+    assert payload["log_files"][0]["kind"] == "raw_file"
+    assert payload["log_files"][0]["name"] == "planner.log"
+    assert payload["log_files"][0]["path"] == "/tmp/run-dir/logs/planner.log"
+    assert payload["log_files"][0]["size"] == 10
+    assert payload["log_files"][0]["updated_at"] is not None
+
+
+def test_execution_run_snapshot_coerces_invalid_observability_scalars_safely(
+    client: tuple[TestClient, _ExecutionServiceStub]
+) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order(test_client, machine["id"])
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert start.status_code == 200
+
+    malformed_snapshot = stub.get_run("aso-run-test")
+    malformed_snapshot.event_cursor = "not-an-int"
+    malformed_snapshot.stalled = "false"
+    stub.get_run = lambda _run_id: malformed_snapshot  # type: ignore[assignment]
+
+    response = test_client.get("/api/v1/execution-runs/aso-run-test")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["event_cursor"] == 0
+    assert payload["stalled"] is False
+
+
+def test_execution_run_snapshot_normalizes_malformed_plan_candidates_and_log_files(
+    client: tuple[TestClient, _ExecutionServiceStub]
+) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order(test_client, machine["id"])
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert start.status_code == 200
+
+    malformed_snapshot = stub.get_run("aso-run-test")
+    malformed_snapshot.plan_candidates = [
+        None,
+        "bad",
+        {"index": "7", "name": 901, "description": None, "strategy": "quality"},
+        {"name": "Missing Index"},
+    ]
+    malformed_snapshot.log_files = [
+        "bad",
+        {
+            "kind": "raw_file",
+            "name": 33,
+            "path": "/tmp/run-dir/logs/raw.log",
+            "size": "42",
+            "updated_at": "2026-04-09T12:30:00Z",
+        },
+        {"path": "/tmp/run-dir/logs/minimal.log"},
+    ]
+    stub.get_run = lambda _run_id: malformed_snapshot  # type: ignore[assignment]
+
+    response = test_client.get("/api/v1/execution-runs/aso-run-test")
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["plan_candidates"] == [
+        {"index": 7, "name": "901", "description": "", "strategy": "quality"},
+        {"index": 0, "name": "Missing Index", "description": "", "strategy": ""},
+    ]
+    assert payload["log_files"][0]["kind"] == "raw_file"
+    assert payload["log_files"][0]["name"] == "33"
+    assert payload["log_files"][0]["path"] == "/tmp/run-dir/logs/raw.log"
+    assert payload["log_files"][0]["size"] == 42
+    assert payload["log_files"][0]["updated_at"] == "2026-04-09T12:30:00Z"
+    assert payload["log_files"][1] == {
+        "kind": "",
+        "name": "",
+        "path": "/tmp/run-dir/logs/minimal.log",
+        "size": 0,
+        "updated_at": None,
+    }
 
 
 def test_start_execution_rejects_tampered_execution_contract(
