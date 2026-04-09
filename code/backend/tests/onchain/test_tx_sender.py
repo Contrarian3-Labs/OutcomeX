@@ -310,7 +310,7 @@ def test_python_sender_raises_on_chain_id_mismatch() -> None:
 
 
 def test_get_onchain_transaction_sender_returns_null_without_rpc(monkeypatch) -> None:
-    monkeypatch.delenv("OUTCOMEX_ONCHAIN_RPC_URL", raising=False)
+    monkeypatch.setenv("OUTCOMEX_ONCHAIN_RPC_URL", "")
     monkeypatch.setenv("OUTCOMEX_ONCHAIN_ADAPTER_PRIVATE_KEY", "0xabc")
 
     sender = get_onchain_transaction_sender()

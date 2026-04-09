@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import reset_settings_cache
+from app.onchain.lifecycle_service import reset_onchain_lifecycle_service_cache
 from app.core.container import reset_container_cache, get_container
 from app.domain.models import Machine, MachineListing, MachineRevenueClaim, Order, RevenueEntry, SettlementRecord
 from app.runtime.hardware_simulator import WorkloadSpec
@@ -16,19 +17,21 @@ def client(tmp_path) -> TestClient:
     db_path = tmp_path / "machines-api.db"
     os.environ["OUTCOMEX_DATABASE_URL"] = f"sqlite+pysqlite:///{db_path.as_posix()}"
     os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
-    os.environ.pop("OUTCOMEX_ONCHAIN_RPC_URL", None)
+    os.environ["OUTCOMEX_ONCHAIN_RPC_URL"] = ""
     reset_settings_cache()
     reset_container_cache()
+    reset_onchain_lifecycle_service_cache()
 
     with TestClient(create_app()) as test_client:
         yield test_client
 
     if previous_onchain_rpc_url is None:
-        os.environ.pop("OUTCOMEX_ONCHAIN_RPC_URL", None)
+        os.environ["OUTCOMEX_ONCHAIN_RPC_URL"] = ""
     else:
         os.environ["OUTCOMEX_ONCHAIN_RPC_URL"] = previous_onchain_rpc_url
     reset_settings_cache()
     reset_container_cache()
+    reset_onchain_lifecycle_service_cache()
 
 
 def _create_machine(client: TestClient, *, owner_user_id: str = "owner-1") -> dict:
@@ -114,13 +117,14 @@ def test_create_machine_backfills_owner_chain_address_when_wallet_mapping_exists
     db_path = tmp_path / "machines-api-mint.db"
     monkeypatch.setenv("OUTCOMEX_DATABASE_URL", f"sqlite+pysqlite:///{db_path.as_posix()}")
     monkeypatch.setenv("OUTCOMEX_AUTO_CREATE_TABLES", "true")
-    monkeypatch.delenv("OUTCOMEX_ONCHAIN_RPC_URL", raising=False)
+    monkeypatch.setenv("OUTCOMEX_ONCHAIN_RPC_URL", "")
     monkeypatch.setenv(
         "OUTCOMEX_BUYER_WALLET_MAP_JSON",
         '{"owner-1":"0x1111111111111111111111111111111111111111"}',
     )
     reset_settings_cache()
     reset_container_cache()
+    reset_onchain_lifecycle_service_cache()
 
     stub = StubOnchainLifecycle(enabled=True, onchain_machine_id="101")
     with TestClient(create_app()) as test_client:

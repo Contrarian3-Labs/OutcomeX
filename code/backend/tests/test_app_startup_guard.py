@@ -13,7 +13,7 @@ def test_prod_startup_fails_when_onchain_indexer_runtime_is_unavailable(tmp_path
     monkeypatch.setenv("OUTCOMEX_DATABASE_URL", f"sqlite+pysqlite:///{db_path.as_posix()}")
     monkeypatch.setenv("OUTCOMEX_AUTO_CREATE_TABLES", "true")
     monkeypatch.setenv("OUTCOMEX_ENV", "prod")
-    monkeypatch.delenv("OUTCOMEX_ONCHAIN_RPC_URL", raising=False)
+    monkeypatch.setenv("OUTCOMEX_ONCHAIN_RPC_URL", "")
     reset_settings_cache()
     reset_container_cache()
 
@@ -27,7 +27,7 @@ def test_dev_startup_allows_null_indexer_runtime(tmp_path, monkeypatch: pytest.M
     monkeypatch.setenv("OUTCOMEX_DATABASE_URL", f"sqlite+pysqlite:///{db_path.as_posix()}")
     monkeypatch.setenv("OUTCOMEX_AUTO_CREATE_TABLES", "true")
     monkeypatch.setenv("OUTCOMEX_ENV", "dev")
-    monkeypatch.delenv("OUTCOMEX_ONCHAIN_RPC_URL", raising=False)
+    monkeypatch.setenv("OUTCOMEX_ONCHAIN_RPC_URL", "")
     reset_settings_cache()
     reset_container_cache()
 

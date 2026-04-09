@@ -14,7 +14,7 @@ def _reset_settings_cache_between_tests():
 
 
 def test_get_receipt_reader_returns_null_without_rpc(monkeypatch) -> None:
-    monkeypatch.delenv("OUTCOMEX_ONCHAIN_RPC_URL", raising=False)
+    monkeypatch.setenv("OUTCOMEX_ONCHAIN_RPC_URL", "")
 
     reader = get_receipt_reader()
 

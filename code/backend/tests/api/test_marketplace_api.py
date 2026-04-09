@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import reset_settings_cache
+from app.onchain.lifecycle_service import reset_onchain_lifecycle_service_cache
 from app.core.container import get_container, reset_container_cache
 from app.domain.models import Machine, MachineListing
 from app.main import create_app
@@ -16,19 +17,21 @@ def client(tmp_path) -> TestClient:
     db_path = tmp_path / "marketplace-api.db"
     os.environ["OUTCOMEX_DATABASE_URL"] = f"sqlite+pysqlite:///{db_path.as_posix()}"
     os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
-    os.environ.pop("OUTCOMEX_ONCHAIN_RPC_URL", None)
+    os.environ["OUTCOMEX_ONCHAIN_RPC_URL"] = ""
     reset_settings_cache()
     reset_container_cache()
+    reset_onchain_lifecycle_service_cache()
 
     with TestClient(create_app()) as test_client:
         yield test_client
 
     if previous_onchain_rpc_url is None:
-        os.environ.pop("OUTCOMEX_ONCHAIN_RPC_URL", None)
+        os.environ["OUTCOMEX_ONCHAIN_RPC_URL"] = ""
     else:
         os.environ["OUTCOMEX_ONCHAIN_RPC_URL"] = previous_onchain_rpc_url
     reset_settings_cache()
     reset_container_cache()
+    reset_onchain_lifecycle_service_cache()
 
 
 def test_marketplace_listings_returns_only_active_non_expired_projection_rows(client: TestClient) -> None:
