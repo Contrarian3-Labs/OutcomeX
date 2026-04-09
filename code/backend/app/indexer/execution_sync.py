@@ -73,7 +73,7 @@ def sync_execution_runs_once(
             _sync_model_from_snapshot(run, snapshot)
             synced_runs += 1
 
-            order = db.get(Order, run.order_id)
+            order = db.get(Order, run.order_id) if run.order_id is not None else None
             if order is not None:
                 _sync_order_from_snapshot(
                     db=db,
@@ -82,6 +82,8 @@ def sync_execution_runs_once(
                     onchain_lifecycle=lifecycle,
                     order_writer=writer,
                 )
+            elif run.run_kind == "self_use" and run.status in TERMINAL_RUN_STATUSES and run.machine_id is not None:
+                _release_machine_active_task(db=db, machine_id=run.machine_id)
             if run.status in TERMINAL_RUN_STATUSES:
                 terminal_runs += 1
 

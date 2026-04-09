@@ -5,9 +5,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import reset_settings_cache
-from app.core.container import reset_container_cache
+from app.core.container import get_container, reset_container_cache
 from app.domain.enums import ExecutionRunStatus
 from app.execution.contracts import ExecutionStrategy
+from app.indexer.execution_sync import sync_execution_runs_once
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
 from app.main import create_app
 
@@ -214,7 +215,10 @@ def test_self_use_owner_flow_without_order_side_effects(client: tuple[TestClient
     assert after_orders.status_code == 200
     assert after_orders.json()["items"] == []
 
-    read_run = test_client.get(f"/api/v1/self-use/runs/{run_payload['id']}")
+    read_run = test_client.get(
+        f"/api/v1/self-use/runs/{run_payload['id']}",
+        params={"viewer_user_id": owner_user_id},
+    )
     assert read_run.status_code == 200
     read_payload = read_run.json()
     assert read_payload["id"] == run_payload["id"]
@@ -222,3 +226,57 @@ def test_self_use_owner_flow_without_order_side_effects(client: tuple[TestClient
     assert read_payload["order_id"] is None
     assert read_payload["machine_id"] == machine["id"]
     assert read_payload["viewer_user_id"] == owner_user_id
+
+    forbidden_read = test_client.get(
+        f"/api/v1/self-use/runs/{run_payload['id']}",
+        params={"viewer_user_id": "not-owner"},
+    )
+    assert forbidden_read.status_code == 403
+
+    generic_read = test_client.get(f"/api/v1/execution-runs/{run_payload['id']}")
+    assert generic_read.status_code == 404
+
+    sync_outcome = sync_execution_runs_once(
+        session_factory=get_container().session_factory,
+        execution_service=stub,
+    )
+    assert sync_outcome.scanned_runs == 1
+    assert sync_outcome.terminal_runs == 1
+
+    machine_after_sync = test_client.get("/api/v1/machines")
+    assert machine_after_sync.status_code == 200
+    machine_after_sync_payload = next(item for item in machine_after_sync.json() if item["id"] == machine["id"])
+    assert machine_after_sync_payload["has_active_tasks"] is False
+
+
+def test_self_use_rejects_native_plan_index_mismatch(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
+    test_client, _ = client
+    machine = _create_machine(test_client)
+    plans_response = test_client.post(
+        "/api/v1/self-use/plans",
+        json={
+            "viewer_user_id": "owner-1",
+            "machine_id": machine["id"],
+            "prompt": "Build owner dashboard",
+            "execution_strategy": "simplicity",
+            "input_files": ["owner-notes.md"],
+        },
+    )
+    assert plans_response.status_code == 200
+    selected_plan_id = plans_response.json()["recommended_plans"][0]["plan_id"]
+
+    response = test_client.post(
+        "/api/v1/self-use/runs",
+        json={
+            "viewer_user_id": "owner-1",
+            "machine_id": machine["id"],
+            "prompt": "Build owner dashboard",
+            "execution_strategy": "simplicity",
+            "input_files": ["owner-notes.md"],
+            "selected_plan_id": selected_plan_id,
+            "selected_native_plan_index": 0,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Selected native plan index does not match selected plan"

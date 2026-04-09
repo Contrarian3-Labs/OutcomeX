@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -99,6 +99,15 @@ def create_self_use_run(
         if payload.selected_native_plan_index is not None
         else selected_plan.native_plan_index
     )
+    if (
+        payload.selected_native_plan_index is not None
+        and selected_plan.native_plan_index is not None
+        and payload.selected_native_plan_index != selected_plan.native_plan_index
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Selected native plan index does not match selected plan",
+        )
     external_order_id = _self_use_external_order_id(machine_id=machine.id, viewer_user_id=payload.viewer_user_id)
     dispatch_context = {"machine_id": machine.id}
     if selected_native_plan_index is not None:
@@ -157,12 +166,21 @@ def create_self_use_run(
 @router.get("/runs/{run_id}", response_model=ExecutionRunResponse)
 def get_self_use_run(
     run_id: str,
+    viewer_user_id: str = Query(min_length=1, max_length=64),
     db: Session = Depends(get_db),
     execution_service=Depends(get_agentskillos_execution_service),
 ) -> ExecutionRunResponse:
     run = db.get(ExecutionRun, run_id)
     if run is None or run.run_kind != _RUN_KIND_SELF_USE:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Self-use run not found")
+    if run.viewer_user_id != viewer_user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Self-use is owner-only")
+
+    machine = db.get(Machine, run.machine_id) if run.machine_id is not None else None
+    if machine is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
+    if machine.owner_user_id != viewer_user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Self-use is owner-only")
 
     snapshot = execution_service.get_run(run_id)
     return build_execution_run_response(run, snapshot, None)

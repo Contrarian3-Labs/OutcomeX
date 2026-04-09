@@ -78,6 +78,8 @@ def get_execution_run(
     run = db.get(ExecutionRun, run_id)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution run not found")
+    if run.run_kind == "self_use":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution run not found")
 
     snapshot = execution_service.get_run(run_id)
     order = db.get(Order, run.order_id) if run.order_id is not None else None
@@ -92,6 +94,8 @@ def cancel_execution_run(
 ) -> ExecutionRunResponse:
     run = db.get(ExecutionRun, run_id)
     if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution run not found")
+    if run.run_kind == "self_use":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution run not found")
 
     snapshot = execution_service.cancel_run(run_id)
