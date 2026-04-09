@@ -40,5 +40,7 @@ benchmark-runs/
 # OutcomeX backend local runtime artifacts
 code/backend/.env
 code/backend/data/
+code/backend/outcomex.db
 code/backend/outcomex-local.db
 code/backend/scripts/__pycache__/
+.local/

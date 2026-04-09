@@ -109,6 +109,12 @@ pip install -e ".[dev]"
 uvicorn app.main:app --reload
 ```
 
+Local browser demo entrypoint:
+
+- from repo root, use `scripts/start_local_browser_demo.sh`
+- detailed current status / non-fully-live notes: `LOCAL_BROWSER_DEMO_CN.md`
+- local backend template env: `code/backend/.env.local-demo.example`
+
 Health endpoint:
 
 ```text
