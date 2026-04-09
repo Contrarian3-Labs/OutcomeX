@@ -23,7 +23,7 @@ router = APIRouter()
 PWR_QUANTIZE = Decimal("0.0001")
 MACHINE_ASSET_COST_CENTS = 399_900
 MOCK_MACHINE_SPEC = {
-    "profile_label": "OutcomeX Hosted Mac Studio",
+    "profile_label": "Qwen Family",
     "gpu_spec": "Apple Silicon 96GB Unified Memory",
     "supported_categories": [
         "image_generation",

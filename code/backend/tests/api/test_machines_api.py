@@ -271,7 +271,7 @@ def test_list_machines_exposes_mock_spec_and_runtime_snapshot(client: TestClient
 
     payload = _get_machine(client, machine["id"])
 
-    assert payload["profile_label"] == "OutcomeX Hosted Mac Studio"
+    assert payload["profile_label"] == "Qwen Family"
     assert payload["gpu_spec"] == "Apple Silicon 96GB Unified Memory"
     assert payload["hosted_by"] == "OutcomeX Hosted Rack"
     assert payload["supported_categories"] == [
