@@ -18,7 +18,6 @@ from app.execution.observability import (
     list_log_files,
     read_events_after_seq,
     read_log_chunk,
-    resolve_log_path,
     resolve_logs_root_path,
 )
 from app.indexer.execution_sync import _sync_model_from_snapshot
@@ -151,6 +150,16 @@ def _resolve_last_progress_at(snapshot) -> datetime | None:
     if explicit is not None:
         return explicit
     return _coerce_datetime(getattr(snapshot, "last_heartbeat_at", None))
+
+
+def _resolve_runtime_log_path(snapshot, file_name: str) -> str | None:
+    normalized = file_name.strip()
+    if not normalized:
+        return None
+    for item in _resolve_runtime_log_files(snapshot):
+        if item.name == normalized:
+            return item.path
+    return None
 
 
 def _get_run_or_404(db: Session, run_id: str) -> ExecutionRun:
@@ -294,14 +303,9 @@ def list_execution_run_logs(
 ) -> dict:
     _get_run_or_404(db, run_id)
     snapshot = execution_service.get_run(run_id)
-    files = list_log_files(
-        run_dir=getattr(snapshot, "run_dir", None),
-        stdout_path=getattr(snapshot, "stdout_log_path", None),
-        stderr_path=getattr(snapshot, "stderr_log_path", None),
-    )
     return {
-        "logs_root_path": resolve_logs_root_path(getattr(snapshot, "run_dir", None)),
-        "files": files,
+        "logs_root_path": _resolve_runtime_logs_root_path(snapshot),
+        "files": [item.model_dump() for item in _resolve_runtime_log_files(snapshot)],
     }
 
 
@@ -315,12 +319,7 @@ def read_execution_run_log(
 ) -> dict:
     _get_run_or_404(db, run_id)
     snapshot = execution_service.get_run(run_id)
-    log_path = resolve_log_path(
-        run_dir=getattr(snapshot, "run_dir", None),
-        stdout_path=getattr(snapshot, "stdout_log_path", None),
-        stderr_path=getattr(snapshot, "stderr_log_path", None),
-        file_name=file,
-    )
+    log_path = _resolve_runtime_log_path(snapshot, file)
     if log_path is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution log not found")
     result = read_log_chunk(log_path, offset=offset)
@@ -337,12 +336,7 @@ def stream_execution_run_log(
 ) -> StreamingResponse:
     _get_run_or_404(db, run_id)
     initial_snapshot = execution_service.get_run(run_id)
-    initial_log_path = resolve_log_path(
-        run_dir=getattr(initial_snapshot, "run_dir", None),
-        stdout_path=getattr(initial_snapshot, "stdout_log_path", None),
-        stderr_path=getattr(initial_snapshot, "stderr_log_path", None),
-        file_name=file,
-    )
+    initial_log_path = _resolve_runtime_log_path(initial_snapshot, file)
     if initial_log_path is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution log not found")
 
@@ -350,12 +344,7 @@ def stream_execution_run_log(
         cursor = offset
         while True:
             snapshot = execution_service.get_run(run_id)
-            log_path = resolve_log_path(
-                run_dir=getattr(snapshot, "run_dir", None),
-                stdout_path=getattr(snapshot, "stdout_log_path", None),
-                stderr_path=getattr(snapshot, "stderr_log_path", None),
-                file_name=file,
-            )
+            log_path = _resolve_runtime_log_path(snapshot, file)
             if log_path is None:
                 break
             result = read_log_chunk(log_path, offset=cursor)

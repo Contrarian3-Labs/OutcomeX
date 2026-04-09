@@ -7,14 +7,17 @@ import os
 import signal
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from ..core.config import Settings, get_settings
 from ..domain.enums import ExecutionRunStatus
 from ..execution.contracts import ExecutionStrategy
+from ..execution.observability import list_log_files, read_events_after_seq, resolve_logs_root_path
 from .agentskillos_bridge import AgentSkillOSBridge
+
+_STALL_AFTER_SECONDS = 60
 
 _EXECUTION_SCRIPT = """
 import asyncio
@@ -76,9 +79,24 @@ def write_record(payload):
 
 
 def append_event(event_type, **fields):
+    seq = int(initial.get("event_cursor", 0) or 0) + 1
+    timestamp = utc_now()
+    initial["event_cursor"] = seq
+    initial["last_progress_at"] = timestamp
+    if initial.get("started_at") is not None:
+        write_record(initial)
     events_path = Path(initial.get("events_log_path") or (record_path.parent / "events.ndjson"))
     events_path.parent.mkdir(parents=True, exist_ok=True)
-    event = {"timestamp": utc_now(), "event": event_type, **fields}
+    event = {
+        "seq": seq,
+        "timestamp": timestamp,
+        "run_id": initial.get("run_id"),
+        "phase": fields.pop("phase", initial.get("current_phase")),
+        "event": event_type,
+        "level": fields.pop("level", "info"),
+        "message": fields.pop("message", event_type),
+        "data": fields,
+    }
     with events_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, ensure_ascii=False) + "\\n")
 
@@ -88,7 +106,169 @@ def heartbeat(payload, *, phase, step=None):
     payload["current_phase"] = phase
     payload["current_step"] = step
     write_record(payload)
-    append_event("heartbeat", phase=phase, step=step)
+    append_event("heartbeat", phase=phase, step=step, message=f"Heartbeat: {phase}")
+
+
+def normalize_plan_candidate(plan, index):
+    if not isinstance(plan, dict):
+        return {
+            "index": index,
+            "name": f"Plan {index + 1}",
+            "description": "",
+            "strategy": execution_strategy,
+        }
+    return {
+        "index": index,
+        "name": str(plan.get("name") or f"Plan {index + 1}"),
+        "description": str(plan.get("description") or ""),
+        "strategy": str(plan.get("strategy") or execution_strategy or ""),
+    }
+
+
+def build_dag_payload(nodes):
+    dag_nodes = []
+    edges = []
+    for node in list(nodes or []):
+        node_id = str(node.get("id") or node.get("name") or f"node-{len(dag_nodes) + 1}")
+        dag_nodes.append(
+            {
+                "id": node_id,
+                "name": str(node.get("name") or node_id),
+                "status": "pending",
+            }
+        )
+        for dependency in node.get("depends_on") or []:
+            edges.append({"from": str(dependency), "to": node_id})
+    return {"nodes": dag_nodes, "edges": edges}
+
+
+def update_dag_status(node_id, status):
+    dag = initial.get("dag") or {}
+    nodes = list(dag.get("nodes") or [])
+    mapped = {"completed": "succeeded"}.get(status, status)
+    for node in nodes:
+        if node.get("id") == node_id:
+            node["status"] = mapped
+            break
+    dag["nodes"] = nodes
+    initial["dag"] = dag
+    initial["active_node_id"] = node_id if mapped == "running" else None
+    write_record(initial)
+    event_type = "dag_node_started" if mapped == "running" else "dag_node_finished"
+    append_event(
+        event_type,
+        phase=initial.get("current_phase"),
+        message=f"Node {node_id} -> {mapped}",
+        node_id=node_id,
+        status=mapped,
+    )
+
+
+class StreamMirror:
+    def __init__(self, *, stream_name, wrapped, level):
+        self.stream_name = stream_name
+        self.wrapped = wrapped
+        self.level = level
+        self.buffer = ""
+
+    def write(self, chunk):
+        if not chunk:
+            return 0
+        written = self.wrapped.write(chunk)
+        self.wrapped.flush()
+        self.buffer += chunk
+        while "\\n" in self.buffer:
+            line, self.buffer = self.buffer.split("\\n", 1)
+            line = line.rstrip("\\r")
+            if line:
+                append_event(
+                    f"{self.stream_name}_line",
+                    phase=initial.get("current_phase"),
+                    level=self.level,
+                    message=line,
+                    stream=self.stream_name,
+                )
+        return written if written is not None else len(chunk)
+
+    def flush(self):
+        self.wrapped.flush()
+
+    def isatty(self):
+        return False
+
+    @property
+    def encoding(self):
+        return getattr(self.wrapped, "encoding", "utf-8")
+
+
+class OutcomeXTelemetryVisualizer:
+    def __init__(self, auto_select_plan):
+        self.inner = NullVisualizer(auto_select_plan=auto_select_plan)
+
+    async def start(self):
+        await self.inner.start()
+
+    async def stop(self):
+        await self.inner.stop()
+
+    async def set_task(self, task):
+        await self.inner.set_task(task)
+
+    async def set_nodes(self, nodes, phases):
+        await self.inner.set_nodes(nodes, phases)
+        initial["dag"] = build_dag_payload(nodes)
+        initial["active_node_id"] = None
+        write_record(initial)
+        append_event(
+            "dag_initialized",
+            phase=initial.get("current_phase"),
+            message=f"Initialized DAG with {len(list(nodes or []))} nodes",
+            dag=initial["dag"],
+        )
+
+    async def update_status(self, node_id, status):
+        await self.inner.update_status(node_id, status)
+        update_dag_status(node_id, status)
+
+    async def set_phase(self, phase_num):
+        await self.inner.set_phase(phase_num)
+        initial["current_step"] = f"phase-{phase_num}"
+        write_record(initial)
+
+    async def add_log(self, message, level="info", node_id=None):
+        await self.inner.add_log(message, level, node_id=node_id)
+
+    def add_metrics(self, input_tokens, output_tokens, cost):
+        self.inner.add_metrics(input_tokens, output_tokens, cost)
+
+    async def select_plan(self, plans):
+        plan_candidates = [normalize_plan_candidate(plan, idx) for idx, plan in enumerate(list(plans or []))]
+        initial["plan_candidates"] = plan_candidates
+        write_record(initial)
+        append_event(
+            "plan_candidates_generated",
+            phase="plan_generation",
+            message=f"Generated {len(plan_candidates)} candidate plans",
+            plans=plan_candidates,
+        )
+        selected_index = await self.inner.select_plan(plans)
+        selected_plan = list(plans or [])[selected_index] if plans else None
+        initial["selected_plan"] = selected_plan
+        write_record(initial)
+        append_event(
+            "plan_selected",
+            phase="plan_selection",
+            message="Selected execution plan",
+            selected_plan_index=selected_index,
+            selected_plan=selected_plan,
+        )
+        return selected_index
+
+    async def set_workflow_phase(self, phase):
+        await self.inner.set_workflow_phase(phase)
+        initial["current_phase"] = phase
+        initial["current_step"] = None
+        write_record(initial)
 
 
 def classify_artifact(path: Path) -> str:
@@ -117,6 +297,48 @@ def choose_preview(artifacts):
     return [artifact for artifact in artifacts if artifact["type"] in preferred][:5]
 
 
+def build_log_entry(kind, path):
+    try:
+        stat_result = path.stat()
+        size = int(stat_result.st_size)
+        updated_at = datetime.fromtimestamp(stat_result.st_mtime, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    except OSError:
+        size = 0
+        updated_at = None
+    return {
+        "kind": kind,
+        "name": path.name,
+        "path": str(path),
+        "size": size,
+        "updated_at": updated_at,
+    }
+
+
+def discover_log_sources(run_dir):
+    files = []
+    seen = set()
+    logs_root = run_dir / "logs"
+    if logs_root.exists() and logs_root.is_dir():
+        for candidate in sorted(logs_root.iterdir(), key=lambda item: item.name):
+            if not candidate.is_file():
+                continue
+            files.append(build_log_entry("raw_file", candidate))
+            seen.add(candidate.resolve())
+    for kind, key in (("stdout", "stdout_log_path"), ("stderr", "stderr_log_path")):
+        path_value = initial.get(key)
+        if not path_value:
+            continue
+        candidate = Path(path_value)
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        files.append(build_log_entry(kind, candidate))
+        seen.add(resolved)
+    return (str(logs_root) if logs_root.exists() and logs_root.is_dir() else None), files
+
+
 def default_plan_index(strategy: str) -> int:
     if strategy == "efficiency":
         return 1
@@ -129,8 +351,20 @@ async def execute_with_selected_native_plan():
     required_skills = infer_required_skills(
         TaskAnchorIntent(task=task_prompt, files=list(files or []), required_skills=[])
     )
+    append_event(
+        "anchor_inferred",
+        phase="anchor_inference",
+        message=f"Resolved {len(required_skills)} anchor skills",
+        required_skills=required_skills,
+    )
     discovered_skills = discover_skills(task_prompt, skill_group=skill_group)
     skills = merge_skills(required_skills=required_skills, discovered_skills=discovered_skills)
+    append_event(
+        "skills_discovered",
+        phase="skill_discovery",
+        message=f"Discovered {len(skills)} skills",
+        skills=skills,
+    )
     skill_group_cfg = resolve_skill_group(skill_group)
     request = TaskRequest(
         task=task_prompt,
@@ -153,7 +387,7 @@ async def execute_with_selected_native_plan():
         base_dir=str(base_dir),
     )
     engine = create_engine(mode, run_context=run_context, skill_dir=skill_group_cfg["skills_dir"], allowed_tools=None)
-    visualizer = NullVisualizer(
+    visualizer = OutcomeXTelemetryVisualizer(
         auto_select_plan=selected_plan_index if selected_plan_index >= 0 else default_plan_index(execution_strategy)
     )
     result = await engine.run_with_visualizer(
@@ -172,8 +406,19 @@ async def execute_with_selected_native_plan():
 async def main():
     global initial
     initial = json.loads(record_path.read_text(encoding="utf-8"))
+    sys.stdout = StreamMirror(stream_name="stdout", wrapped=sys.stdout, level="info")
+    sys.stderr = StreamMirror(stream_name="stderr", wrapped=sys.stderr, level="warning")
     initial["status"] = "running"
     initial["started_at"] = utc_now()
+    initial.setdefault("event_cursor", 0)
+    initial.setdefault("plan_candidates", [])
+    initial.setdefault("dag", None)
+    initial.setdefault("active_node_id", None)
+    initial.setdefault("logs_root_path", None)
+    initial.setdefault("log_files", [])
+    initial.setdefault("last_progress_at", initial["started_at"])
+    initial.setdefault("stalled", False)
+    initial.setdefault("stalled_reason", None)
     heartbeat(initial, phase="starting")
     append_event("run_started", external_order_id=external_order_id, execution_strategy=execution_strategy)
 
@@ -191,7 +436,8 @@ async def main():
         failed["finished_at"] = utc_now()
         failed["current_phase"] = "failed"
         failed["last_heartbeat_at"] = utc_now()
-        write_record(failed)
+        initial.update(failed)
+        write_record(initial)
         append_event("run_failed", error=failed["error"])
         raise
 
@@ -259,6 +505,8 @@ async def main():
     if selected_plan_index >= 0:
         submission_payload["selected_plan_index"] = selected_plan_index
 
+    logs_root_path, log_files = discover_log_sources(run_dir)
+
     final = dict(initial)
     final.update(
         {
@@ -274,14 +522,34 @@ async def main():
             "error": result.get("error"),
             "finished_at": utc_now(),
             "last_heartbeat_at": utc_now(),
+            "last_progress_at": utc_now(),
             "current_phase": "finished" if result.get("status") == "completed" else "failed",
             "current_step": None,
+            "logs_root_path": logs_root_path,
+            "log_files": log_files,
+            "stalled": False,
+            "stalled_reason": None,
         }
     )
     if selected_plan is not None:
         final["selected_plan"] = selected_plan
-    write_record(final)
-    append_event("run_finished", status=final["status"], error=final.get("error"))
+    initial.update(final)
+    write_record(initial)
+    for artifact in initial.get("artifact_manifest") or []:
+        append_event(
+            "artifact_created",
+            phase="artifact_collection",
+            message=f"Collected artifact {artifact.get('path')}",
+            artifact=artifact,
+        )
+    for preview in initial.get("preview_manifest") or []:
+        append_event(
+            "preview_created",
+            phase="preview_ready",
+            message=f"Preview ready {preview.get('path')}",
+            preview=preview,
+        )
+    append_event("run_finished", status=initial["status"], error=initial.get("error"))
 
 
 asyncio.run(main())
@@ -313,6 +581,16 @@ class ExecutionRunSnapshot:
     last_heartbeat_at: datetime | None = None
     current_phase: str | None = None
     current_step: str | None = None
+    selected_plan: dict | None = None
+    plan_candidates: tuple[dict, ...] = ()
+    dag: dict | None = None
+    active_node_id: str | None = None
+    logs_root_path: str | None = None
+    log_files: tuple[dict, ...] = ()
+    event_cursor: int = 0
+    last_progress_at: datetime | None = None
+    stalled: bool = False
+    stalled_reason: str | None = None
 
 
 class AgentSkillOSExecutionService:
@@ -379,6 +657,16 @@ class AgentSkillOSExecutionService:
             "last_heartbeat_at": None,
             "current_phase": "queued",
             "current_step": None,
+            "selected_plan": None,
+            "plan_candidates": [],
+            "dag": None,
+            "active_node_id": None,
+            "logs_root_path": None,
+            "log_files": [],
+            "event_cursor": 0,
+            "last_progress_at": None,
+            "stalled": False,
+            "stalled_reason": None,
         }
         record_path.write_text(json.dumps(initial_payload, indent=2), encoding="utf-8")
 
@@ -418,6 +706,25 @@ class AgentSkillOSExecutionService:
         payload = self._reconcile_stale_process(payload, record_path=record_path)
         pid = payload.get("pid")
         pid_alive = self._process_exists(int(pid)) if pid else None
+        last_heartbeat_at = _parse_datetime(payload.get("last_heartbeat_at"))
+        last_progress_at = _parse_datetime(payload.get("last_progress_at")) or last_heartbeat_at
+        log_files = tuple(
+            payload.get("log_files")
+            or list_log_files(
+                run_dir=payload.get("run_dir"),
+                stdout_path=payload.get("stdout_log_path"),
+                stderr_path=payload.get("stderr_log_path"),
+            )
+        )
+        logs_root_path = payload.get("logs_root_path") or resolve_logs_root_path(payload.get("run_dir"))
+        event_cursor = _coerce_int(payload.get("event_cursor"), default=0)
+        if event_cursor <= 0:
+            event_cursor = read_events_after_seq(payload.get("events_log_path"), after_seq=0).next_cursor
+        stalled, stalled_reason = _compute_stalled_state(
+            status=ExecutionRunStatus(payload["status"]),
+            last_progress_at=last_progress_at,
+            now=_utc_now(),
+        )
         return ExecutionRunSnapshot(
             run_id=payload["run_id"],
             external_order_id=payload["external_order_id"],
@@ -439,9 +746,19 @@ class AgentSkillOSExecutionService:
             stdout_log_path=payload.get("stdout_log_path"),
             stderr_log_path=payload.get("stderr_log_path"),
             events_log_path=payload.get("events_log_path"),
-            last_heartbeat_at=_parse_datetime(payload.get("last_heartbeat_at")),
+            last_heartbeat_at=last_heartbeat_at,
             current_phase=payload.get("current_phase"),
             current_step=payload.get("current_step"),
+            selected_plan=payload.get("selected_plan"),
+            plan_candidates=tuple(payload.get("plan_candidates") or ()),
+            dag=payload.get("dag"),
+            active_node_id=payload.get("active_node_id"),
+            logs_root_path=logs_root_path,
+            log_files=log_files,
+            event_cursor=event_cursor,
+            last_progress_at=last_progress_at,
+            stalled=stalled,
+            stalled_reason=payload.get("stalled_reason") or stalled_reason,
         )
 
     def _reconcile_stale_process(self, payload: dict, *, record_path: Path) -> dict:
@@ -460,8 +777,11 @@ class AgentSkillOSExecutionService:
         payload["error"] = payload.get("error") or "process_exited_before_terminal_status"
         payload["finished_at"] = failure_time
         payload["last_heartbeat_at"] = failure_time
+        payload["last_progress_at"] = failure_time
         payload["current_phase"] = "failed"
         payload["current_step"] = None
+        payload["stalled"] = False
+        payload["stalled_reason"] = None
         record_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return payload
 
@@ -495,6 +815,9 @@ class AgentSkillOSExecutionService:
         payload = json.loads(record_path.read_text(encoding="utf-8"))
         payload["status"] = ExecutionRunStatus.CANCELLED.value
         payload["finished_at"] = _utc_now().isoformat()
+        payload["last_progress_at"] = payload["finished_at"]
+        payload["stalled"] = False
+        payload["stalled_reason"] = None
         record_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return self.get_run(run_id)
 
@@ -531,10 +854,39 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _coerce_int(value, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _parse_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
     return datetime.fromisoformat(value)
+
+
+def _compute_stalled_state(
+    *,
+    status: ExecutionRunStatus,
+    last_progress_at: datetime | None,
+    now: datetime,
+) -> tuple[bool, str | None]:
+    if status not in {ExecutionRunStatus.QUEUED, ExecutionRunStatus.PLANNING, ExecutionRunStatus.RUNNING}:
+        return False, None
+    if last_progress_at is None:
+        return False, None
+    if last_progress_at.tzinfo is None:
+        last_progress_at = last_progress_at.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    stalled_seconds = (now - last_progress_at).total_seconds()
+    if stalled_seconds < _STALL_AFTER_SECONDS:
+        return False, None
+    return True, f"no_progress_for_{int(stalled_seconds)}s"
 
 
 def get_agentskillos_execution_service() -> AgentSkillOSExecutionService:
