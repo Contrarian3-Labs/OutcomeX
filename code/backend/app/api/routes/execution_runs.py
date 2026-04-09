@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -11,7 +13,11 @@ from app.domain.enums import ExecutionRunStatus, ExecutionState
 from app.domain.models import ExecutionRun, Order
 from app.indexer.execution_sync import _sync_model_from_snapshot
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
-from app.schemas.execution_run import ExecutionRunResponse
+from app.schemas.execution_run import (
+    ExecutionRunLogFileResponse,
+    ExecutionRunPlanCandidateResponse,
+    ExecutionRunResponse,
+)
 
 router = APIRouter()
 
@@ -38,6 +44,63 @@ def _coerce_bool(value, default: bool = False) -> bool:
             return False
         return default
     return default
+
+
+def _coerce_str(value, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value)
+
+
+def _coerce_datetime(value) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize_plan_candidates(value) -> list[ExecutionRunPlanCandidateResponse]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    candidates: list[ExecutionRunPlanCandidateResponse] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        candidates.append(
+            ExecutionRunPlanCandidateResponse(
+                index=_coerce_int(item.get("index"), default=0),
+                name=_coerce_str(item.get("name"), default=""),
+                description=_coerce_str(item.get("description"), default=""),
+                strategy=_coerce_str(item.get("strategy"), default=""),
+            )
+        )
+    return candidates
+
+
+def _normalize_log_files(value) -> list[ExecutionRunLogFileResponse]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    files: list[ExecutionRunLogFileResponse] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        files.append(
+            ExecutionRunLogFileResponse(
+                kind=_coerce_str(item.get("kind"), default=""),
+                name=_coerce_str(item.get("name"), default=""),
+                path=_coerce_str(item.get("path"), default=""),
+                size=_coerce_int(item.get("size"), default=0),
+                updated_at=_coerce_datetime(item.get("updated_at")),
+            )
+        )
+    return files
 
 
 def build_execution_run_response(run: ExecutionRun, snapshot, order: Order | None) -> ExecutionRunResponse:
@@ -91,11 +154,11 @@ def build_execution_run_response(run: ExecutionRun, snapshot, order: Order | Non
             "last_heartbeat_at": getattr(snapshot, "last_heartbeat_at", None),
             "current_phase": getattr(snapshot, "current_phase", None),
             "current_step": getattr(snapshot, "current_step", None),
-            "plan_candidates": list(getattr(snapshot, "plan_candidates", []) or []),
+            "plan_candidates": _normalize_plan_candidates(getattr(snapshot, "plan_candidates", [])),
             "dag": getattr(snapshot, "dag", None),
             "active_node_id": getattr(snapshot, "active_node_id", None),
             "logs_root_path": getattr(snapshot, "logs_root_path", None),
-            "log_files": list(getattr(snapshot, "log_files", []) or []),
+            "log_files": _normalize_log_files(getattr(snapshot, "log_files", [])),
             "event_cursor": _coerce_int(getattr(snapshot, "event_cursor", 0), default=0),
             "last_progress_at": getattr(snapshot, "last_progress_at", None),
             "stalled": _coerce_bool(getattr(snapshot, "stalled", False), default=False),
