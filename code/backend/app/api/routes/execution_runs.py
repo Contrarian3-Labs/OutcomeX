@@ -16,6 +16,30 @@ from app.schemas.execution_run import ExecutionRunResponse
 router = APIRouter()
 
 
+def _coerce_int(value, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "n", "off", ""}:
+            return False
+        return default
+    return default
+
+
 def build_execution_run_response(run: ExecutionRun, snapshot, order: Order | None) -> ExecutionRunResponse:
     machine_id = run.machine_id or (order.machine_id if order is not None else None)
     viewer_user_id = run.viewer_user_id or (order.user_id if order is not None else None)
@@ -72,9 +96,9 @@ def build_execution_run_response(run: ExecutionRun, snapshot, order: Order | Non
             "active_node_id": getattr(snapshot, "active_node_id", None),
             "logs_root_path": getattr(snapshot, "logs_root_path", None),
             "log_files": list(getattr(snapshot, "log_files", []) or []),
-            "event_cursor": int(getattr(snapshot, "event_cursor", 0) or 0),
+            "event_cursor": _coerce_int(getattr(snapshot, "event_cursor", 0), default=0),
             "last_progress_at": getattr(snapshot, "last_progress_at", None),
-            "stalled": bool(getattr(snapshot, "stalled", False)),
+            "stalled": _coerce_bool(getattr(snapshot, "stalled", False), default=False),
             "stalled_reason": getattr(snapshot, "stalled_reason", None),
         }
     )

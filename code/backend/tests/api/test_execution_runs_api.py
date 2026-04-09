@@ -404,6 +404,7 @@ def test_execution_run_snapshot_includes_observability_fields(client: tuple[Test
     assert start.status_code == 200
 
     response = test_client.get("/api/v1/execution-runs/aso-run-test")
+    assert response.status_code == 200
     payload = response.json()
 
     assert "plan_candidates" in payload
@@ -414,6 +415,31 @@ def test_execution_run_snapshot_includes_observability_fields(client: tuple[Test
     assert "event_cursor" in payload
     assert "last_progress_at" in payload
     assert "stalled" in payload
+    assert payload["event_cursor"] == 12
+    assert payload["active_node_id"] == "n1"
+    assert payload["stalled"] is False
+    assert isinstance(payload["log_files"], list)
+
+
+def test_execution_run_snapshot_coerces_invalid_observability_scalars_safely(
+    client: tuple[TestClient, _ExecutionServiceStub]
+) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order(test_client, machine["id"])
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert start.status_code == 200
+
+    malformed_snapshot = stub.get_run("aso-run-test")
+    malformed_snapshot.event_cursor = "not-an-int"
+    malformed_snapshot.stalled = "false"
+    stub.get_run = lambda _run_id: malformed_snapshot  # type: ignore[assignment]
+
+    response = test_client.get("/api/v1/execution-runs/aso-run-test")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["event_cursor"] == 0
+    assert payload["stalled"] is False
 
 
 def test_start_execution_rejects_tampered_execution_contract(
