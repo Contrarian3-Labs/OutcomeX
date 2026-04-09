@@ -67,6 +67,15 @@ def build_execution_run_response(run: ExecutionRun, snapshot, order: Order | Non
             "last_heartbeat_at": getattr(snapshot, "last_heartbeat_at", None),
             "current_phase": getattr(snapshot, "current_phase", None),
             "current_step": getattr(snapshot, "current_step", None),
+            "plan_candidates": list(getattr(snapshot, "plan_candidates", []) or []),
+            "dag": getattr(snapshot, "dag", None),
+            "active_node_id": getattr(snapshot, "active_node_id", None),
+            "logs_root_path": getattr(snapshot, "logs_root_path", None),
+            "log_files": list(getattr(snapshot, "log_files", []) or []),
+            "event_cursor": int(getattr(snapshot, "event_cursor", 0) or 0),
+            "last_progress_at": getattr(snapshot, "last_progress_at", None),
+            "stalled": bool(getattr(snapshot, "stalled", False)),
+            "stalled_reason": getattr(snapshot, "stalled_reason", None),
         }
     )
 

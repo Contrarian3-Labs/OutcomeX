@@ -35,6 +35,15 @@ class ExecutionRunResponse(BaseModel):
     last_heartbeat_at: datetime | None = None
     current_phase: str | None = None
     current_step: str | None = None
+    plan_candidates: list[dict] = Field(default_factory=list)
+    dag: dict | None = None
+    active_node_id: str | None = None
+    logs_root_path: str | None = None
+    log_files: list[dict] = Field(default_factory=list)
+    event_cursor: int = 0
+    last_progress_at: datetime | None = None
+    stalled: bool = False
+    stalled_reason: str | None = None
     created_at: datetime
     updated_at: datetime
 

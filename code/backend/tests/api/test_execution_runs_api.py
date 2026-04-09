@@ -158,6 +158,25 @@ class _ExecutionServiceStub:
                 "last_heartbeat_at": datetime.now(timezone.utc),
                 "current_phase": "finished",
                 "current_step": "docx",
+                "plan_candidates": [
+                    {"index": 0, "name": "Quality-First", "strategy": "quality"},
+                    {"index": 1, "name": "Efficiency-First", "strategy": "efficiency"},
+                ],
+                "dag": {"nodes": [{"id": "n1", "status": "running"}], "edges": []},
+                "active_node_id": "n1",
+                "logs_root_path": "/tmp/run-dir/logs",
+                "log_files": [
+                    {
+                        "kind": "raw_file",
+                        "name": "planner.log",
+                        "path": "/tmp/run-dir/logs/planner.log",
+                        "size": 10,
+                    }
+                ],
+                "event_cursor": 12,
+                "last_progress_at": datetime.now(timezone.utc),
+                "stalled": False,
+                "stalled_reason": None,
             },
         )()
 
@@ -375,6 +394,26 @@ def test_start_execution_creates_run_and_run_endpoint_returns_snapshot_without_m
     assert order_after_second_poll.status_code == 200
     assert order_after_second_poll.json()["state"] == "executing"
     assert order_after_second_poll.json()["settlement_state"] == "not_ready"
+
+
+def test_execution_run_snapshot_includes_observability_fields(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
+    test_client, _stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order(test_client, machine["id"])
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert start.status_code == 200
+
+    response = test_client.get("/api/v1/execution-runs/aso-run-test")
+    payload = response.json()
+
+    assert "plan_candidates" in payload
+    assert "dag" in payload
+    assert "active_node_id" in payload
+    assert "logs_root_path" in payload
+    assert "log_files" in payload
+    assert "event_cursor" in payload
+    assert "last_progress_at" in payload
+    assert "stalled" in payload
 
 
 def test_start_execution_rejects_tampered_execution_contract(
