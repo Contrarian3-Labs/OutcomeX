@@ -1,6 +1,11 @@
 import hashlib
 import secrets
+import shutil
+import tempfile
+from contextlib import contextmanager
 from datetime import timedelta
+from pathlib import Path
+from typing import Iterator
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, load_only
@@ -41,6 +46,15 @@ class AttachmentMetadataInvalidError(ValueError):
         self.detail = detail
 
 
+class AttachmentResolutionError(ValueError):
+    """Raised when planning attachment references cannot be resolved."""
+
+    def __init__(self, detail: str, *, status_code: int) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.status_code = status_code
+
+
 def _hash_session_token(session_token: str) -> str:
     return hashlib.sha256(session_token.encode("utf-8")).hexdigest()
 
@@ -52,6 +66,16 @@ def _utc_cutoff() -> object:
 
 def _sanitize_metadata_value(value: str) -> str:
     return "".join(ch for ch in value if 32 <= ord(ch) < 127).strip()
+
+
+def _normalize_reference_value(value: str | None) -> str:
+    return str(value or "").strip()
+
+
+def _materialized_attachment_filename(*, index: int, attachment_id: str, filename: str) -> str:
+    basename = Path(filename).name
+    sanitized = _sanitize_metadata_value(basename) or DEFAULT_FILENAME
+    return f"{index:02d}-{attachment_id}-{sanitized}"
 
 
 def _normalize_filename(value: str | None) -> str:
@@ -217,3 +241,58 @@ def get_attachment_for_session(
             Attachment.attachment_session_id == attachment_session_id,
         )
     )
+
+
+@contextmanager
+def resolve_planning_input_files(
+    *,
+    db: Session,
+    input_files: tuple[str, ...] = (),
+    attachment_session_id: str | None = None,
+    attachment_session_token: str | None = None,
+    attachment_ids: tuple[str, ...] = (),
+) -> Iterator[tuple[str, ...]]:
+    normalized_input_files = tuple(str(file_item) for file_item in (input_files or ()))
+    normalized_attachment_ids = tuple(_normalize_reference_value(item) for item in (attachment_ids or ()))
+    if not normalized_attachment_ids:
+        yield normalized_input_files
+        return
+
+    session_id = _normalize_reference_value(attachment_session_id)
+    session_token = _normalize_reference_value(attachment_session_token)
+    if not session_id or not session_token:
+        raise AttachmentResolutionError(
+            "attachment_session_id and attachment_session_token are required when attachment_ids are provided",
+            status_code=422,
+        )
+
+    attachment_session = resolve_attachment_session(db=db, session_id=session_id, session_token=session_token)
+    if attachment_session is None:
+        raise AttachmentResolutionError("Invalid attachment session credentials", status_code=401)
+
+    temp_root = Path(tempfile.mkdtemp(prefix="outcomex-planning-attachments-"))
+    resolved_paths: list[str] = []
+    try:
+        for index, attachment_id in enumerate(normalized_attachment_ids):
+            if not attachment_id:
+                raise AttachmentResolutionError("attachment_ids must not contain empty values", status_code=422)
+            attachment = get_attachment_for_session(
+                db=db,
+                attachment_id=attachment_id,
+                attachment_session_id=attachment_session.id,
+            )
+            if attachment is None:
+                raise AttachmentResolutionError(
+                    f"Attachment '{attachment_id}' not found for provided session",
+                    status_code=404,
+                )
+            file_path = temp_root / _materialized_attachment_filename(
+                index=index,
+                attachment_id=attachment.id,
+                filename=attachment.filename,
+            )
+            file_path.write_bytes(attachment.content)
+            resolved_paths.append(str(file_path))
+        yield tuple([*normalized_input_files, *resolved_paths])
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)

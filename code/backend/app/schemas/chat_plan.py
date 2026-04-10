@@ -13,6 +13,9 @@ class ChatPlanRequest(BaseModel):
     user_message: str = Field(min_length=1)
     mode: ExecutionStrategy | None = None
     input_files: list[str] = Field(default_factory=list)
+    attachment_session_id: str | None = Field(default=None, min_length=1, max_length=64)
+    attachment_session_token: str | None = Field(default=None, min_length=1, max_length=256)
+    attachment_ids: list[str] = Field(default_factory=list)
 
 
 class RecommendedPlanResponse(BaseModel):

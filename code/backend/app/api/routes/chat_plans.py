@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -6,6 +6,7 @@ from app.domain.models import ChatPlan
 from app.domain.planning import build_recommended_plans
 from app.runtime.cost_service import RuntimeCostService, get_runtime_cost_service
 from app.schemas.chat_plan import ChatPlanRequest, ChatPlanResponse, RecommendedPlanResponse
+from app.services.attachments import AttachmentResolutionError, resolve_planning_input_files
 
 router = APIRouter()
 
@@ -16,13 +17,23 @@ def create_chat_plan(
     db: Session = Depends(get_db),
     cost_service: RuntimeCostService = Depends(get_runtime_cost_service),
 ) -> ChatPlanResponse:
-    recommended_plans = build_recommended_plans(
-        user_id=payload.user_id,
-        chat_session_id=payload.chat_session_id,
-        user_message=payload.user_message,
-        preferred_strategy=payload.mode,
-        input_files=tuple(payload.input_files),
-    )
+    try:
+        with resolve_planning_input_files(
+            db=db,
+            input_files=tuple(payload.input_files),
+            attachment_session_id=payload.attachment_session_id,
+            attachment_session_token=payload.attachment_session_token,
+            attachment_ids=tuple(payload.attachment_ids),
+        ) as planning_input_files:
+            recommended_plans = build_recommended_plans(
+                user_id=payload.user_id,
+                chat_session_id=payload.chat_session_id,
+                user_message=payload.user_message,
+                preferred_strategy=payload.mode,
+                input_files=planning_input_files,
+            )
+    except AttachmentResolutionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     top_plan = recommended_plans[0]
     plan = ChatPlan(
         user_id=payload.user_id,

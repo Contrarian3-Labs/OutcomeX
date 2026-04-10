@@ -14,6 +14,7 @@ from app.integrations.agentskillos_execution_service import get_agentskillos_exe
 from app.schemas.chat_plan import RecommendedPlanResponse
 from app.schemas.execution_run import ExecutionRunResponse
 from app.schemas.self_use import SelfUsePlansRequest, SelfUsePlansResponse, SelfUseRunCreateRequest
+from app.services.attachments import AttachmentResolutionError, resolve_planning_input_files
 
 router = APIRouter()
 
@@ -52,16 +53,26 @@ def create_self_use_plans(
         machine_id=payload.machine_id,
         viewer_wallet_address=normalized_viewer_wallet,
     )
-    recommended_plans = build_recommended_plans(
-        user_id=normalized_viewer_wallet,
-        chat_session_id=_self_use_external_order_id(
-            machine_id=machine.id,
-            viewer_wallet_address=normalized_viewer_wallet,
-        ),
-        user_message=payload.prompt,
-        preferred_strategy=payload.execution_strategy,
-        input_files=tuple(payload.input_files),
-    )
+    try:
+        with resolve_planning_input_files(
+            db=db,
+            input_files=tuple(payload.input_files),
+            attachment_session_id=payload.attachment_session_id,
+            attachment_session_token=payload.attachment_session_token,
+            attachment_ids=tuple(payload.attachment_ids),
+        ) as planning_input_files:
+            recommended_plans = build_recommended_plans(
+                user_id=normalized_viewer_wallet,
+                chat_session_id=_self_use_external_order_id(
+                    machine_id=machine.id,
+                    viewer_wallet_address=normalized_viewer_wallet,
+                ),
+                user_message=payload.prompt,
+                preferred_strategy=payload.execution_strategy,
+                input_files=planning_input_files,
+            )
+    except AttachmentResolutionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     top_plan = recommended_plans[0]
     return SelfUsePlansResponse(
         viewer_wallet_address=normalized_viewer_wallet,
@@ -99,16 +110,26 @@ def create_self_use_run(
         machine_id=payload.machine_id,
         viewer_wallet_address=normalized_viewer_wallet,
     )
-    recommended_plans = build_recommended_plans(
-        user_id=normalized_viewer_wallet,
-        chat_session_id=_self_use_external_order_id(
-            machine_id=machine.id,
-            viewer_wallet_address=normalized_viewer_wallet,
-        ),
-        user_message=payload.prompt,
-        preferred_strategy=payload.execution_strategy,
-        input_files=tuple(payload.input_files),
-    )
+    try:
+        with resolve_planning_input_files(
+            db=db,
+            input_files=tuple(payload.input_files),
+            attachment_session_id=payload.attachment_session_id,
+            attachment_session_token=payload.attachment_session_token,
+            attachment_ids=tuple(payload.attachment_ids),
+        ) as planning_input_files:
+            recommended_plans = build_recommended_plans(
+                user_id=normalized_viewer_wallet,
+                chat_session_id=_self_use_external_order_id(
+                    machine_id=machine.id,
+                    viewer_wallet_address=normalized_viewer_wallet,
+                ),
+                user_message=payload.prompt,
+                preferred_strategy=payload.execution_strategy,
+                input_files=planning_input_files,
+            )
+    except AttachmentResolutionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     selected_plan = select_recommended_plan(
         recommended_plans,
         selected_plan_id=payload.selected_plan_id,

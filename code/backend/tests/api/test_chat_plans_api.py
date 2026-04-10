@@ -1,10 +1,14 @@
 import os
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.routes import chat_plans as chat_plans_route
 from app.core.config import reset_settings_cache
 from app.core.container import reset_container_cache
+from app.domain.planning import RecommendedPlan
+from app.execution.contracts import ExecutionStrategy
 from app.main import create_app
 
 
@@ -30,6 +34,66 @@ def _create_machine(client: TestClient) -> dict:
     )
     assert response.status_code == 201
     return response.json()
+
+
+def _issue_attachment_session(client: TestClient) -> dict:
+    response = client.post("/api/v1/attachments/sessions")
+    assert response.status_code == 201
+    return response.json()
+
+
+def _upload_attachment(client: TestClient, *, session_id: str, session_token: str) -> str:
+    response = client.post(
+        "/api/v1/attachments",
+        data={"session_id": session_id},
+        headers={"X-Attachment-Session-Token": session_token},
+        files={"file": ("brief.txt", b"creative brief payload", "text/plain")},
+    )
+    assert response.status_code == 201
+    return str(response.json()["id"])
+
+
+def _recommended_plans_for_test(preferred_strategy: ExecutionStrategy | None) -> tuple[RecommendedPlan, ...]:
+    plans = (
+        RecommendedPlan(
+            plan_id="plan-quality",
+            strategy=ExecutionStrategy.QUALITY,
+            title="Quality",
+            summary="Quality path",
+            why_this_plan="For quality",
+            tradeoff="Slower",
+            native_plan_index=0,
+            native_plan_name="Quality",
+            native_plan_description="Quality path",
+        ),
+        RecommendedPlan(
+            plan_id="plan-efficiency",
+            strategy=ExecutionStrategy.EFFICIENCY,
+            title="Efficiency",
+            summary="Efficiency path",
+            why_this_plan="For speed",
+            tradeoff="Less depth",
+            native_plan_index=1,
+            native_plan_name="Efficiency",
+            native_plan_description="Efficiency path",
+        ),
+        RecommendedPlan(
+            plan_id="plan-simplicity",
+            strategy=ExecutionStrategy.SIMPLICITY,
+            title="Simplicity",
+            summary="Simplicity path",
+            why_this_plan="For lean flow",
+            tradeoff="Least checks",
+            native_plan_index=2,
+            native_plan_name="Simplicity",
+            native_plan_description="Simplicity path",
+        ),
+    )
+    if preferred_strategy is None:
+        return plans
+    preferred = [plan for plan in plans if plan.strategy == preferred_strategy]
+    remaining = [plan for plan in plans if plan.strategy != preferred_strategy]
+    return tuple(preferred + remaining)
 
 
 def test_chat_plans_returns_three_productsized_recommendations(client: TestClient) -> None:
@@ -115,3 +179,53 @@ def test_order_creation_rejects_unknown_selected_plan_id(client: TestClient) -> 
 
     assert order_response.status_code == 409
     assert order_response.json()["detail"] == "Selected plan is invalid for this request"
+
+
+def test_chat_plans_resolve_uploaded_attachments_to_real_paths_for_planning(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _issue_attachment_session(client)
+    attachment_id = _upload_attachment(
+        client,
+        session_id=session["session_id"],
+        session_token=session["session_token"],
+    )
+    captured_path: dict[str, Path] = {}
+
+    def _stub_build_recommended_plans(  # noqa: PLR0913
+        *,
+        user_id: str,
+        chat_session_id: str,
+        user_message: str,
+        preferred_strategy: ExecutionStrategy | None,
+        input_files: tuple[str, ...],
+    ) -> tuple[RecommendedPlan, ...]:
+        assert user_id == "user-attachment"
+        assert chat_session_id == "chat-attachment"
+        assert user_message == "Plan with uploaded context"
+        assert len(input_files) == 1
+        resolved = Path(input_files[0])
+        assert resolved.exists()
+        assert resolved.read_bytes() == b"creative brief payload"
+        captured_path["value"] = resolved
+        return _recommended_plans_for_test(preferred_strategy)
+
+    monkeypatch.setattr(chat_plans_route, "build_recommended_plans", _stub_build_recommended_plans)
+
+    response = client.post(
+        "/api/v1/chat/plans",
+        json={
+            "user_id": "user-attachment",
+            "chat_session_id": "chat-attachment",
+            "user_message": "Plan with uploaded context",
+            "attachment_session_id": session["session_id"],
+            "attachment_session_token": session["session_token"],
+            "attachment_ids": [attachment_id],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["input_files"] == []
+    assert "value" in captured_path
+    assert not captured_path["value"].exists()

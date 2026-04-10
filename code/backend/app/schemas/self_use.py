@@ -10,6 +10,9 @@ class SelfUsePlansRequest(BaseModel):
     prompt: str = Field(min_length=1)
     execution_strategy: ExecutionStrategy = ExecutionStrategy.QUALITY
     input_files: list[str] = Field(default_factory=list)
+    attachment_session_id: str | None = Field(default=None, min_length=1, max_length=64)
+    attachment_session_token: str | None = Field(default=None, min_length=1, max_length=256)
+    attachment_ids: list[str] = Field(default_factory=list)
 
 
 class SelfUsePlansResponse(BaseModel):
@@ -28,5 +31,8 @@ class SelfUseRunCreateRequest(BaseModel):
     prompt: str = Field(min_length=1)
     execution_strategy: ExecutionStrategy = ExecutionStrategy.QUALITY
     input_files: list[str] = Field(default_factory=list)
+    attachment_session_id: str | None = Field(default=None, min_length=1, max_length=64)
+    attachment_session_token: str | None = Field(default=None, min_length=1, max_length=256)
+    attachment_ids: list[str] = Field(default_factory=list)
     selected_plan_id: str | None = None
     selected_native_plan_index: int | None = None
