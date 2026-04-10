@@ -43,8 +43,8 @@ def test_session_issue_upload_list_and_download(client: TestClient) -> None:
         "/api/v1/attachments",
         data={
             "session_id": session["session_id"],
-            "session_token": session["session_token"],
         },
+        headers={"X-Attachment-Session-Token": session["session_token"]},
         files={"file": ("brief.txt", b"creative brief v1", "text/plain")},
     )
     assert upload_response.status_code == 201
@@ -58,8 +58,8 @@ def test_session_issue_upload_list_and_download(client: TestClient) -> None:
         "/api/v1/attachments",
         params={
             "session_id": session["session_id"],
-            "session_token": session["session_token"],
         },
+        headers={"X-Attachment-Session-Token": session["session_token"]},
     )
     assert list_response.status_code == 200
     listed = list_response.json()
@@ -70,8 +70,8 @@ def test_session_issue_upload_list_and_download(client: TestClient) -> None:
         f"/api/v1/attachments/{uploaded['id']}/download",
         params={
             "session_id": session["session_id"],
-            "session_token": session["session_token"],
         },
+        headers={"X-Attachment-Session-Token": session["session_token"]},
     )
     assert download_response.status_code == 200
     assert download_response.content == b"creative brief v1"
@@ -83,6 +83,7 @@ def test_invalid_or_missing_session_credentials_are_rejected(client: TestClient)
 
     missing_credentials = client.post(
         "/api/v1/attachments",
+        data={"session_id": valid_session["session_id"]},
         files={"file": ("brief.txt", b"creative brief v1", "text/plain")},
     )
     assert missing_credentials.status_code == 422
@@ -91,8 +92,8 @@ def test_invalid_or_missing_session_credentials_are_rejected(client: TestClient)
         "/api/v1/attachments",
         data={
             "session_id": valid_session["session_id"],
-            "session_token": invalid_session["session_token"],
         },
+        headers={"X-Attachment-Session-Token": invalid_session["session_token"]},
         files={"file": ("brief.txt", b"creative brief v1", "text/plain")},
     )
     assert invalid_upload.status_code == 401
@@ -102,11 +103,17 @@ def test_invalid_or_missing_session_credentials_are_rejected(client: TestClient)
         "/api/v1/attachments",
         params={
             "session_id": valid_session["session_id"],
-            "session_token": invalid_session["session_token"],
         },
+        headers={"X-Attachment-Session-Token": invalid_session["session_token"]},
     )
     assert invalid_list.status_code == 401
     assert invalid_list.json()["detail"] == "Invalid attachment session credentials"
+
+    missing_token_list = client.get(
+        "/api/v1/attachments",
+        params={"session_id": valid_session["session_id"]},
+    )
+    assert missing_token_list.status_code == 422
 
 
 def test_upload_accepts_file_at_exact_25mb_boundary(client: TestClient) -> None:
@@ -117,8 +124,8 @@ def test_upload_accepts_file_at_exact_25mb_boundary(client: TestClient) -> None:
         "/api/v1/attachments",
         data={
             "session_id": session["session_id"],
-            "session_token": session["session_token"],
         },
+        headers={"X-Attachment-Session-Token": session["session_token"]},
         files={"file": ("exact.bin", exact_payload, "application/octet-stream")},
     )
 
@@ -135,8 +142,8 @@ def test_upload_rejects_files_over_25mb(client: TestClient) -> None:
         "/api/v1/attachments",
         data={
             "session_id": session["session_id"],
-            "session_token": session["session_token"],
         },
+        headers={"X-Attachment-Session-Token": session["session_token"]},
         files={"file": ("huge.bin", oversized_payload, "application/octet-stream")},
     )
 
@@ -182,10 +189,33 @@ def test_upload_reads_file_in_chunks(monkeypatch: pytest.MonkeyPatch, client: Te
         "/api/v1/attachments",
         data={
             "session_id": session["session_id"],
-            "session_token": session["session_token"],
         },
+        headers={"X-Attachment-Session-Token": session["session_token"]},
         files={"file": ("chunked.txt", b"1234567890abcdef", "text/plain")},
     )
     assert response.status_code == 201
     assert read_sizes
     assert all(size not in (-1, None) for size in read_sizes)
+
+
+def test_download_content_disposition_sanitizes_filename(client: TestClient) -> None:
+    session = _issue_session(client)
+    upload_response = client.post(
+        "/api/v1/attachments",
+        data={"session_id": session["session_id"]},
+        headers={"X-Attachment-Session-Token": session["session_token"]},
+        files={"file": ("evil\"name;bad=.txt", b"payload", "text/plain")},
+    )
+    assert upload_response.status_code == 201
+    attachment_id = upload_response.json()["id"]
+
+    download_response = client.get(
+        f"/api/v1/attachments/{attachment_id}/download",
+        params={"session_id": session["session_id"]},
+        headers={"X-Attachment-Session-Token": session["session_token"]},
+    )
+    assert download_response.status_code == 200
+    content_disposition = download_response.headers["content-disposition"]
+    assert "\r" not in content_disposition
+    assert "\n" not in content_disposition
+    assert "filename*=UTF-8''" in content_disposition

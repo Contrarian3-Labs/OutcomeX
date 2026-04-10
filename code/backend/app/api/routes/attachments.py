@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from starlette.datastructures import UploadFile
@@ -37,6 +39,29 @@ def _normalize_required_value(raw_value: object, *, field_name: str, max_length:
             detail=f"{field_name} exceeds {max_length} characters",
         )
     return normalized
+
+
+def _session_token_header(
+    x_attachment_session_token: str | None = Header(default=None, alias="X-Attachment-Session-Token"),
+) -> str:
+    return _normalize_required_value(
+        x_attachment_session_token,
+        field_name="X-Attachment-Session-Token",
+        max_length=MAX_SESSION_TOKEN_LENGTH,
+    )
+
+
+def _build_content_disposition(filename: str) -> str:
+    sanitized = filename.replace("\r", "").replace("\n", "").strip()
+    if not sanitized:
+        sanitized = "attachment.bin"
+
+    fallback = "".join(
+        ch if 32 <= ord(ch) < 127 and ch not in {'"', "\\"} else "_"
+        for ch in sanitized
+    ).strip() or "attachment.bin"
+    encoded = quote(sanitized, safe="")
+    return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{encoded}'
 
 
 def _early_reject_by_content_length(request: Request) -> None:
@@ -120,11 +145,7 @@ async def upload_attachment(request: Request, db: Session = Depends(get_db)) -> 
         field_name="session_id",
         max_length=MAX_SESSION_ID_LENGTH,
     )
-    session_token = _normalize_required_value(
-        form.get("session_token"),
-        field_name="session_token",
-        max_length=MAX_SESSION_TOKEN_LENGTH,
-    )
+    session_token = _session_token_header(request.headers.get("X-Attachment-Session-Token"))
     attachment_session = _resolve_session_or_401(db=db, session_id=session_id, session_token=session_token)
 
     file = form.get("file")
@@ -155,7 +176,7 @@ async def upload_attachment(request: Request, db: Session = Depends(get_db)) -> 
 @router.get("", response_model=list[AttachmentResponse])
 def list_uploaded_attachments(
     session_id: str = Query(min_length=1, max_length=MAX_SESSION_ID_LENGTH),
-    session_token: str = Query(min_length=1, max_length=MAX_SESSION_TOKEN_LENGTH),
+    session_token: str = Depends(_session_token_header),
     db: Session = Depends(get_db),
 ) -> list[AttachmentResponse]:
     attachment_session = _resolve_session_or_401(
@@ -174,7 +195,7 @@ def list_uploaded_attachments(
 def download_attachment(
     attachment_id: str,
     session_id: str = Query(min_length=1, max_length=MAX_SESSION_ID_LENGTH),
-    session_token: str = Query(min_length=1, max_length=MAX_SESSION_TOKEN_LENGTH),
+    session_token: str = Depends(_session_token_header),
     db: Session = Depends(get_db),
 ) -> Response:
     attachment_session = _resolve_session_or_401(
@@ -194,6 +215,6 @@ def download_attachment(
         content=attachment.content,
         media_type=attachment.content_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{attachment.filename}"',
+            "Content-Disposition": _build_content_disposition(attachment.filename),
         },
     )
