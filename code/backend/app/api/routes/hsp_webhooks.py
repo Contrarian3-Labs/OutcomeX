@@ -9,10 +9,15 @@ from app.api.routes.payments import (
     _backfill_order_chain_anchor_from_receipt,
     _mark_authoritative_paid_projection,
 )
+from app.api.routes.primary_issuance import (
+    _resolve_primary_purchase_for_hsp_event,
+    apply_primary_purchase_hsp_webhook,
+)
 from app.core.container import Container
 from app.domain.enums import PaymentState
 from app.domain.models import Order, Payment, utc_now
 from app.integrations.onchain_broadcaster import OnchainBroadcaster, get_onchain_broadcaster
+from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
 from app.onchain.order_writer import OrderWriter, get_order_writer
 from app.onchain.tx_sender import TransactionSender, get_onchain_transaction_sender
 
@@ -49,6 +54,7 @@ async def ingest_hsp_webhook(
     order_writer: OrderWriter = Depends(get_order_writer),
     onchain_broadcaster: OnchainBroadcaster = Depends(get_onchain_broadcaster),
     tx_sender: TransactionSender = Depends(get_onchain_transaction_sender),
+    onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
 ) -> dict[str, object]:
     body = await request.body()
     signature_header = request.headers.get("x-signature")
@@ -68,7 +74,21 @@ async def ingest_hsp_webhook(
         payment = db.scalar(select(Payment).where(Payment.merchant_order_id == event.cart_mandate_id))
     if payment is None and event.flow_id:
         payment = db.scalar(select(Payment).where(Payment.flow_id == event.flow_id))
+
     if payment is None:
+        primary_purchase = _resolve_primary_purchase_for_hsp_event(event=event, db=db)
+        if primary_purchase is not None:
+            mapped_state = _map_hsp_status(event.status)
+            result = apply_primary_purchase_hsp_webhook(
+                purchase=primary_purchase,
+                mapped_state=mapped_state,
+                event=event,
+                container=container,
+                onchain_lifecycle=onchain_lifecycle,
+                db=db,
+            )
+            db.commit()
+            return result
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found")
 
     if payment.callback_event_id == event.event_id:

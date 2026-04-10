@@ -226,6 +226,56 @@ class Payment(Base):
     order: Mapped["Order"] = relationship(back_populates="payments")
 
 
+class PrimaryIssuanceSku(Base):
+    __tablename__ = "primary_issuance_skus"
+
+    sku_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    profile_label: Mapped[str] = mapped_column(String(128), nullable=False)
+    gpu_spec: Mapped[str] = mapped_column(String(256), nullable=False)
+    model_family: Mapped[str] = mapped_column(String(128), nullable=False)
+    price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="USDC")
+    stock_available: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+    purchases: Mapped[list["PrimaryIssuancePurchase"]] = relationship(back_populates="sku")
+
+
+class PrimaryIssuancePurchase(Base):
+    __tablename__ = "primary_issuance_purchases"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    sku_id: Mapped[str] = mapped_column(ForeignKey("primary_issuance_skus.sku_id"), nullable=False, index=True)
+    buyer_user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(32), default="hsp", nullable=False)
+    provider_reference: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True, index=True)
+    merchant_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True)
+    flow_id: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True)
+    checkout_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="USDC")
+    state: Mapped[PaymentState] = mapped_column(Enum(PaymentState), default=PaymentState.CREATED, nullable=False)
+    callback_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    callback_state: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    callback_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    callback_tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    minted_machine_id: Mapped[str | None] = mapped_column(ForeignKey("machines.id"), nullable=True, unique=True)
+    minted_onchain_machine_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    sku: Mapped["PrimaryIssuanceSku"] = relationship(back_populates="purchases")
+    minted_machine: Mapped["Machine | None"] = relationship()
+
+
 class SettlementRecord(Base):
     __tablename__ = "settlements"
     __table_args__ = (UniqueConstraint("order_id", name="uq_settlements_order_id"),)
