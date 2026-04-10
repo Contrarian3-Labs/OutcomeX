@@ -192,7 +192,13 @@ def _finalize_primary_purchase_success(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Buyer wallet address unresolved")
 
     token_uri = _primary_purchase_token_uri(purchase)
-    existing_onchain_machine_id = onchain_lifecycle.find_minted_machine_by_token_uri(token_uri=token_uri)
+    try:
+        existing_onchain_machine_id = onchain_lifecycle.find_minted_machine_by_token_uri(token_uri=token_uri)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Primary issuance reconciliation unavailable: {exc}",
+        ) from exc
     if existing_onchain_machine_id is not None:
         machine = _ensure_primary_machine_projection(
             purchase=purchase,

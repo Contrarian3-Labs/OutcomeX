@@ -22,6 +22,7 @@ class SpyOnchainLifecycleService:
         self.mint_calls: list[dict[str, str]] = []
         self.reconcile_hits: dict[str, str] = {}
         self.find_calls: list[str] = []
+        self.find_error: str | None = None
         self._counter = 0
 
     def enabled(self) -> bool:
@@ -45,6 +46,8 @@ class SpyOnchainLifecycleService:
 
     def find_minted_machine_by_token_uri(self, *, token_uri: str) -> str | None:
         self.find_calls.append(token_uri)
+        if self.find_error:
+            raise RuntimeError(self.find_error)
         return self.reconcile_hits.get(token_uri)
 
 
@@ -379,3 +382,39 @@ def test_primary_success_retry_with_new_event_does_not_remint_after_success_mark
         assert persisted.minted_machine_id is not None
         assert persisted.minted_onchain_machine_id == "9901"
         assert persisted.stock_reserved is False
+
+
+def test_primary_reconciliation_uncertainty_fails_closed_without_remint(
+    client: tuple[TestClient, SpyOnchainLifecycleService],
+) -> None:
+    test_client, spy_lifecycle = client
+    purchase = _create_purchase_intent(test_client)
+    spy_lifecycle.find_error = "machine_minted_log_fetch_failed"
+
+    with get_container().session_factory() as session:
+        persisted = session.get(PrimaryIssuancePurchase, purchase["purchase_id"])
+        assert persisted is not None
+        persisted.state = PaymentState.SUCCEEDED
+        persisted.callback_event_id = "evt-initial-success"
+        persisted.stock_reserved = True
+        session.add(persisted)
+        session.commit()
+
+    retry_payload = _webhook_payload(
+        purchase,
+        status="payment-successful",
+        request_id="evt-primary-retry-fail-closed",
+        tx_signature="0xretryclosed",
+    )
+    retry_body, retry_headers = _sign_payload(retry_payload)
+    retry = test_client.post("/api/v1/payments/hsp/webhooks", content=retry_body, headers=retry_headers)
+
+    assert retry.status_code == 409
+    assert retry.json()["detail"] == "Primary issuance reconciliation unavailable: machine_minted_log_fetch_failed"
+    assert len(spy_lifecycle.mint_calls) == 0
+
+    with get_container().session_factory() as session:
+        persisted = session.get(PrimaryIssuancePurchase, purchase["purchase_id"])
+        assert persisted is not None
+        assert persisted.minted_machine_id is None
+        assert persisted.stock_reserved is True

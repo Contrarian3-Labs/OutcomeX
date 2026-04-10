@@ -84,8 +84,6 @@ class OnchainLifecycleService:
         logs = self._fetch_machine_minted_logs()
         for log in reversed(logs):
             decoded = self._decode_machine_minted_log(log)
-            if decoded is None:
-                continue
             if decoded.get("token_uri") != token_uri:
                 continue
             return decoded.get("machine_id")
@@ -166,44 +164,42 @@ class OnchainLifecycleService:
                 response = client.post(self._settings.onchain_rpc_url, json=payload)
                 response.raise_for_status()
                 body = response.json()
-        except Exception:
-            return []
+        except Exception as exc:  # pragma: no cover - network failures vary by environment
+            raise RuntimeError("machine_minted_log_fetch_failed") from exc
         result = body.get("result")
         if not isinstance(result, list):
-            return []
+            raise RuntimeError("machine_minted_log_fetch_invalid_payload")
         return [item for item in result if isinstance(item, dict)]
 
     @staticmethod
-    def _decode_machine_minted_log(log: dict[str, Any]) -> dict[str, str] | None:
+    def _decode_machine_minted_log(log: dict[str, Any]) -> dict[str, str]:
         topics = list(log.get("topics", []))
         if len(topics) < 2:
-            return None
+            raise RuntimeError("machine_minted_log_decode_failed:missing_topics")
         try:
             machine_id = str(int(str(topics[1]), 16))
             token_uri = OnchainLifecycleService._decode_dynamic_string(str(log.get("data", "")))
-        except Exception:
-            return None
-        if token_uri is None:
-            return None
+        except Exception as exc:
+            raise RuntimeError("machine_minted_log_decode_failed") from exc
         return {
             "machine_id": machine_id,
             "token_uri": token_uri,
         }
 
     @staticmethod
-    def _decode_dynamic_string(data: str) -> str | None:
+    def _decode_dynamic_string(data: str) -> str:
         normalized = str(data).lower().removeprefix("0x")
         if len(normalized) < 128:
-            return None
+            raise ValueError("dynamic_string_missing_head")
         offset = int(normalized[0:64], 16)
         length_offset = offset * 2
         if len(normalized) < length_offset + 64:
-            return None
+            raise ValueError("dynamic_string_missing_length")
         length = int(normalized[length_offset : length_offset + 64], 16)
         value_start = length_offset + 64
         value_end = value_start + (length * 2)
         if len(normalized) < value_end:
-            return None
+            raise ValueError("dynamic_string_missing_value")
         return bytes.fromhex(normalized[value_start:value_end]).decode("utf-8")
 
     def _send_as_admin(self, write_result: OrderWriteResult) -> BroadcastReceipt:
