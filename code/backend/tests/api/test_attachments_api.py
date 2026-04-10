@@ -65,6 +65,8 @@ def test_session_issue_upload_list_and_download(client: TestClient) -> None:
     listed = list_response.json()
     assert len(listed) == 1
     assert listed[0]["id"] == uploaded["id"]
+    assert list_response.headers["cache-control"] == "no-store, private"
+    assert "X-Attachment-Session-Token" in list_response.headers["vary"]
 
     download_response = client.get(
         f"/api/v1/attachments/{uploaded['id']}/download",
@@ -75,6 +77,8 @@ def test_session_issue_upload_list_and_download(client: TestClient) -> None:
     )
     assert download_response.status_code == 200
     assert download_response.content == b"creative brief v1"
+    assert download_response.headers["cache-control"] == "no-store, private"
+    assert "X-Attachment-Session-Token" in download_response.headers["vary"]
 
 
 def test_invalid_or_missing_session_credentials_are_rejected(client: TestClient) -> None:
@@ -165,6 +169,7 @@ def test_upload_rejects_request_bytes_before_form_parsing(
         headers={
             "content-type": "multipart/form-data; boundary=boundary",
             "content-length": str(MAX_ATTACHMENT_REQUEST_SIZE_BYTES + 1),
+            "X-Attachment-Session-Token": "placeholder-token",
         },
     )
 
@@ -219,3 +224,5 @@ def test_download_content_disposition_sanitizes_filename(client: TestClient) -> 
     assert "\r" not in content_disposition
     assert "\n" not in content_disposition
     assert "filename*=UTF-8''" in content_disposition
+    assert download_response.headers["cache-control"] == "no-store, private"
+    assert "X-Attachment-Session-Token" in download_response.headers["vary"]

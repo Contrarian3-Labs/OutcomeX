@@ -27,6 +27,8 @@ MAX_SESSION_TOKEN_LENGTH = 256
 MAX_MULTIPART_FIELDS = 20
 MAX_MULTIPART_FILES = 4
 INVALID_SESSION_DETAIL = "Invalid attachment session credentials"
+PRIVATE_CACHE_CONTROL = "no-store, private"
+SESSION_TOKEN_VARY = "X-Attachment-Session-Token"
 
 
 def _normalize_required_value(raw_value: object, *, field_name: str, max_length: int) -> str:
@@ -42,13 +44,29 @@ def _normalize_required_value(raw_value: object, *, field_name: str, max_length:
 
 
 def _session_token_header(
-    x_attachment_session_token: str | None = Header(default=None, alias="X-Attachment-Session-Token"),
+    x_attachment_session_token: str = Header(
+        ...,
+        alias="X-Attachment-Session-Token",
+        description="Server-issued attachment session secret token.",
+    ),
 ) -> str:
     return _normalize_required_value(
         x_attachment_session_token,
         field_name="X-Attachment-Session-Token",
         max_length=MAX_SESSION_TOKEN_LENGTH,
     )
+
+
+def _apply_private_session_headers(response: Response) -> None:
+    response.headers["Cache-Control"] = PRIVATE_CACHE_CONTROL
+    existing_vary = response.headers.get("Vary")
+    if not existing_vary:
+        response.headers["Vary"] = SESSION_TOKEN_VARY
+        return
+    existing_tokens = {token.strip() for token in existing_vary.split(",") if token.strip()}
+    if SESSION_TOKEN_VARY in existing_tokens:
+        return
+    response.headers["Vary"] = f"{existing_vary}, {SESSION_TOKEN_VARY}"
 
 
 def _build_content_disposition(filename: str) -> str:
@@ -126,7 +144,11 @@ def create_upload_session(db: Session = Depends(get_db)) -> AttachmentSessionCre
 
 
 @router.post("", response_model=AttachmentResponse, status_code=status.HTTP_201_CREATED)
-async def upload_attachment(request: Request, db: Session = Depends(get_db)) -> AttachmentResponse:
+async def upload_attachment(
+    request: Request,
+    session_token: str = Depends(_session_token_header),
+    db: Session = Depends(get_db),
+) -> AttachmentResponse:
     _early_reject_by_content_length(request)
     try:
         form = await request.form(
@@ -145,7 +167,6 @@ async def upload_attachment(request: Request, db: Session = Depends(get_db)) -> 
         field_name="session_id",
         max_length=MAX_SESSION_ID_LENGTH,
     )
-    session_token = _session_token_header(request.headers.get("X-Attachment-Session-Token"))
     attachment_session = _resolve_session_or_401(db=db, session_id=session_id, session_token=session_token)
 
     file = form.get("file")
@@ -175,6 +196,7 @@ async def upload_attachment(request: Request, db: Session = Depends(get_db)) -> 
 
 @router.get("", response_model=list[AttachmentResponse])
 def list_uploaded_attachments(
+    response: Response,
     session_id: str = Query(min_length=1, max_length=MAX_SESSION_ID_LENGTH),
     session_token: str = Depends(_session_token_header),
     db: Session = Depends(get_db),
@@ -188,6 +210,7 @@ def list_uploaded_attachments(
         db=db,
         attachment_session_id=attachment_session.id,
     )
+    _apply_private_session_headers(response)
     return [_build_attachment_response(item) for item in attachments]
 
 
@@ -211,10 +234,12 @@ def download_attachment(
     if attachment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
 
-    return Response(
+    response = Response(
         content=attachment.content,
         media_type=attachment.content_type,
         headers={
             "Content-Disposition": _build_content_disposition(attachment.filename),
         },
     )
+    _apply_private_session_headers(response)
+    return response
