@@ -95,6 +95,54 @@ def test_execution_service_submit_and_poll_reads_run_record(tmp_path: Path) -> N
 
 
 
+def test_execution_service_stages_existing_input_files_before_launch(tmp_path: Path) -> None:
+    output_root = tmp_path / "runs"
+    repo_root = tmp_path / "agentskillos"
+    (repo_root / ".venv" / "bin").mkdir(parents=True)
+    (repo_root / ".venv" / "bin" / "python").write_text("", encoding="utf-8")
+    source_file = tmp_path / "source-brief.md"
+    source_file.write_text("bound attachment", encoding="utf-8")
+    staged_from_launcher: dict[str, Path] = {}
+
+    def launcher(command, *, cwd: str, env: dict[str, str]) -> int:
+        staged_files = json.loads(command[10])
+        assert len(staged_files) == 1
+        staged_path = Path(staged_files[0])
+        assert staged_path.exists()
+        assert staged_path.read_text(encoding="utf-8") == "bound attachment"
+        assert staged_path.parent.name == "inputs"
+        staged_from_launcher["path"] = staged_path
+        record_path = Path(command[4])
+        payload = json.loads(record_path.read_text(encoding="utf-8"))
+        payload["status"] = "succeeded"
+        record_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        assert cwd == str(repo_root)
+        assert env["LLM_MODEL"] == "openai/qwen3.6-plus"
+        return 4242
+
+    service = AgentSkillOSExecutionService(
+        settings=Settings(
+            agentskillos_execution_output_root=str(output_root),
+        ),
+        bridge=_BridgeStub(repo_root),
+        launcher=launcher,
+    )
+
+    submitted = service.submit_task(
+        external_order_id="order-stage",
+        prompt="Create report from staged file",
+        input_files=(str(source_file),),
+        execution_strategy=ExecutionStrategy.QUALITY,
+    )
+
+    assert submitted.status.value == "succeeded"
+    assert submitted.submission_payload == {
+        "intent": "Create report from staged file",
+        "files": [str(staged_from_launcher["path"])],
+        "execution_strategy": "quality",
+    }
+
+
 def test_get_run_marks_stale_process_as_failed(tmp_path: Path, monkeypatch) -> None:
     output_root = tmp_path / "runs"
     run_dir = output_root / "aso-run-stale"

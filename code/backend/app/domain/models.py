@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Enum, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.domain.enums import (
@@ -353,6 +353,35 @@ class ChatPlan(Base):
     preview_state: Mapped[PreviewState] = mapped_column(Enum(PreviewState), default=PreviewState.READY)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
+
+
+class Attachment(Base):
+    __tablename__ = "attachments"
+    __table_args__ = (Index("ix_attachments_attachment_session_id", "attachment_session_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    attachment_session_id: Mapped[str] = mapped_column(ForeignKey("attachment_sessions.id"), nullable=False)
+    filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(128), nullable=False, default="application/octet-stream")
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    attachment_session: Mapped["AttachmentSession"] = relationship(back_populates="attachments")
+
+
+class AttachmentSession(Base):
+    __tablename__ = "attachment_sessions"
+    __table_args__ = (Index("ix_attachment_sessions_expires_at", "expires_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attachment_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    attachments: Mapped[list["Attachment"]] = relationship(back_populates="attachment_session")
 
 
 class OnchainIndexerCursor(Base):

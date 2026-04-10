@@ -33,6 +33,12 @@ from app.schemas.order import (
     ResultReadyRequest,
     ResultReadyResponse,
 )
+from app.services.attachments import (
+    AttachmentResolutionError,
+    build_planning_context_id,
+    resolve_planning_input_files,
+    stage_bound_execution_input_files,
+)
 
 router = APIRouter()
 
@@ -211,13 +217,39 @@ def create_order(
 
     execution_prompt, execution_input_files, benchmark_solution_title = _resolve_order_execution_inputs(payload)
 
-    recommended_plans = build_recommended_plans(
-        user_id=payload.user_id,
-        chat_session_id=payload.chat_session_id,
-        user_message=execution_prompt,
-        preferred_strategy=payload.execution_strategy,
+    derived_planning_context_id = build_planning_context_id(
         input_files=tuple(execution_input_files),
+        attachment_session_id=payload.attachment_session_id,
+        attachment_ids=tuple(payload.attachment_ids),
     )
+    if (
+        payload.planning_context_id
+        and (execution_input_files or payload.attachment_session_id or payload.attachment_ids)
+        and payload.planning_context_id != derived_planning_context_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="planning_context_id does not match input_files/attachment references",
+        )
+    planning_context_id = payload.planning_context_id or derived_planning_context_id
+    try:
+        with resolve_planning_input_files(
+            db=db,
+            input_files=tuple(execution_input_files),
+            attachment_session_id=payload.attachment_session_id,
+            attachment_session_token=payload.attachment_session_token,
+            attachment_ids=tuple(payload.attachment_ids),
+        ) as planning_input_files:
+            recommended_plans = build_recommended_plans(
+                user_id=payload.user_id,
+                chat_session_id=payload.chat_session_id,
+                user_message=execution_prompt,
+                preferred_strategy=payload.execution_strategy,
+                input_files=planning_input_files,
+                planning_context_key=planning_context_id,
+            )
+    except AttachmentResolutionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     selected_plan = select_recommended_plan(
         recommended_plans,
         selected_plan_id=payload.selected_plan_id,
@@ -250,6 +282,11 @@ def create_order(
         selected_native_plan_index=selected_plan.native_plan_index,
     )
     execution_metadata = dict(execution_plan.metadata)
+    execution_request = dict(execution_plan.execution_request)
+    execution_request["planning_context_id"] = planning_context_id
+    execution_request["attachment_session_id"] = payload.attachment_session_id
+    execution_request["attachment_ids"] = list(payload.attachment_ids)
+    order.execution_request = execution_request
     execution_metadata["selected_plan_id"] = selected_plan.plan_id
     execution_metadata["selected_plan_title"] = selected_plan.title
     execution_metadata["selected_plan_strategy"] = selected_plan.strategy.value
@@ -258,6 +295,9 @@ def create_order(
         execution_metadata["benchmark_task_id"] = payload.benchmark_task_id
     if benchmark_solution_title:
         execution_metadata["benchmark_solution_title"] = benchmark_solution_title
+    execution_metadata["planning_context_id"] = planning_context_id
+    execution_metadata["attachment_session_id"] = payload.attachment_session_id
+    execution_metadata["attachment_ids"] = list(payload.attachment_ids)
     if selected_plan.native_plan_name:
         execution_metadata["selected_native_plan_name"] = selected_plan.native_plan_name
     if selected_plan.native_plan_description:
@@ -266,7 +306,6 @@ def create_order(
         execution_metadata["selected_native_skill_ids"] = list(selected_plan.native_skill_ids)
     if selected_plan.native_plan_nodes:
         execution_metadata["selected_native_plan_nodes"] = [dict(node) for node in selected_plan.native_plan_nodes]
-    order.execution_request = execution_plan.execution_request
     order.execution_metadata = execution_metadata
     db.add(order)
     db.commit()
@@ -438,12 +477,24 @@ def start_order_execution(
     intent_context["machine_id"] = machine.id
     if selected_native_plan_index is not None:
         intent_context["selected_native_plan_index"] = str(selected_native_plan_index)
+    if metadata.get("planning_context_id"):
+        intent_context["planning_context_id"] = str(metadata["planning_context_id"])
+
+    try:
+        dispatch_input_files = stage_bound_execution_input_files(
+            db=db,
+            input_files=tuple((order.execution_request or {}).get("files") or ()),
+            attachment_session_id=(order.execution_metadata or {}).get("attachment_session_id"),
+            attachment_ids=tuple((order.execution_metadata or {}).get("attachment_ids") or ()),
+        )
+    except AttachmentResolutionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     dispatch = ExecutionEngineService(execution_service=execution_service).dispatch(
         IntentRequest(
             intent_id=order.id,
             prompt=str((order.execution_request or {}).get("intent") or order.user_prompt),
-            input_files=tuple((order.execution_request or {}).get("files") or ()),
+            input_files=dispatch_input_files,
             execution_strategy=ExecutionStrategy((order.execution_request or {}).get("execution_strategy", "quality")),
             context=intent_context,
         )

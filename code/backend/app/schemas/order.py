@@ -14,6 +14,10 @@ class OrderCreateRequest(BaseModel):
     benchmark_task_id: str | None = None
     quoted_amount_cents: int = Field(gt=0)
     input_files: list[str] = Field(default_factory=list)
+    planning_context_id: str | None = Field(default=None, min_length=1, max_length=64)
+    attachment_session_id: str | None = Field(default=None, min_length=1, max_length=64)
+    attachment_session_token: str | None = Field(default=None, min_length=1, max_length=256)
+    attachment_ids: list[str] = Field(default_factory=list)
     execution_strategy: ExecutionStrategy = ExecutionStrategy.QUALITY
     selected_plan_id: str | None = None
 

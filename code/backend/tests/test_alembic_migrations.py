@@ -1,6 +1,9 @@
 import ast
 from pathlib import Path
 
+from sqlalchemy import create_engine, inspect
+
+from app.db.base import Base
 
 def test_slice_a_migration_file_exists_and_targets_orders_cancelled_at() -> None:
     migration_path = (
@@ -51,3 +54,128 @@ def test_primary_issuance_migration_file_exists() -> None:
     assert 'down_revision = "20260409_02"' in source
     assert 'op.create_table("primary_issuance_skus"' in source
     assert 'op.create_table("primary_issuance_purchases"' in source
+
+
+def test_attachments_migration_file_exists() -> None:
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "20260410_02_add_attachments_table.py"
+    )
+    source = migration_path.read_text(encoding="utf-8")
+
+    ast.parse(source)
+
+    assert 'revision = "20260410_02"' in source
+    assert 'down_revision = "20260410_01"' in source
+    assert 'op.create_table("attachments"' in source
+    assert 'op.create_index("ix_attachments_user_id", "attachments"' in source
+
+
+def test_attachment_session_scope_migration_contains_rekey_and_backfill_logic() -> None:
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "20260410_03_rekey_attachments_to_session_scope.py"
+    )
+    source = migration_path.read_text(encoding="utf-8")
+    ast.parse(source)
+    assert 'revision = "20260410_03"' in source
+    assert 'down_revision = "20260410_02"' in source
+    assert "def upgrade() -> None:" in source
+    assert "def downgrade() -> None:" in source
+    assert "batch_op.add_column(sa.Column(\"session_kind\"" in source
+    assert "batch_op.add_column(sa.Column(\"session_id\"" in source
+    assert "UPDATE attachments SET session_kind = 'legacy_user', session_id = user_id" in source
+    assert "batch_op.drop_column(\"user_id\")" in source
+    assert "op.create_index(\"ix_attachments_session_context\", \"attachments\"" in source
+    assert "batch_op.add_column(sa.Column(\"user_id\"" in source
+    assert "UPDATE attachments SET user_id = COALESCE(user_id, session_id)" in source
+    assert "batch_op.drop_column(\"session_kind\")" in source
+    assert "batch_op.drop_column(\"session_id\")" in source
+    assert "op.create_index(\"ix_attachments_user_id\", \"attachments\"" in source
+
+
+def test_attachment_server_session_migration_contains_expected_operations() -> None:
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "20260410_04_add_attachment_sessions_table.py"
+    )
+    source = migration_path.read_text(encoding="utf-8")
+    ast.parse(source)
+
+    assert 'revision = "20260410_04"' in source
+    assert 'down_revision = "20260410_03"' in source
+    assert 'op.create_table("attachment_sessions"' in source
+    assert 'batch_op.add_column(sa.Column("attachment_session_id"' in source
+    assert "INSERT INTO attachment_sessions" in source
+    assert 'batch_op.drop_column("session_kind")' in source
+    assert 'batch_op.drop_column("session_id")' in source
+    assert "batch_op.create_foreign_key(" in source
+    assert '"fk_attachments_attachment_session_id"' in source
+
+
+def test_runtime_metadata_contains_attachment_session_structures(tmp_path) -> None:
+    db_path = tmp_path / "attachments-runtime.db"
+    engine = create_engine(f"sqlite+pysqlite:///{db_path.as_posix()}")
+    Base.metadata.create_all(engine)
+    inspector = inspect(engine)
+
+    table_names = set(inspector.get_table_names())
+    assert "attachment_sessions" in table_names
+    assert "attachments" in table_names
+
+    attachment_columns = {column["name"] for column in inspector.get_columns("attachments")}
+    assert "attachment_session_id" in attachment_columns
+    assert "session_kind" not in attachment_columns
+    assert "session_id" not in attachment_columns
+
+    indexes = {index["name"] for index in inspector.get_indexes("attachments")}
+    assert "ix_attachments_attachment_session_id" in indexes
+
+    session_columns = {column["name"] for column in inspector.get_columns("attachment_sessions")}
+    assert "expires_at" in session_columns
+    assert "attachment_count" in session_columns
+    assert "total_size_bytes" in session_columns
+    session_indexes = {index["name"] for index in inspector.get_indexes("attachment_sessions")}
+    assert "ix_attachment_sessions_expires_at" in session_indexes
+
+
+def test_attachment_session_expiry_migration_contains_expected_operations() -> None:
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "20260410_05_add_attachment_session_expiry.py"
+    )
+    source = migration_path.read_text(encoding="utf-8")
+    ast.parse(source)
+    assert 'revision = "20260410_05"' in source
+    assert 'down_revision = "20260410_04"' in source
+    assert 'batch_op.add_column(sa.Column("expires_at"' in source
+    assert "UPDATE attachment_sessions SET expires_at" in source
+    assert 'batch_op.alter_column("expires_at"' in source
+    assert 'op.create_index("ix_attachment_sessions_expires_at"' in source
+
+
+def test_attachment_session_quota_counter_migration_contains_expected_operations() -> None:
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "20260410_06_add_attachment_session_quota_counters.py"
+    )
+    source = migration_path.read_text(encoding="utf-8")
+    ast.parse(source)
+    assert 'revision = "20260410_06"' in source
+    assert 'down_revision = "20260410_05"' in source
+    assert 'batch_op.add_column(sa.Column("attachment_count"' in source
+    assert 'batch_op.add_column(sa.Column("total_size_bytes"' in source
+    assert "UPDATE attachment_sessions SET attachment_count" in source
+    assert "UPDATE attachment_sessions SET total_size_bytes" in source
+    assert 'batch_op.alter_column("attachment_count"' in source
+    assert 'batch_op.alter_column("total_size_bytes"' in source

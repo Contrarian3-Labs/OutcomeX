@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.api.routes.attachments import router as attachments_router
 from app.api.routes.chat_plans import router as chat_plans_router
 from app.api.routes.debug import router as debug_router
 from app.api.routes.execution_runs import router as execution_runs_router
@@ -20,6 +21,7 @@ from app.core.config import get_settings
 def create_api_router() -> APIRouter:
     api_router = APIRouter()
     api_router.include_router(health_router, tags=["health"])
+    api_router.include_router(attachments_router, prefix="/attachments", tags=["attachments"])
     api_router.include_router(chat_plans_router, prefix="/chat", tags=["chat"])
     api_router.include_router(solutions_router, prefix="/solutions", tags=["solutions"])
     api_router.include_router(self_use_router, prefix="/self-use", tags=["self-use"])

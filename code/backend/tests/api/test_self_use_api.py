@@ -1,13 +1,16 @@
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.routes import self_use as self_use_route
 from app.core.config import reset_settings_cache
 from app.core.container import get_container, reset_container_cache
 from app.domain.enums import ExecutionRunStatus
 from app.domain.models import Machine
+from app.domain.planning import RecommendedPlan
 from app.execution.contracts import ExecutionStrategy
 from app.indexer.execution_sync import sync_execution_runs_once
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
@@ -165,6 +168,69 @@ def _create_machine(client: TestClient) -> dict:
     return payload
 
 
+def _issue_attachment_session(client: TestClient) -> dict:
+    response = client.post("/api/v1/attachments/sessions")
+    assert response.status_code == 201
+    return response.json()
+
+
+def _upload_attachment(client: TestClient, *, session_id: str, session_token: str) -> str:
+    response = client.post(
+        "/api/v1/attachments",
+        data={"session_id": session_id},
+        headers={"X-Attachment-Session-Token": session_token},
+        files={"file": ("owner-notes.txt", b"owner specific notes", "text/plain")},
+    )
+    assert response.status_code == 201
+    return str(response.json()["id"])
+
+
+def _recommended_plans_for_test(preferred_strategy: ExecutionStrategy | None) -> tuple[RecommendedPlan, ...]:
+    plans = (
+        RecommendedPlan(
+            plan_id="plan-quality",
+            context_digest="ctx_test",
+            strategy=ExecutionStrategy.QUALITY,
+            title="Quality",
+            summary="Quality path",
+            why_this_plan="For quality",
+            tradeoff="Slower",
+            native_plan_index=0,
+            native_plan_name="Quality",
+            native_plan_description="Quality path",
+        ),
+        RecommendedPlan(
+            plan_id="plan-efficiency",
+            context_digest="ctx_test",
+            strategy=ExecutionStrategy.EFFICIENCY,
+            title="Efficiency",
+            summary="Efficiency path",
+            why_this_plan="For speed",
+            tradeoff="Less depth",
+            native_plan_index=1,
+            native_plan_name="Efficiency",
+            native_plan_description="Efficiency path",
+        ),
+        RecommendedPlan(
+            plan_id="plan-simplicity",
+            context_digest="ctx_test",
+            strategy=ExecutionStrategy.SIMPLICITY,
+            title="Simplicity",
+            summary="Simplicity path",
+            why_this_plan="For lean flow",
+            tradeoff="Least checks",
+            native_plan_index=2,
+            native_plan_name="Simplicity",
+            native_plan_description="Simplicity path",
+        ),
+    )
+    if preferred_strategy is None:
+        return plans
+    preferred = [plan for plan in plans if plan.strategy == preferred_strategy]
+    remaining = [plan for plan in plans if plan.strategy != preferred_strategy]
+    return tuple(preferred + remaining)
+
+
 def test_self_use_plans_forbid_non_owner(client: tuple[TestClient, _ExecutionServiceStub]) -> None:
     test_client, _ = client
     machine = _create_machine(test_client)
@@ -180,6 +246,104 @@ def test_self_use_plans_forbid_non_owner(client: tuple[TestClient, _ExecutionSer
     )
 
     assert response.status_code == 403
+
+
+def test_self_use_plans_resolve_uploaded_attachments_to_real_paths_for_planning(
+    client: tuple[TestClient, _ExecutionServiceStub],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    test_client, _ = client
+    machine = _create_machine(test_client)
+    session = _issue_attachment_session(test_client)
+    attachment_id = _upload_attachment(
+        test_client,
+        session_id=session["session_id"],
+        session_token=session["session_token"],
+    )
+    captured_path: dict[str, Path] = {}
+
+    def _stub_build_recommended_plans(  # noqa: PLR0913
+        *,
+        user_id: str,
+        chat_session_id: str,
+        user_message: str,
+        preferred_strategy: ExecutionStrategy | None,
+        input_files: tuple[str, ...],
+        planning_context_key: str = "",
+    ) -> tuple[RecommendedPlan, ...]:
+        assert user_id == OWNER_WALLET.lower()
+        assert chat_session_id == f"self-use:{machine['id']}:{OWNER_WALLET.lower()}"
+        assert user_message == "Build owner dashboard with uploaded notes"
+        assert len(input_files) == 1
+        assert planning_context_key.startswith("ctx_")
+        resolved = Path(input_files[0])
+        assert resolved.exists()
+        assert resolved.read_bytes() == b"owner specific notes"
+        captured_path["value"] = resolved
+        return _recommended_plans_for_test(preferred_strategy)
+
+    monkeypatch.setattr(self_use_route, "build_recommended_plans", _stub_build_recommended_plans)
+
+    response = test_client.post(
+        "/api/v1/self-use/plans",
+        json={
+            "viewer_wallet_address": OWNER_WALLET,
+            "machine_id": machine["id"],
+            "prompt": "Build owner dashboard with uploaded notes",
+            "execution_strategy": "quality",
+            "attachment_session_id": session["session_id"],
+            "attachment_session_token": session["session_token"],
+            "attachment_ids": [attachment_id],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["input_files"] == []
+    assert response.json()["attachment_session_id"] == session["session_id"]
+    assert response.json()["attachment_ids"] == [attachment_id]
+    assert response.json()["planning_context_id"].startswith("ctx_")
+    assert "value" in captured_path
+    assert not captured_path["value"].exists()
+
+
+def test_self_use_run_dispatches_resolved_attachment_inputs_and_persists_context(
+    client: tuple[TestClient, _ExecutionServiceStub],
+) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    session = _issue_attachment_session(test_client)
+    attachment_id = _upload_attachment(
+        test_client,
+        session_id=session["session_id"],
+        session_token=session["session_token"],
+    )
+
+    response = test_client.post(
+        "/api/v1/self-use/runs",
+        json={
+            "viewer_wallet_address": OWNER_WALLET,
+            "machine_id": machine["id"],
+            "prompt": "Build owner dashboard from uploaded context",
+            "execution_strategy": "quality",
+            "attachment_session_id": session["session_id"],
+            "attachment_session_token": session["session_token"],
+            "attachment_ids": [attachment_id],
+        },
+    )
+
+    assert response.status_code == 201
+    assert len(stub.submit_calls) == 1
+    dispatched_files = stub.submit_calls[0]["input_files"]
+    assert len(dispatched_files) == 1
+    resolved = Path(dispatched_files[0])
+    assert "outcomex-execution-attachments-" in dispatched_files[0]
+    assert resolved.exists()
+    assert resolved.read_bytes() == b"owner specific notes"
+    payload = response.json()["submission_payload"]
+    assert payload["files"] == dispatched_files
+    assert payload["planning_context_id"].startswith("ctx_")
+    assert payload["planning_attachment_session_id"] == session["session_id"]
+    assert payload["planning_attachment_ids"] == [attachment_id]
 
 
 def test_self_use_owner_flow_without_order_side_effects(client: tuple[TestClient, _ExecutionServiceStub]) -> None:

@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 
+from app.api.middleware.attachment_upload_limit import AttachmentUploadSizeLimitMiddleware
 from app.api.router import create_api_router
 from app.core.container import get_container
 from app.core.config import Settings
@@ -103,6 +104,7 @@ def create_app() -> FastAPI:
         version=container.settings.app_version,
         lifespan=lifespan,
     )
+    app.add_middleware(AttachmentUploadSizeLimitMiddleware)
     app.include_router(create_api_router(), prefix=container.settings.api_prefix)
     return app
 

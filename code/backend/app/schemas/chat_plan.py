@@ -14,10 +14,14 @@ class ChatPlanRequest(BaseModel):
     benchmark_task_id: str | None = None
     mode: ExecutionStrategy | None = None
     input_files: list[str] = Field(default_factory=list)
+    attachment_session_id: str | None = Field(default=None, min_length=1, max_length=64)
+    attachment_session_token: str | None = Field(default=None, min_length=1, max_length=256)
+    attachment_ids: list[str] = Field(default_factory=list)
 
 
 class RecommendedPlanResponse(BaseModel):
     plan_id: str
+    planning_context_id: str = ""
     strategy: ExecutionStrategy
     title: str
     summary: str
@@ -36,6 +40,9 @@ class ChatPlanResponse(BaseModel):
     benchmark_task_id: str | None = None
     mode: ExecutionStrategy | None = None
     input_files: list[str] = Field(default_factory=list)
+    planning_context_id: str = ""
+    attachment_session_id: str | None = None
+    attachment_ids: list[str] = Field(default_factory=list)
     recommended_plan_summary: str
     recommended_plans: list[RecommendedPlanResponse] = Field(default_factory=list)
     preview_state: PreviewState

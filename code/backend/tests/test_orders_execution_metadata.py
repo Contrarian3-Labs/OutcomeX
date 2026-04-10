@@ -37,6 +37,7 @@ def test_order_creation_persists_thin_execution_request(client: TestClient) -> N
             "user_id": "user-1",
             "chat_session_id": "chat-1",
             "user_message": "Summarize this process",
+            "input_files": ["brief.md", "diagram.png"],
         },
     )
     assert plan_response.status_code == 200
@@ -52,22 +53,27 @@ def test_order_creation_persists_thin_execution_request(client: TestClient) -> N
             "user_prompt": "Summarize this process",
             "quoted_amount_cents": 1000,
             "selected_plan_id": selected_plan["plan_id"],
+            "planning_context_id": plan_response.json()["planning_context_id"],
             "input_files": ["brief.md", "diagram.png"],
         },
     )
     assert response.status_code == 201
 
     payload = response.json()
-    assert payload["execution_request"] == {
-        "intent": "Summarize this process",
-        "files": ["brief.md", "diagram.png"],
-        "execution_strategy": "efficiency",
-    }
+    assert payload["execution_request"]["intent"] == "Summarize this process"
+    assert payload["execution_request"]["files"] == ["brief.md", "diagram.png"]
+    assert payload["execution_request"]["execution_strategy"] == "efficiency"
+    assert payload["execution_request"]["planning_context_id"].startswith("ctx_")
+    assert payload["execution_request"]["attachment_session_id"] is None
+    assert payload["execution_request"]["attachment_ids"] == []
     assert payload["execution_metadata"]["gateway"] == "outcomex_agentskillos_thin.v1"
     assert payload["execution_metadata"]["submission_status"] == "draft"
     assert payload["execution_metadata"]["selected_plan_id"] == selected_plan["plan_id"]
     assert payload["execution_metadata"]["selected_plan_strategy"] == "efficiency"
     assert payload["execution_metadata"]["selected_native_plan_index"] == 1
+    assert payload["execution_metadata"]["planning_context_id"] == payload["execution_request"]["planning_context_id"]
+    assert payload["execution_metadata"]["attachment_session_id"] is None
+    assert payload["execution_metadata"]["attachment_ids"] == []
 
     fetch_response = client.get(f"/api/v1/orders/{payload['id']}")
     assert fetch_response.status_code == 200
