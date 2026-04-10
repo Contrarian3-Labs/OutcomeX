@@ -3,12 +3,15 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Any
+
+import httpx
 
 from app.core.config import Settings, get_settings
 from app.integrations.buyer_address_resolver import BuyerAddressResolver
 from app.integrations.user_signer_registry import UserSigner, UserSignerRegistry
 from app.onchain.contracts_registry import ContractsRegistry
-from app.onchain.event_decoder import decode_machine_minted_event
+from app.onchain.event_decoder import MACHINE_MINTED_TOPIC0, decode_machine_minted_event
 from app.onchain.order_writer import OrderWriteResult, OrderWriter
 from app.onchain.receipts import ChainReceipt, JsonRpcReceiptReader
 from app.onchain.tx_sender import PythonTransactionSender
@@ -74,6 +77,20 @@ class OnchainLifecycleService:
             onchain_machine_id=machine_mint["machine_id"] if machine_mint is not None else None,
         )
 
+    def find_minted_machine_by_token_uri(self, *, token_uri: str) -> str | None:
+        if not self.enabled():
+            return None
+
+        logs = self._fetch_machine_minted_logs()
+        for log in reversed(logs):
+            decoded = self._decode_machine_minted_log(log)
+            if decoded is None:
+                continue
+            if decoded.get("token_uri") != token_uri:
+                continue
+            return decoded.get("machine_id")
+        return None
+
     def send_as_user(self, *, user_id: str, write_result: OrderWriteResult) -> BroadcastReceipt:
         expected_wallet = self._buyer_address_resolver.resolve_wallet(user_id)
         signer = self._user_signer_registry.signer_for_user(user_id)
@@ -129,6 +146,65 @@ class OnchainLifecycleService:
         )
         normalized_key = UserSignerRegistry._normalize_private_key(normalized)
         return UserSigner(user_id=wallet_address, wallet_address=wallet_address, private_key=normalized_key)
+
+    def _fetch_machine_minted_logs(self) -> list[dict[str, Any]]:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_getLogs",
+            "params": [
+                {
+                    "fromBlock": "0x0",
+                    "toBlock": "latest",
+                    "address": self._contracts_registry.machine_asset().contract_address,
+                    "topics": [MACHINE_MINTED_TOPIC0],
+                }
+            ],
+        }
+        try:
+            with httpx.Client(timeout=max(1.0, self._settings.onchain_receipt_timeout_seconds)) as client:
+                response = client.post(self._settings.onchain_rpc_url, json=payload)
+                response.raise_for_status()
+                body = response.json()
+        except Exception:
+            return []
+        result = body.get("result")
+        if not isinstance(result, list):
+            return []
+        return [item for item in result if isinstance(item, dict)]
+
+    @staticmethod
+    def _decode_machine_minted_log(log: dict[str, Any]) -> dict[str, str] | None:
+        topics = list(log.get("topics", []))
+        if len(topics) < 2:
+            return None
+        try:
+            machine_id = str(int(str(topics[1]), 16))
+            token_uri = OnchainLifecycleService._decode_dynamic_string(str(log.get("data", "")))
+        except Exception:
+            return None
+        if token_uri is None:
+            return None
+        return {
+            "machine_id": machine_id,
+            "token_uri": token_uri,
+        }
+
+    @staticmethod
+    def _decode_dynamic_string(data: str) -> str | None:
+        normalized = str(data).lower().removeprefix("0x")
+        if len(normalized) < 128:
+            return None
+        offset = int(normalized[0:64], 16)
+        length_offset = offset * 2
+        if len(normalized) < length_offset + 64:
+            return None
+        length = int(normalized[length_offset : length_offset + 64], 16)
+        value_start = length_offset + 64
+        value_end = value_start + (length * 2)
+        if len(normalized) < value_end:
+            return None
+        return bytes.fromhex(normalized[value_start:value_end]).decode("utf-8")
 
     def _send_as_admin(self, write_result: OrderWriteResult) -> BroadcastReceipt:
         private_key = self._settings.onchain_broadcaster_private_key.strip()

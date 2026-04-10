@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_dependency_container
@@ -118,6 +118,18 @@ def _release_primary_stock_reservation_if_needed(*, purchase: PrimaryIssuancePur
     db.add(purchase)
 
 
+def _reserve_primary_stock_atomically(*, sku_id: str, db: Session) -> bool:
+    result = db.execute(
+        update(PrimaryIssuanceSku)
+        .where(
+            PrimaryIssuanceSku.sku_id == sku_id,
+            PrimaryIssuanceSku.stock_available > 0,
+        )
+        .values(stock_available=PrimaryIssuanceSku.stock_available - 1)
+    )
+    return bool(result.rowcount)
+
+
 def _resolve_primary_purchase_for_hsp_event(*, event: HSPWebhookEvent, db: Session) -> PrimaryIssuancePurchase | None:
     purchase = db.scalar(
         select(PrimaryIssuancePurchase).where(PrimaryIssuancePurchase.provider_reference == event.payment_request_id)
@@ -130,6 +142,32 @@ def _resolve_primary_purchase_for_hsp_event(*, event: HSPWebhookEvent, db: Sessi
     if event.flow_id:
         purchase = db.scalar(select(PrimaryIssuancePurchase).where(PrimaryIssuancePurchase.flow_id == event.flow_id))
     return purchase
+
+
+def _primary_purchase_token_uri(purchase: PrimaryIssuancePurchase) -> str:
+    return f"ipfs://outcomex-machine/primary-issuance/{purchase.id}"
+
+
+def _ensure_primary_machine_projection(
+    *,
+    purchase: PrimaryIssuancePurchase,
+    sku: PrimaryIssuanceSku,
+    onchain_machine_id: str,
+    owner_wallet: str,
+    db: Session,
+) -> Machine:
+    machine = db.scalar(select(Machine).where(Machine.onchain_machine_id == onchain_machine_id))
+    if machine is None:
+        machine = Machine(
+            display_name=sku.display_name,
+            owner_user_id=purchase.buyer_user_id,
+            owner_chain_address=owner_wallet.lower(),
+            ownership_source="chain",
+            onchain_machine_id=onchain_machine_id,
+        )
+        db.add(machine)
+        db.flush()
+    return machine
 
 
 def _finalize_primary_purchase_success(
@@ -153,24 +191,37 @@ def _finalize_primary_purchase_success(
     if owner_wallet is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Buyer wallet address unresolved")
 
+    token_uri = _primary_purchase_token_uri(purchase)
+    existing_onchain_machine_id = onchain_lifecycle.find_minted_machine_by_token_uri(token_uri=token_uri)
+    if existing_onchain_machine_id is not None:
+        machine = _ensure_primary_machine_projection(
+            purchase=purchase,
+            sku=sku,
+            onchain_machine_id=existing_onchain_machine_id,
+            owner_wallet=owner_wallet,
+            db=db,
+        )
+        purchase.minted_machine_id = machine.id
+        purchase.minted_onchain_machine_id = machine.onchain_machine_id
+        purchase.stock_reserved = False
+        purchase.finalized_at = utc_now()
+        db.add(purchase)
+        return
+
     minted = onchain_lifecycle.mint_machine_for_owner(
         owner_user_id=purchase.buyer_user_id,
-        token_uri=f"ipfs://outcomex-machine/primary-issuance/{purchase.id}",
+        token_uri=token_uri,
     )
     if minted.onchain_machine_id is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Mint receipt missing machine id")
 
-    machine = db.scalar(select(Machine).where(Machine.onchain_machine_id == minted.onchain_machine_id))
-    if machine is None:
-        machine = Machine(
-            display_name=sku.display_name,
-            owner_user_id=purchase.buyer_user_id,
-            owner_chain_address=owner_wallet.lower(),
-            ownership_source="chain",
-            onchain_machine_id=minted.onchain_machine_id,
-        )
-        db.add(machine)
-        db.flush()
+    machine = _ensure_primary_machine_projection(
+        purchase=purchase,
+        sku=sku,
+        onchain_machine_id=minted.onchain_machine_id,
+        owner_wallet=owner_wallet,
+        db=db,
+    )
 
     purchase.minted_machine_id = machine.id
     purchase.minted_onchain_machine_id = machine.onchain_machine_id
@@ -210,12 +261,33 @@ def apply_primary_purchase_hsp_webhook(
             db=db,
         )
         if purchase.state == PaymentState.SUCCEEDED:
+            if purchase.minted_machine_id is not None:
+                _mark_primary_purchase_callback(purchase=purchase, event=event)
+                db.add(purchase)
+                return {
+                    "purchase_id": purchase.id,
+                    "state": purchase.state.value,
+                    "duplicate": True,
+                    "minted_machine_id": purchase.minted_machine_id,
+                    "minted_onchain_machine_id": purchase.minted_onchain_machine_id,
+                }
+
+            sku = db.get(PrimaryIssuanceSku, purchase.sku_id)
+            if sku is None:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Primary issuance SKU not found")
             _mark_primary_purchase_callback(purchase=purchase, event=event)
             db.add(purchase)
+            _finalize_primary_purchase_success(
+                purchase=purchase,
+                sku=sku,
+                container=container,
+                onchain_lifecycle=onchain_lifecycle,
+                db=db,
+            )
             return {
                 "purchase_id": purchase.id,
                 "state": purchase.state.value,
-                "duplicate": True,
+                "duplicate": False,
                 "minted_machine_id": purchase.minted_machine_id,
                 "minted_onchain_machine_id": purchase.minted_onchain_machine_id,
             }
@@ -303,7 +375,7 @@ def create_primary_issuance_purchase_intent(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Primary issuance SKU not found")
 
     sku = _ensure_fixed_primary_sku(db)
-    if sku.stock_available <= 0:
+    if not _reserve_primary_stock_atomically(sku_id=sku.sku_id, db=db):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Primary issuance stock exhausted")
 
     buyer_wallet = container.buyer_address_resolver.resolve_wallet(payload.buyer_user_id)
@@ -318,8 +390,6 @@ def create_primary_issuance_purchase_intent(
         state=PaymentState.PENDING,
         stock_reserved=True,
     )
-    sku.stock_available -= 1
-    db.add(sku)
     db.add(purchase)
     db.flush()
 
@@ -331,6 +401,12 @@ def create_primary_issuance_purchase_intent(
             expires_at=None,
         )
     except RuntimeError as exc:
+        _release_primary_stock_reservation_if_needed(purchase=purchase, db=db)
+        purchase.state = PaymentState.FAILED
+        purchase.callback_state = "intent-failed"
+        purchase.callback_received_at = utc_now()
+        db.add(purchase)
+        db.commit()
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
     purchase.provider = merchant_order.provider

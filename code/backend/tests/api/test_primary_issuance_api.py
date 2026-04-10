@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from app.core.config import reset_settings_cache
 from app.core.container import get_container, reset_container_cache
 from app.domain.enums import PaymentState
+from app.api.routes.primary_issuance import _reserve_primary_stock_atomically
 from app.domain.models import Machine, PrimaryIssuancePurchase, PrimaryIssuanceSku
 from app.main import create_app
 from app.onchain.lifecycle_service import MintedMachineReceipt, get_onchain_lifecycle_service
@@ -19,6 +20,8 @@ from app.onchain.lifecycle_service import MintedMachineReceipt, get_onchain_life
 class SpyOnchainLifecycleService:
     def __init__(self) -> None:
         self.mint_calls: list[dict[str, str]] = []
+        self.reconcile_hits: dict[str, str] = {}
+        self.find_calls: list[str] = []
         self._counter = 0
 
     def enabled(self) -> bool:
@@ -39,6 +42,10 @@ class SpyOnchainLifecycleService:
             receipt=None,
             onchain_machine_id=machine_id,
         )
+
+    def find_minted_machine_by_token_uri(self, *, token_uri: str) -> str | None:
+        self.find_calls.append(token_uri)
+        return self.reconcile_hits.get(token_uri)
 
 
 @pytest.fixture
@@ -150,6 +157,7 @@ def test_create_primary_purchase_intent_persists_purchase_and_hsp_intent(
         assert purchase.sku_id == "apple-silicon-96gb-qwen-family"
         assert purchase.state == PaymentState.PENDING
         assert purchase.minted_machine_id is None
+        assert purchase.stock_reserved is True
         sku = session.get(PrimaryIssuanceSku, "apple-silicon-96gb-qwen-family")
         assert sku is not None
         assert sku.stock_available == 9
@@ -170,6 +178,37 @@ def test_primary_purchase_intent_rejects_out_of_stock_after_reservations(
 
     assert exhausted.status_code == 409
     assert exhausted.json()["detail"] == "Primary issuance stock exhausted"
+
+
+def test_atomic_stock_reservation_only_consumes_last_unit_once(
+    client: tuple[TestClient, SpyOnchainLifecycleService],
+) -> None:
+    test_client, _spy_lifecycle = client
+    sku_response = test_client.get("/api/v1/primary-issuance/skus")
+    assert sku_response.status_code == 200
+    with get_container().session_factory() as session:
+        sku = session.get(PrimaryIssuanceSku, "apple-silicon-96gb-qwen-family")
+        assert sku is not None
+        sku.stock_available = 1
+        session.add(sku)
+        session.commit()
+
+    with get_container().session_factory() as session:
+        first = _reserve_primary_stock_atomically(
+            sku_id="apple-silicon-96gb-qwen-family",
+            db=session,
+        )
+        second = _reserve_primary_stock_atomically(
+            sku_id="apple-silicon-96gb-qwen-family",
+            db=session,
+        )
+        session.commit()
+        sku = session.get(PrimaryIssuanceSku, "apple-silicon-96gb-qwen-family")
+        assert sku is not None
+        assert sku.stock_available == 0
+
+    assert first is True
+    assert second is False
 
 
 def test_successful_hsp_webhook_finalizes_primary_purchase_exactly_once(
@@ -307,12 +346,15 @@ def test_primary_success_retry_with_new_event_does_not_remint_after_success_mark
 ) -> None:
     test_client, spy_lifecycle = client
     purchase = _create_purchase_intent(test_client)
+    token_uri = f"ipfs://outcomex-machine/primary-issuance/{purchase['purchase_id']}"
+    spy_lifecycle.reconcile_hits[token_uri] = "9901"
 
     with get_container().session_factory() as session:
         persisted = session.get(PrimaryIssuancePurchase, purchase["purchase_id"])
         assert persisted is not None
         persisted.state = PaymentState.SUCCEEDED
         persisted.callback_event_id = "evt-initial-success"
+        persisted.stock_reserved = True
         session.add(persisted)
         session.commit()
 
@@ -326,6 +368,14 @@ def test_primary_success_retry_with_new_event_does_not_remint_after_success_mark
     retry = test_client.post("/api/v1/payments/hsp/webhooks", content=retry_body, headers=retry_headers)
 
     assert retry.status_code == 200
-    assert retry.json()["duplicate"] is True
-    assert retry.json()["minted_machine_id"] is None
+    assert retry.json()["duplicate"] is False
+    assert retry.json()["minted_onchain_machine_id"] == "9901"
     assert len(spy_lifecycle.mint_calls) == 0
+    assert spy_lifecycle.find_calls == [token_uri]
+
+    with get_container().session_factory() as session:
+        persisted = session.get(PrimaryIssuancePurchase, purchase["purchase_id"])
+        assert persisted is not None
+        assert persisted.minted_machine_id is not None
+        assert persisted.minted_onchain_machine_id == "9901"
+        assert persisted.stock_reserved is False
