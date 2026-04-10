@@ -56,5 +56,10 @@ def list_attachments(*, db: Session, user_id: str) -> list[Attachment]:
     return list(db.execute(query).scalars().all())
 
 
-def get_attachment(*, db: Session, attachment_id: str) -> Attachment | None:
-    return db.get(Attachment, attachment_id)
+def get_attachment_for_user(*, db: Session, attachment_id: str, user_id: str) -> Attachment | None:
+    return db.scalar(
+        select(Attachment).where(
+            Attachment.id == attachment_id,
+            Attachment.user_id == user_id,
+        )
+    )

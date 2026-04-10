@@ -51,3 +51,20 @@ def test_primary_issuance_migration_file_exists() -> None:
     assert 'down_revision = "20260409_02"' in source
     assert 'op.create_table("primary_issuance_skus"' in source
     assert 'op.create_table("primary_issuance_purchases"' in source
+
+
+def test_attachments_migration_file_exists() -> None:
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "20260410_02_add_attachments_table.py"
+    )
+    source = migration_path.read_text(encoding="utf-8")
+
+    ast.parse(source)
+
+    assert 'revision = "20260410_02"' in source
+    assert 'down_revision = "20260410_01"' in source
+    assert 'op.create_table("attachments"' in source
+    assert 'op.create_index("ix_attachments_user_id", "attachments"' in source

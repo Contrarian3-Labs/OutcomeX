@@ -2,7 +2,9 @@ import os
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.datastructures import UploadFile
 
+from app.api.routes import attachments as attachments_route
 from app.core.config import reset_settings_cache
 from app.core.container import reset_container_cache
 from app.main import create_app
@@ -26,7 +28,7 @@ def client(tmp_path) -> TestClient:
 def test_upload_list_and_download_attachment(client: TestClient) -> None:
     upload_response = client.post(
         "/api/v1/attachments",
-        data={"user_id": "user-1"},
+        headers={"X-OutcomeX-User-Id": "user-1"},
         files={"file": ("brief.txt", b"creative brief v1", "text/plain")},
     )
     assert upload_response.status_code == 201
@@ -37,7 +39,7 @@ def test_upload_list_and_download_attachment(client: TestClient) -> None:
     assert uploaded["size_bytes"] == len(b"creative brief v1")
     assert uploaded["content_type"] == "text/plain"
 
-    list_response = client.get("/api/v1/attachments", params={"user_id": "user-1"})
+    list_response = client.get("/api/v1/attachments", headers={"X-OutcomeX-User-Id": "user-1"})
     assert list_response.status_code == 200
     listed = list_response.json()
     assert len(listed) == 1
@@ -45,11 +47,35 @@ def test_upload_list_and_download_attachment(client: TestClient) -> None:
     assert listed[0]["filename"] == "brief.txt"
     assert listed[0]["size_bytes"] == len(b"creative brief v1")
 
-    download_response = client.get(f"/api/v1/attachments/{uploaded['id']}/download")
+    download_response = client.get(
+        f"/api/v1/attachments/{uploaded['id']}/download",
+        headers={"X-OutcomeX-User-Id": "user-1"},
+    )
     assert download_response.status_code == 200
     assert download_response.content == b"creative brief v1"
     assert "attachment; filename=\"brief.txt\"" == download_response.headers["content-disposition"]
     assert download_response.headers["content-type"].startswith("text/plain")
+
+
+def test_attachment_isolation_prevents_cross_user_access(client: TestClient) -> None:
+    upload_response = client.post(
+        "/api/v1/attachments",
+        headers={"X-OutcomeX-User-Id": "owner-user"},
+        files={"file": ("owner.txt", b"owner-only", "text/plain")},
+    )
+    assert upload_response.status_code == 201
+    attachment_id = upload_response.json()["id"]
+
+    other_user_list = client.get("/api/v1/attachments", headers={"X-OutcomeX-User-Id": "other-user"})
+    assert other_user_list.status_code == 200
+    assert other_user_list.json() == []
+
+    forbidden_download = client.get(
+        f"/api/v1/attachments/{attachment_id}/download",
+        headers={"X-OutcomeX-User-Id": "other-user"},
+    )
+    assert forbidden_download.status_code == 404
+    assert forbidden_download.json()["detail"] == "Attachment not found"
 
 
 def test_upload_rejects_files_over_25mb(client: TestClient) -> None:
@@ -57,9 +83,30 @@ def test_upload_rejects_files_over_25mb(client: TestClient) -> None:
 
     response = client.post(
         "/api/v1/attachments",
-        data={"user_id": "user-1"},
+        headers={"X-OutcomeX-User-Id": "user-1"},
         files={"file": ("huge.bin", oversized_payload, "application/octet-stream")},
     )
 
     assert response.status_code == 413
     assert response.json()["detail"] == "Attachment exceeds 25 MB size limit"
+
+
+def test_upload_reads_in_chunks_instead_of_full_buffer(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+    read_sizes: list[int | None] = []
+    original_read = UploadFile.read
+
+    async def _tracked_read(self, size: int = -1):  # noqa: ANN001
+        read_sizes.append(size)
+        return await original_read(self, size)
+
+    monkeypatch.setattr(attachments_route, "UPLOAD_READ_CHUNK_SIZE", 8)
+    monkeypatch.setattr(UploadFile, "read", _tracked_read)
+
+    response = client.post(
+        "/api/v1/attachments",
+        headers={"X-OutcomeX-User-Id": "user-1"},
+        files={"file": ("chunked.txt", b"1234567890abcdef", "text/plain")},
+    )
+    assert response.status_code == 201
+    assert read_sizes
+    assert all(size not in (-1, None) for size in read_sizes)
