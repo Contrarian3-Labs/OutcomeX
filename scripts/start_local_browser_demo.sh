@@ -24,7 +24,7 @@ Starts a deterministic local browser demo stack for OutcomeX:
 - fresh Anvil chain on 127.0.0.1:8545
 - local contract deployment
 - buyer PWR funding + machine mint seed
-- backend on 127.0.0.1:8000
+- backend on 127.0.0.1:8787
 - frontend on 127.0.0.1:8080
 
 Options:
@@ -125,8 +125,8 @@ stop_pid_file "$BACKEND_PID_FILE"
 stop_pid_file "$FRONTEND_PID_FILE"
 stop_pid_file "$ANVIL_PID_FILE"
 
-if port_open 8000; then
-  echo "Port 8000 is already in use by another process. Stop it first." >&2
+if port_open 8787; then
+  echo "Port 8787 is already in use by another process. Stop it first." >&2
   exit 1
 fi
 if port_open 8080; then
@@ -164,9 +164,9 @@ if [[ "$PREPARE_ONLY" -eq 1 ]]; then
   exit 0
 fi
 
-nohup setsid "$BACKEND_DIR/.venv/bin/python" -m uvicorn app.main:app --host 127.0.0.1 --port 8000 >"$BACKEND_LOG" 2>&1 < /dev/null &
+nohup setsid "$BACKEND_DIR/.venv/bin/python" -m uvicorn app.main:app --host 127.0.0.1 --port 8787 >"$BACKEND_LOG" 2>&1 < /dev/null &
 echo $! >"$BACKEND_PID_FILE"
-wait_for_http "http://127.0.0.1:8000/api/v1/health" "Backend"
+wait_for_http "http://127.0.0.1:8787/api/v1/health" "Backend"
 
 nohup setsid bash -lc "cd '$FRONTEND_DIR' && npm run dev -- --host 127.0.0.1 --port 8080" >"$FRONTEND_LOG" 2>&1 < /dev/null &
 echo $! >"$FRONTEND_PID_FILE"
@@ -177,7 +177,7 @@ Local browser demo is ready.
 
 URLs:
 - Frontend: http://127.0.0.1:8080
-- Backend:  http://127.0.0.1:8000/api/v1/health
+- Backend:  http://127.0.0.1:8787/api/v1/health
 - Anvil:    http://127.0.0.1:8545
 
 Suggested wallets on Anvil:

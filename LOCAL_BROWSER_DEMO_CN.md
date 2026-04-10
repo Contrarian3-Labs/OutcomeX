@@ -154,7 +154,7 @@ cd /mnt/c/users/72988/desktop/OutcomeX
 - 删除旧的本地 backend SQLite
 - seed 一台 machine 到 `owner-1`
 - 给 `buyer-1` 预充 `PWR`
-- 启动 backend（`127.0.0.1:8000`）
+- 启动 backend（`127.0.0.1:8787`）
 - 启动 frontend（`127.0.0.1:8080`）
 
 ### 3.4 只准备链和 seed，不启动服务

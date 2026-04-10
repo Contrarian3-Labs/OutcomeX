@@ -114,6 +114,7 @@ Local browser demo entrypoint:
 - from repo root, use `scripts/start_local_browser_demo.sh`
 - detailed current status / non-fully-live notes: `LOCAL_BROWSER_DEMO_CN.md`
 - local backend template env: `code/backend/.env.local-demo.example`
+- local browser demo backend port: `127.0.0.1:8787`
 
 Health endpoint:
 
