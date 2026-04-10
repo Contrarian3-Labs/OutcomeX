@@ -357,16 +357,27 @@ class ChatPlan(Base):
 
 class Attachment(Base):
     __tablename__ = "attachments"
-    __table_args__ = (Index("ix_attachments_session_context", "session_kind", "session_id"),)
+    __table_args__ = (Index("ix_attachments_attachment_session_id", "attachment_session_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    session_kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    session_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    attachment_session_id: Mapped[str] = mapped_column(ForeignKey("attachment_sessions.id"), nullable=False)
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
     content_type: Mapped[str] = mapped_column(String(128), nullable=False, default="application/octet-stream")
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    attachment_session: Mapped["AttachmentSession"] = relationship(back_populates="attachments")
+
+
+class AttachmentSession(Base):
+    __tablename__ = "attachment_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    attachments: Mapped[list["Attachment"]] = relationship(back_populates="attachment_session")
 
 
 class OnchainIndexerCursor(Base):

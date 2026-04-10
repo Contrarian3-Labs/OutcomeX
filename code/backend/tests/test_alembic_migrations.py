@@ -1,6 +1,9 @@
 import ast
 from pathlib import Path
 
+from sqlalchemy import create_engine, inspect
+
+from app.db.base import Base
 
 def test_slice_a_migration_file_exists_and_targets_orders_cancelled_at() -> None:
     migration_path = (
@@ -93,3 +96,43 @@ def test_attachment_session_scope_migration_contains_rekey_and_backfill_logic() 
     assert "batch_op.drop_column(\"session_kind\")" in source
     assert "batch_op.drop_column(\"session_id\")" in source
     assert "op.create_index(\"ix_attachments_user_id\", \"attachments\"" in source
+
+
+def test_attachment_server_session_migration_contains_expected_operations() -> None:
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "20260410_04_add_attachment_sessions_table.py"
+    )
+    source = migration_path.read_text(encoding="utf-8")
+    ast.parse(source)
+
+    assert 'revision = "20260410_04"' in source
+    assert 'down_revision = "20260410_03"' in source
+    assert 'op.create_table("attachment_sessions"' in source
+    assert 'batch_op.add_column(sa.Column("attachment_session_id"' in source
+    assert "INSERT INTO attachment_sessions" in source
+    assert 'batch_op.drop_column("session_kind")' in source
+    assert 'batch_op.drop_column("session_id")' in source
+    assert "batch_op.create_foreign_key(" in source
+    assert '"fk_attachments_attachment_session_id"' in source
+
+
+def test_runtime_metadata_contains_attachment_session_structures(tmp_path) -> None:
+    db_path = tmp_path / "attachments-runtime.db"
+    engine = create_engine(f"sqlite+pysqlite:///{db_path.as_posix()}")
+    Base.metadata.create_all(engine)
+    inspector = inspect(engine)
+
+    table_names = set(inspector.get_table_names())
+    assert "attachment_sessions" in table_names
+    assert "attachments" in table_names
+
+    attachment_columns = {column["name"] for column in inspector.get_columns("attachments")}
+    assert "attachment_session_id" in attachment_columns
+    assert "session_kind" not in attachment_columns
+    assert "session_id" not in attachment_columns
+
+    indexes = {index["name"] for index in inspector.get_indexes("attachments")}
+    assert "ix_attachments_attachment_session_id" in indexes

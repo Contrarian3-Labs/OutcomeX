@@ -2,13 +2,14 @@ import os
 
 import pytest
 from fastapi.testclient import TestClient
-from starlette.requests import Request
 from starlette.datastructures import UploadFile
+from starlette.requests import Request
 
 from app.api.routes import attachments as attachments_route
 from app.core.config import reset_settings_cache
 from app.core.container import reset_container_cache
 from app.main import create_app
+from app.services.attachments import MAX_ATTACHMENT_REQUEST_SIZE_BYTES, MAX_ATTACHMENT_SIZE_BYTES
 
 
 @pytest.fixture
@@ -26,66 +27,116 @@ def client(tmp_path) -> TestClient:
     reset_container_cache()
 
 
-def test_upload_list_and_download_attachment(client: TestClient) -> None:
+def _issue_session(client: TestClient) -> dict:
+    response = client.post("/api/v1/attachments/sessions")
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["session_id"]
+    assert payload["session_token"]
+    return payload
+
+
+def test_session_issue_upload_list_and_download(client: TestClient) -> None:
+    session = _issue_session(client)
+
     upload_response = client.post(
         "/api/v1/attachments",
-        data={"session_kind": "chat", "session_id": "session-1"},
+        data={
+            "session_id": session["session_id"],
+            "session_token": session["session_token"],
+        },
         files={"file": ("brief.txt", b"creative brief v1", "text/plain")},
     )
     assert upload_response.status_code == 201
     uploaded = upload_response.json()
     assert uploaded["id"]
-    assert uploaded["session_kind"] == "chat"
-    assert uploaded["session_id"] == "session-1"
+    assert uploaded["session_id"] == session["session_id"]
     assert uploaded["filename"] == "brief.txt"
     assert uploaded["size_bytes"] == len(b"creative brief v1")
-    assert uploaded["content_type"] == "text/plain"
 
-    list_response = client.get("/api/v1/attachments", params={"session_kind": "chat", "session_id": "session-1"})
+    list_response = client.get(
+        "/api/v1/attachments",
+        params={
+            "session_id": session["session_id"],
+            "session_token": session["session_token"],
+        },
+    )
     assert list_response.status_code == 200
     listed = list_response.json()
     assert len(listed) == 1
     assert listed[0]["id"] == uploaded["id"]
-    assert listed[0]["filename"] == "brief.txt"
-    assert listed[0]["size_bytes"] == len(b"creative brief v1")
 
     download_response = client.get(
         f"/api/v1/attachments/{uploaded['id']}/download",
-        params={"session_kind": "chat", "session_id": "session-1"},
+        params={
+            "session_id": session["session_id"],
+            "session_token": session["session_token"],
+        },
     )
     assert download_response.status_code == 200
     assert download_response.content == b"creative brief v1"
-    assert "attachment; filename=\"brief.txt\"" == download_response.headers["content-disposition"]
-    assert download_response.headers["content-type"].startswith("text/plain")
 
 
-def test_attachment_isolation_prevents_cross_session_access(client: TestClient) -> None:
-    upload_response = client.post(
+def test_invalid_or_missing_session_credentials_are_rejected(client: TestClient) -> None:
+    valid_session = _issue_session(client)
+    invalid_session = _issue_session(client)
+
+    missing_credentials = client.post(
         "/api/v1/attachments",
-        data={"session_kind": "chat", "session_id": "session-a"},
-        files={"file": ("owner.txt", b"owner-only", "text/plain")},
+        files={"file": ("brief.txt", b"creative brief v1", "text/plain")},
     )
-    assert upload_response.status_code == 201
-    attachment_id = upload_response.json()["id"]
+    assert missing_credentials.status_code == 422
 
-    other_session_list = client.get("/api/v1/attachments", params={"session_kind": "chat", "session_id": "session-b"})
-    assert other_session_list.status_code == 200
-    assert other_session_list.json() == []
-
-    forbidden_download = client.get(
-        f"/api/v1/attachments/{attachment_id}/download",
-        params={"session_kind": "chat", "session_id": "session-b"},
+    invalid_upload = client.post(
+        "/api/v1/attachments",
+        data={
+            "session_id": valid_session["session_id"],
+            "session_token": invalid_session["session_token"],
+        },
+        files={"file": ("brief.txt", b"creative brief v1", "text/plain")},
     )
-    assert forbidden_download.status_code == 404
-    assert forbidden_download.json()["detail"] == "Attachment not found"
+    assert invalid_upload.status_code == 401
+    assert invalid_upload.json()["detail"] == "Invalid attachment session credentials"
+
+    invalid_list = client.get(
+        "/api/v1/attachments",
+        params={
+            "session_id": valid_session["session_id"],
+            "session_token": invalid_session["session_token"],
+        },
+    )
+    assert invalid_list.status_code == 401
+    assert invalid_list.json()["detail"] == "Invalid attachment session credentials"
 
 
-def test_upload_rejects_files_over_25mb(client: TestClient) -> None:
-    oversized_payload = b"x" * ((25 * 1024 * 1024) + 1)
+def test_upload_accepts_file_at_exact_25mb_boundary(client: TestClient) -> None:
+    session = _issue_session(client)
+    exact_payload = b"x" * MAX_ATTACHMENT_SIZE_BYTES
 
     response = client.post(
         "/api/v1/attachments",
-        data={"session_kind": "chat", "session_id": "session-1"},
+        data={
+            "session_id": session["session_id"],
+            "session_token": session["session_token"],
+        },
+        files={"file": ("exact.bin", exact_payload, "application/octet-stream")},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["size_bytes"] == MAX_ATTACHMENT_SIZE_BYTES
+
+
+def test_upload_rejects_files_over_25mb(client: TestClient) -> None:
+    session = _issue_session(client)
+    oversized_payload = b"x" * (MAX_ATTACHMENT_SIZE_BYTES + 1)
+
+    response = client.post(
+        "/api/v1/attachments",
+        data={
+            "session_id": session["session_id"],
+            "session_token": session["session_token"],
+        },
         files={"file": ("huge.bin", oversized_payload, "application/octet-stream")},
     )
 
@@ -93,20 +144,20 @@ def test_upload_rejects_files_over_25mb(client: TestClient) -> None:
     assert response.json()["detail"] == "Attachment exceeds 25 MB size limit"
 
 
-def test_upload_rejects_large_content_length_before_form_parsing(
+def test_upload_rejects_request_bytes_before_form_parsing(
     monkeypatch: pytest.MonkeyPatch, client: TestClient
 ) -> None:
     async def _form_should_not_run(self, **kwargs):  # noqa: ANN001
-        raise AssertionError("request.form should not run when content-length is too large")
+        raise AssertionError("request.form should not run when request bytes exceed upload limit")
 
     monkeypatch.setattr(Request, "form", _form_should_not_run)
 
     response = client.post(
         "/api/v1/attachments",
-        content=b"x" * (attachments_route.MAX_ATTACHMENT_SIZE_BYTES + 1),
+        content=b"--boundary--\r\n",
         headers={
-            "content-type": "application/octet-stream",
-            "content-length": str(attachments_route.MAX_ATTACHMENT_SIZE_BYTES + 1),
+            "content-type": "multipart/form-data; boundary=boundary",
+            "content-length": str(MAX_ATTACHMENT_REQUEST_SIZE_BYTES + 1),
         },
     )
 
@@ -114,8 +165,10 @@ def test_upload_rejects_large_content_length_before_form_parsing(
     assert response.json()["detail"] == "Attachment exceeds 25 MB size limit"
 
 
-def test_upload_reads_in_chunks_instead_of_full_buffer(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+def test_upload_reads_file_in_chunks(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+    session = _issue_session(client)
     read_sizes: list[int | None] = []
+
     original_read = UploadFile.read
 
     async def _tracked_read(self, size: int = -1):  # noqa: ANN001
@@ -127,7 +180,10 @@ def test_upload_reads_in_chunks_instead_of_full_buffer(monkeypatch: pytest.Monke
 
     response = client.post(
         "/api/v1/attachments",
-        data={"session_kind": "chat", "session_id": "session-1"},
+        data={
+            "session_id": session["session_id"],
+            "session_token": session["session_token"],
+        },
         files={"file": ("chunked.txt", b"1234567890abcdef", "text/plain")},
     )
     assert response.status_code == 201

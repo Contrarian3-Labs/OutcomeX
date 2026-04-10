@@ -5,24 +5,29 @@ from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException
 
 from app.api.deps import get_db
-from app.schemas.attachment import AttachmentResponse
+from app.schemas.attachment import AttachmentResponse, AttachmentSessionCreateResponse
 from app.services.attachments import (
+    MAX_ATTACHMENT_MULTIPART_OVERHEAD_BYTES,
+    MAX_ATTACHMENT_REQUEST_SIZE_BYTES,
     MAX_ATTACHMENT_SIZE_BYTES,
     AttachmentTooLargeError,
     create_attachment,
+    create_attachment_session,
     get_attachment_for_session,
     list_attachments,
+    resolve_attachment_session,
 )
 
 router = APIRouter()
 UPLOAD_READ_CHUNK_SIZE = 1024 * 1024
-MAX_SESSION_KIND_LENGTH = 32
-MAX_SESSION_ID_LENGTH = 128
+MAX_SESSION_ID_LENGTH = 64
+MAX_SESSION_TOKEN_LENGTH = 256
 MAX_MULTIPART_FIELDS = 20
 MAX_MULTIPART_FILES = 4
+INVALID_SESSION_DETAIL = "Invalid attachment session credentials"
 
 
-def _normalize_session_value(raw_value: object, *, field_name: str, max_length: int) -> str:
+def _normalize_required_value(raw_value: object, *, field_name: str, max_length: int) -> str:
     normalized = str(raw_value or "").strip()
     if not normalized:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"{field_name} is required")
@@ -42,7 +47,7 @@ def _early_reject_by_content_length(request: Request) -> None:
         content_length = int(raw_content_length)
     except ValueError:
         return
-    if content_length > MAX_ATTACHMENT_SIZE_BYTES:
+    if content_length > MAX_ATTACHMENT_REQUEST_SIZE_BYTES:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="Attachment exceeds 25 MB size limit",
@@ -63,12 +68,44 @@ async def _read_payload_with_limit(file: UploadFile) -> bytes:
     return b"".join(chunks)
 
 
+def _build_attachment_response(attachment) -> AttachmentResponse:
+    return AttachmentResponse(
+        id=attachment.id,
+        session_id=attachment.attachment_session_id,
+        filename=attachment.filename,
+        content_type=attachment.content_type,
+        size_bytes=attachment.size_bytes,
+        created_at=attachment.created_at,
+    )
+
+
+def _resolve_session_or_401(*, db: Session, session_id: str, session_token: str):
+    attachment_session = resolve_attachment_session(
+        db=db,
+        session_id=session_id,
+        session_token=session_token,
+    )
+    if attachment_session is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID_SESSION_DETAIL)
+    return attachment_session
+
+
+@router.post("/sessions", response_model=AttachmentSessionCreateResponse, status_code=status.HTTP_201_CREATED)
+def create_upload_session(db: Session = Depends(get_db)) -> AttachmentSessionCreateResponse:
+    attachment_session, session_token = create_attachment_session(db=db)
+    return AttachmentSessionCreateResponse(
+        session_id=attachment_session.id,
+        session_token=session_token,
+        created_at=attachment_session.created_at,
+    )
+
+
 @router.post("", response_model=AttachmentResponse, status_code=status.HTTP_201_CREATED)
 async def upload_attachment(request: Request, db: Session = Depends(get_db)) -> AttachmentResponse:
     _early_reject_by_content_length(request)
     try:
         form = await request.form(
-            max_part_size=MAX_ATTACHMENT_SIZE_BYTES,
+            max_part_size=MAX_ATTACHMENT_SIZE_BYTES + MAX_ATTACHMENT_MULTIPART_OVERHEAD_BYTES,
             max_fields=MAX_MULTIPART_FIELDS,
             max_files=MAX_MULTIPART_FILES,
         )
@@ -78,31 +115,31 @@ async def upload_attachment(request: Request, db: Session = Depends(get_db)) -> 
             detail="Attachment exceeds 25 MB size limit",
         ) from exc
 
-    session_kind = _normalize_session_value(
-        form.get("session_kind"),
-        field_name="session_kind",
-        max_length=MAX_SESSION_KIND_LENGTH,
-    )
-    session_id = _normalize_session_value(
+    session_id = _normalize_required_value(
         form.get("session_id"),
         field_name="session_id",
         max_length=MAX_SESSION_ID_LENGTH,
     )
+    session_token = _normalize_required_value(
+        form.get("session_token"),
+        field_name="session_token",
+        max_length=MAX_SESSION_TOKEN_LENGTH,
+    )
+    attachment_session = _resolve_session_or_401(db=db, session_id=session_id, session_token=session_token)
 
     file = form.get("file")
     if not isinstance(file, UploadFile):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="file is required")
 
     try:
-        payload = await _read_payload_with_limit(file)
-    finally:
-        await file.close()
+        try:
+            payload = await _read_payload_with_limit(file)
+        finally:
+            await file.close()
 
-    try:
         attachment = create_attachment(
             db=db,
-            session_kind=session_kind,
-            session_id=session_id,
+            attachment_session_id=attachment_session.id,
             filename=file.filename,
             content_type=file.content_type,
             payload=payload,
@@ -112,35 +149,43 @@ async def upload_attachment(request: Request, db: Session = Depends(get_db)) -> 
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="Attachment exceeds 25 MB size limit",
         ) from exc
-    return AttachmentResponse.model_validate(attachment)
+    return _build_attachment_response(attachment)
 
 
 @router.get("", response_model=list[AttachmentResponse])
 def list_uploaded_attachments(
-    session_kind: str = Query(min_length=1, max_length=MAX_SESSION_KIND_LENGTH),
     session_id: str = Query(min_length=1, max_length=MAX_SESSION_ID_LENGTH),
+    session_token: str = Query(min_length=1, max_length=MAX_SESSION_TOKEN_LENGTH),
     db: Session = Depends(get_db),
 ) -> list[AttachmentResponse]:
+    attachment_session = _resolve_session_or_401(
+        db=db,
+        session_id=session_id.strip(),
+        session_token=session_token.strip(),
+    )
     attachments = list_attachments(
         db=db,
-        session_kind=session_kind.strip(),
-        session_id=session_id.strip(),
+        attachment_session_id=attachment_session.id,
     )
-    return [AttachmentResponse.model_validate(item) for item in attachments]
+    return [_build_attachment_response(item) for item in attachments]
 
 
 @router.get("/{attachment_id}/download")
 def download_attachment(
     attachment_id: str,
-    session_kind: str = Query(min_length=1, max_length=MAX_SESSION_KIND_LENGTH),
     session_id: str = Query(min_length=1, max_length=MAX_SESSION_ID_LENGTH),
+    session_token: str = Query(min_length=1, max_length=MAX_SESSION_TOKEN_LENGTH),
     db: Session = Depends(get_db),
 ) -> Response:
+    attachment_session = _resolve_session_or_401(
+        db=db,
+        session_id=session_id.strip(),
+        session_token=session_token.strip(),
+    )
     attachment = get_attachment_for_session(
         db=db,
         attachment_id=attachment_id,
-        session_kind=session_kind.strip(),
-        session_id=session_id.strip(),
+        attachment_session_id=attachment_session.id,
     )
     if attachment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
