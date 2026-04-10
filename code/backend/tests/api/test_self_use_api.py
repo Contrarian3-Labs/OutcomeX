@@ -182,6 +182,7 @@ def _recommended_plans_for_test(preferred_strategy: ExecutionStrategy | None) ->
     plans = (
         RecommendedPlan(
             plan_id="plan-quality",
+            context_digest="ctx_test",
             strategy=ExecutionStrategy.QUALITY,
             title="Quality",
             summary="Quality path",
@@ -193,6 +194,7 @@ def _recommended_plans_for_test(preferred_strategy: ExecutionStrategy | None) ->
         ),
         RecommendedPlan(
             plan_id="plan-efficiency",
+            context_digest="ctx_test",
             strategy=ExecutionStrategy.EFFICIENCY,
             title="Efficiency",
             summary="Efficiency path",
@@ -204,6 +206,7 @@ def _recommended_plans_for_test(preferred_strategy: ExecutionStrategy | None) ->
         ),
         RecommendedPlan(
             plan_id="plan-simplicity",
+            context_digest="ctx_test",
             strategy=ExecutionStrategy.SIMPLICITY,
             title="Simplicity",
             summary="Simplicity path",
@@ -259,11 +262,13 @@ def test_self_use_plans_resolve_uploaded_attachments_to_real_paths_for_planning(
         user_message: str,
         preferred_strategy: ExecutionStrategy | None,
         input_files: tuple[str, ...],
+        planning_context_key: str = "",
     ) -> tuple[RecommendedPlan, ...]:
         assert user_id == OWNER_WALLET.lower()
         assert chat_session_id == f"self-use:{machine['id']}:{OWNER_WALLET.lower()}"
         assert user_message == "Build owner dashboard with uploaded notes"
         assert len(input_files) == 1
+        assert planning_context_key.startswith("ctx_")
         resolved = Path(input_files[0])
         assert resolved.exists()
         assert resolved.read_bytes() == b"owner specific notes"
@@ -287,8 +292,51 @@ def test_self_use_plans_resolve_uploaded_attachments_to_real_paths_for_planning(
 
     assert response.status_code == 200
     assert response.json()["input_files"] == []
+    assert response.json()["attachment_session_id"] == session["session_id"]
+    assert response.json()["attachment_ids"] == [attachment_id]
+    assert response.json()["planning_context_id"].startswith("ctx_")
     assert "value" in captured_path
     assert not captured_path["value"].exists()
+
+
+def test_self_use_run_dispatches_resolved_attachment_inputs_and_persists_context(
+    client: tuple[TestClient, _ExecutionServiceStub],
+) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    session = _issue_attachment_session(test_client)
+    attachment_id = _upload_attachment(
+        test_client,
+        session_id=session["session_id"],
+        session_token=session["session_token"],
+    )
+
+    response = test_client.post(
+        "/api/v1/self-use/runs",
+        json={
+            "viewer_wallet_address": OWNER_WALLET,
+            "machine_id": machine["id"],
+            "prompt": "Build owner dashboard from uploaded context",
+            "execution_strategy": "quality",
+            "attachment_session_id": session["session_id"],
+            "attachment_session_token": session["session_token"],
+            "attachment_ids": [attachment_id],
+        },
+    )
+
+    assert response.status_code == 201
+    assert len(stub.submit_calls) == 1
+    dispatched_files = stub.submit_calls[0]["input_files"]
+    assert len(dispatched_files) == 1
+    resolved = Path(dispatched_files[0])
+    assert "outcomex-execution-attachments-" in dispatched_files[0]
+    assert resolved.exists()
+    assert resolved.read_bytes() == b"owner specific notes"
+    payload = response.json()["submission_payload"]
+    assert payload["files"] == dispatched_files
+    assert payload["planning_context_id"].startswith("ctx_")
+    assert payload["planning_attachment_session_id"] == session["session_id"]
+    assert payload["planning_attachment_ids"] == [attachment_id]
 
 
 def test_self_use_owner_flow_without_order_side_effects(client: tuple[TestClient, _ExecutionServiceStub]) -> None:

@@ -6,7 +6,11 @@ from app.domain.models import ChatPlan
 from app.domain.planning import build_recommended_plans
 from app.runtime.cost_service import RuntimeCostService, get_runtime_cost_service
 from app.schemas.chat_plan import ChatPlanRequest, ChatPlanResponse, RecommendedPlanResponse
-from app.services.attachments import AttachmentResolutionError, resolve_planning_input_files
+from app.services.attachments import (
+    AttachmentResolutionError,
+    build_planning_context_id,
+    resolve_planning_input_files,
+)
 
 router = APIRouter()
 
@@ -17,6 +21,11 @@ def create_chat_plan(
     db: Session = Depends(get_db),
     cost_service: RuntimeCostService = Depends(get_runtime_cost_service),
 ) -> ChatPlanResponse:
+    planning_context_id = build_planning_context_id(
+        input_files=tuple(payload.input_files),
+        attachment_session_id=payload.attachment_session_id,
+        attachment_ids=tuple(payload.attachment_ids),
+    )
     try:
         with resolve_planning_input_files(
             db=db,
@@ -31,6 +40,7 @@ def create_chat_plan(
                 user_message=payload.user_message,
                 preferred_strategy=payload.mode,
                 input_files=planning_input_files,
+                planning_context_key=planning_context_id,
             )
     except AttachmentResolutionError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
@@ -49,10 +59,14 @@ def create_chat_plan(
         update={
             "mode": payload.mode,
             "input_files": list(payload.input_files),
+            "planning_context_id": planning_context_id,
+            "attachment_session_id": payload.attachment_session_id,
+            "attachment_ids": list(payload.attachment_ids),
             "quote": cost_service.quote_for_prompt(payload.user_message),
             "recommended_plans": [
                 RecommendedPlanResponse(
                     plan_id=item.plan_id,
+                    planning_context_id=planning_context_id,
                     strategy=item.strategy,
                     title=item.title,
                     summary=item.summary,

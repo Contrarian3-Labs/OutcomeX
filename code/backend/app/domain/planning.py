@@ -10,6 +10,7 @@ from app.integrations.agentskillos_bridge import AgentSkillOSBridge, AgentSkillO
 @dataclass(frozen=True)
 class RecommendedPlan:
     plan_id: str
+    context_digest: str
     strategy: ExecutionStrategy
     title: str
     summary: str
@@ -26,9 +27,19 @@ def _normalize_message(user_message: str) -> str:
     return " ".join((user_message or "").split())
 
 
-def _stable_plan_id(*, user_id: str, chat_session_id: str, normalized_message: str, strategy: ExecutionStrategy) -> str:
+def _stable_plan_id(
+    *,
+    user_id: str,
+    chat_session_id: str,
+    normalized_message: str,
+    strategy: ExecutionStrategy,
+    planning_context_key: str = "",
+) -> str:
     digest = sha256(
-        f"v1|{user_id}|{chat_session_id}|{normalized_message.lower()}|{strategy.value}".encode("utf-8")
+        (
+            f"v2|{user_id}|{chat_session_id}|{normalized_message.lower()}|"
+            f"{strategy.value}|{planning_context_key.strip()}"
+        ).encode("utf-8")
     ).hexdigest()[:12]
     return f"plan_{strategy.value}_{digest}"
 
@@ -87,6 +98,7 @@ def _fallback_plans(
     chat_session_id: str,
     normalized_message: str,
     has_skill_signal: bool,
+    planning_context_key: str,
 ) -> tuple[RecommendedPlan, ...]:
     goal = _goal_snippet(normalized_message)
     titles = {
@@ -112,7 +124,9 @@ def _fallback_plans(
                     chat_session_id=chat_session_id,
                     normalized_message=normalized_message,
                     strategy=strategy,
+                    planning_context_key=planning_context_key,
                 ),
+                context_digest=planning_context_key,
                 strategy=strategy,
                 title=titles[strategy],
                 summary=summaries[strategy],
@@ -147,6 +161,7 @@ def _native_plans_to_recommendations(
     chat_session_id: str,
     normalized_message: str,
     planning_result: AgentSkillOSPlanningResult,
+    planning_context_key: str,
 ) -> tuple[RecommendedPlan, ...]:
     plans: list[RecommendedPlan] = []
     for native_plan in planning_result.plans:
@@ -159,7 +174,9 @@ def _native_plans_to_recommendations(
                     chat_session_id=chat_session_id,
                     normalized_message=normalized_message,
                     strategy=strategy,
+                    planning_context_key=planning_context_key,
                 ),
+                context_digest=planning_context_key,
                 strategy=strategy,
                 title=native_plan.name or f"{strategy.value.title()} Plan",
                 summary=summary,
@@ -182,6 +199,7 @@ def build_recommended_plans(
     user_message: str,
     preferred_strategy: ExecutionStrategy | None = None,
     input_files: tuple[str, ...] = (),
+    planning_context_key: str = "",
     bridge: AgentSkillOSBridge | None = None,
 ) -> tuple[RecommendedPlan, ...]:
     normalized = _normalize_message(user_message)
@@ -194,6 +212,7 @@ def build_recommended_plans(
                 chat_session_id=chat_session_id,
                 normalized_message=normalized,
                 planning_result=planning_result,
+                planning_context_key=planning_context_key,
             ),
             preferred_strategy=preferred_strategy,
         )
@@ -205,6 +224,7 @@ def build_recommended_plans(
             chat_session_id=chat_session_id,
             normalized_message=normalized,
             has_skill_signal=bool(discovery.skill_ids),
+            planning_context_key=planning_context_key,
         ),
         preferred_strategy=preferred_strategy,
     )

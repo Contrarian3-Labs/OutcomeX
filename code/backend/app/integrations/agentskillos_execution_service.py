@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 from dataclasses import dataclass
@@ -626,9 +627,13 @@ class AgentSkillOSExecutionService:
         record_path = service_run_dir / "run.json"
         agentskillos_runs_root = service_run_dir / "agentskillos-runs"
         service_run_dir.mkdir(parents=True, exist_ok=True)
+        staged_input_files = self._stage_input_files(
+            service_run_dir=service_run_dir,
+            input_files=input_files,
+        )
         submission_payload = {
             "intent": prompt,
-            "files": list(input_files),
+            "files": list(staged_input_files),
             "execution_strategy": execution_strategy.value,
         }
         if selected_plan_index is not None:
@@ -681,7 +686,7 @@ class AgentSkillOSExecutionService:
             prompt,
             self._settings.agentskillos_execution_mode,
             self._settings.agentskillos_skill_group,
-            json.dumps(list(input_files)),
+            json.dumps(list(staged_input_files)),
             execution_strategy.value,
             str(selected_plan_index if selected_plan_index is not None else -1),
         ]
@@ -697,6 +702,22 @@ class AgentSkillOSExecutionService:
         latest_payload["pid"] = process_id
         record_path.write_text(json.dumps(latest_payload, indent=2), encoding="utf-8")
         return self.get_run(run_id)
+
+    @staticmethod
+    def _stage_input_files(*, service_run_dir: Path, input_files: tuple[str, ...]) -> tuple[str, ...]:
+        staged_files: list[str] = []
+        inputs_root = service_run_dir / "inputs"
+        for index, input_file in enumerate(input_files):
+            raw_value = str(input_file)
+            candidate = Path(raw_value)
+            if candidate.exists() and candidate.is_file():
+                inputs_root.mkdir(parents=True, exist_ok=True)
+                destination = inputs_root / f"{index:02d}-{candidate.name or 'attachment.bin'}"
+                shutil.copy2(candidate, destination)
+                staged_files.append(str(destination))
+                continue
+            staged_files.append(raw_value)
+        return tuple(staged_files)
 
     def get_run(self, run_id: str) -> ExecutionRunSnapshot:
         record_path = self._output_root() / run_id / "run.json"

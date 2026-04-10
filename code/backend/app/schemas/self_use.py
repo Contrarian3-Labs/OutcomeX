@@ -21,6 +21,9 @@ class SelfUsePlansResponse(BaseModel):
     prompt: str
     execution_strategy: ExecutionStrategy
     input_files: list[str] = Field(default_factory=list)
+    planning_context_id: str = ""
+    attachment_session_id: str | None = None
+    attachment_ids: list[str] = Field(default_factory=list)
     recommended_plan_summary: str
     recommended_plans: list[RecommendedPlanResponse] = Field(default_factory=list)
 
@@ -31,6 +34,7 @@ class SelfUseRunCreateRequest(BaseModel):
     prompt: str = Field(min_length=1)
     execution_strategy: ExecutionStrategy = ExecutionStrategy.QUALITY
     input_files: list[str] = Field(default_factory=list)
+    planning_context_id: str | None = Field(default=None, min_length=1, max_length=64)
     attachment_session_id: str | None = Field(default=None, min_length=1, max_length=64)
     attachment_session_token: str | None = Field(default=None, min_length=1, max_length=256)
     attachment_ids: list[str] = Field(default_factory=list)

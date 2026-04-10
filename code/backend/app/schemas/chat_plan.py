@@ -20,6 +20,7 @@ class ChatPlanRequest(BaseModel):
 
 class RecommendedPlanResponse(BaseModel):
     plan_id: str
+    planning_context_id: str = ""
     strategy: ExecutionStrategy
     title: str
     summary: str
@@ -37,6 +38,9 @@ class ChatPlanResponse(BaseModel):
     user_message: str
     mode: ExecutionStrategy | None = None
     input_files: list[str] = Field(default_factory=list)
+    planning_context_id: str = ""
+    attachment_session_id: str | None = None
+    attachment_ids: list[str] = Field(default_factory=list)
     recommended_plan_summary: str
     recommended_plans: list[RecommendedPlanResponse] = Field(default_factory=list)
     preview_state: PreviewState

@@ -1,4 +1,5 @@
 import hashlib
+import json
 import secrets
 import shutil
 import tempfile
@@ -72,10 +73,32 @@ def _normalize_reference_value(value: str | None) -> str:
     return str(value or "").strip()
 
 
+def _normalize_attachment_ids(values: tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
+    return tuple(_normalize_reference_value(item) for item in (values or ()))
+
+
 def _materialized_attachment_filename(*, index: int, attachment_id: str, filename: str) -> str:
     basename = Path(filename).name
     sanitized = _sanitize_metadata_value(basename) or DEFAULT_FILENAME
     return f"{index:02d}-{attachment_id}-{sanitized}"
+
+
+def build_planning_context_id(
+    *,
+    input_files: tuple[str, ...] = (),
+    attachment_session_id: str | None = None,
+    attachment_ids: tuple[str, ...] = (),
+) -> str:
+    payload = {
+        "version": 1,
+        "input_files": [str(item) for item in (input_files or ())],
+        "attachment_session_id": _normalize_reference_value(attachment_session_id) or None,
+        "attachment_ids": [_normalize_reference_value(item) for item in (attachment_ids or ())],
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"ctx_{digest}"
 
 
 def _normalize_filename(value: str | None) -> str:
@@ -242,6 +265,53 @@ def get_attachment_for_session(
         )
     )
 
+def stage_bound_execution_input_files(
+    *,
+    db: Session,
+    input_files: tuple[str, ...] = (),
+    attachment_session_id: str | None = None,
+    attachment_ids: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    normalized_input_files = tuple(str(file_item) for file_item in (input_files or ()))
+    normalized_attachment_ids = _normalize_attachment_ids(attachment_ids)
+    if not normalized_attachment_ids:
+        return normalized_input_files
+
+    session_id = _normalize_reference_value(attachment_session_id)
+    if not session_id:
+        raise AttachmentResolutionError(
+            "attachment_session_id is required when attachment_ids are provided",
+            status_code=422,
+        )
+
+    stage_root = Path(tempfile.mkdtemp(prefix="outcomex-execution-attachments-"))
+    staged_paths: list[str] = []
+    try:
+        for index, attachment_id in enumerate(normalized_attachment_ids):
+            if not attachment_id:
+                raise AttachmentResolutionError("attachment_ids must not contain empty values", status_code=422)
+            attachment = get_attachment_for_session(
+                db=db,
+                attachment_id=attachment_id,
+                attachment_session_id=session_id,
+            )
+            if attachment is None:
+                raise AttachmentResolutionError(
+                    f"Attachment '{attachment_id}' not found for provided session",
+                    status_code=404,
+                )
+            file_path = stage_root / _materialized_attachment_filename(
+                index=index,
+                attachment_id=attachment.id,
+                filename=attachment.filename,
+            )
+            file_path.write_bytes(attachment.content)
+            staged_paths.append(str(file_path))
+    except Exception:
+        shutil.rmtree(stage_root, ignore_errors=True)
+        raise
+    return tuple([*normalized_input_files, *staged_paths])
+
 
 @contextmanager
 def resolve_planning_input_files(
@@ -253,7 +323,7 @@ def resolve_planning_input_files(
     attachment_ids: tuple[str, ...] = (),
 ) -> Iterator[tuple[str, ...]]:
     normalized_input_files = tuple(str(file_item) for file_item in (input_files or ()))
-    normalized_attachment_ids = tuple(_normalize_reference_value(item) for item in (attachment_ids or ()))
+    normalized_attachment_ids = _normalize_attachment_ids(attachment_ids)
     if not normalized_attachment_ids:
         yield normalized_input_files
         return
