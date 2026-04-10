@@ -12,6 +12,7 @@ from app.api.execution_contract import (
 )
 from app.core.config import get_settings
 from app.domain.accounting import effective_paid_amount_cents
+from app.domain.benchmark_solutions import get_benchmark_solution
 from app.domain.claim_projection import project_order_refund_claim
 from app.domain.enums import ExecutionRunStatus, ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
 from app.domain.models import ExecutionRun, Machine, Order, Payment
@@ -34,6 +35,15 @@ from app.schemas.order import (
 )
 
 router = APIRouter()
+
+
+def _resolve_order_execution_inputs(payload: OrderCreateRequest) -> tuple[str, list[str], str | None]:
+    if not payload.benchmark_task_id:
+        return payload.user_prompt, payload.input_files, None
+    solution = get_benchmark_solution(payload.benchmark_task_id)
+    if solution is None:
+        return payload.user_prompt, payload.input_files, None
+    return solution.benchmark_prompt, list(solution.input_files), solution.title
 
 
 def _preview_valid(order: Order) -> bool | None:
@@ -199,12 +209,14 @@ def create_order(
     if machine is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
 
+    execution_prompt, execution_input_files, benchmark_solution_title = _resolve_order_execution_inputs(payload)
+
     recommended_plans = build_recommended_plans(
         user_id=payload.user_id,
         chat_session_id=payload.chat_session_id,
-        user_message=payload.user_prompt,
+        user_message=execution_prompt,
         preferred_strategy=payload.execution_strategy,
-        input_files=tuple(payload.input_files),
+        input_files=tuple(execution_input_files),
     )
     selected_plan = select_recommended_plan(
         recommended_plans,
@@ -231,8 +243,8 @@ def create_order(
     db.flush()
     execution_plan = _build_execution_plan(
         intent_id=f"order-{order.id}",
-        prompt=payload.user_prompt,
-        input_files=payload.input_files,
+        prompt=execution_prompt,
+        input_files=execution_input_files,
         execution_strategy=selected_plan.strategy,
         machine_id=machine.id,
         selected_native_plan_index=selected_plan.native_plan_index,
@@ -242,6 +254,10 @@ def create_order(
     execution_metadata["selected_plan_title"] = selected_plan.title
     execution_metadata["selected_plan_strategy"] = selected_plan.strategy.value
     execution_metadata["selected_native_plan_index"] = selected_plan.native_plan_index
+    if payload.benchmark_task_id:
+        execution_metadata["benchmark_task_id"] = payload.benchmark_task_id
+    if benchmark_solution_title:
+        execution_metadata["benchmark_solution_title"] = benchmark_solution_title
     if selected_plan.native_plan_name:
         execution_metadata["selected_native_plan_name"] = selected_plan.native_plan_name
     if selected_plan.native_plan_description:
@@ -426,7 +442,7 @@ def start_order_execution(
     dispatch = ExecutionEngineService(execution_service=execution_service).dispatch(
         IntentRequest(
             intent_id=order.id,
-            prompt=order.user_prompt,
+            prompt=str((order.execution_request or {}).get("intent") or order.user_prompt),
             input_files=tuple((order.execution_request or {}).get("files") or ()),
             execution_strategy=ExecutionStrategy((order.execution_request or {}).get("execution_strategy", "quality")),
             context=intent_context,

@@ -3,7 +3,9 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-DEFAULT_SQLITE_DB_PATH = Path(__file__).resolve().parents[2] / "outcomex.db"
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_SQLITE_DB_PATH = BACKEND_ROOT / "outcomex.db"
+DEFAULT_ENV_FILE_PATH = BACKEND_ROOT / ".env"
 
 
 class Settings(BaseSettings):
@@ -73,7 +75,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="OUTCOMEX_",
-        env_file=".env",
+        env_file=str(DEFAULT_ENV_FILE_PATH),
         extra="ignore",
     )
 

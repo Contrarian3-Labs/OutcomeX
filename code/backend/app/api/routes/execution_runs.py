@@ -1,6 +1,7 @@
 import json
 import time
 from datetime import datetime
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -152,6 +153,18 @@ def _resolve_last_progress_at(snapshot) -> datetime | None:
     return _coerce_datetime(getattr(snapshot, "last_heartbeat_at", None))
 
 
+def _resolve_display_current_step(status: ExecutionRunStatus, current_step: str | None) -> str | None:
+    if current_step:
+        return current_step
+    if status == ExecutionRunStatus.SUCCEEDED:
+        return "Completed"
+    if status == ExecutionRunStatus.FAILED:
+        return "Failed"
+    if status == ExecutionRunStatus.CANCELLED:
+        return "Cancelled"
+    return None
+
+
 def _resolve_runtime_log_path(snapshot, file_name: str) -> str | None:
     normalized = file_name.strip()
     if not normalized:
@@ -167,6 +180,23 @@ def _get_run_or_404(db: Session, run_id: str) -> ExecutionRun:
     if run is None or run.run_kind == "self_use":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution run not found")
     return run
+
+
+def _snapshot_from_run(run: ExecutionRun):
+    return SimpleNamespace(
+        status=run.status,
+        submission_payload=run.submission_payload,
+        workspace_path=run.workspace_path,
+        run_dir=run.run_dir,
+        preview_manifest=run.preview_manifest,
+        artifact_manifest=run.artifact_manifest,
+        skills_manifest=run.skills_manifest,
+        model_usage_manifest=run.model_usage_manifest,
+        summary_metrics=run.summary_metrics,
+        error=run.error,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+    )
 
 
 def _format_sse(event_name: str, payload: dict) -> str:
@@ -193,7 +223,50 @@ def build_execution_run_response(run: ExecutionRun, snapshot, order: Order | Non
     runtime_event_cursor = _resolve_runtime_event_cursor(snapshot)
     last_heartbeat_at = _coerce_datetime(getattr(snapshot, "last_heartbeat_at", None))
     last_progress_at = _resolve_last_progress_at(snapshot)
-    response = ExecutionRunResponse.model_validate(run).model_copy(
+    response = ExecutionRunResponse.model_validate(
+        {
+            "id": run.id,
+            "order_id": run.order_id,
+            "machine_id": run.machine_id,
+            "viewer_user_id": run.viewer_user_id,
+            "viewer_wallet_address": None,
+            "run_kind": run.run_kind,
+            "external_order_id": run.external_order_id,
+            "status": run.status,
+            "submission_payload": run.submission_payload,
+            "selected_plan": None,
+            "selected_plan_binding": None,
+            "workspace_path": run.workspace_path,
+            "run_dir": run.run_dir,
+            "preview_manifest": list(run.preview_manifest or []),
+            "artifact_manifest": list(run.artifact_manifest or []),
+            "skills_manifest": list(run.skills_manifest or []),
+            "model_usage_manifest": list(run.model_usage_manifest or []),
+            "summary_metrics": run.summary_metrics or {},
+            "error": run.error,
+            "started_at": run.started_at,
+            "finished_at": run.finished_at,
+            "pid": None,
+            "pid_alive": None,
+            "stdout_log_path": None,
+            "stderr_log_path": None,
+            "events_log_path": None,
+            "last_heartbeat_at": None,
+            "current_phase": None,
+            "current_step": None,
+            "plan_candidates": [],
+            "dag": None,
+            "active_node_id": None,
+            "logs_root_path": None,
+            "log_files": [],
+            "event_cursor": 0,
+            "last_progress_at": None,
+            "stalled": False,
+            "stalled_reason": None,
+            "created_at": run.created_at,
+            "updated_at": run.updated_at,
+        }
+    ).model_copy(
         update={
             "machine_id": machine_id,
             "viewer_user_id": None if run.run_kind == "self_use" else viewer_user_id,
@@ -228,7 +301,10 @@ def build_execution_run_response(run: ExecutionRun, snapshot, order: Order | Non
             "events_log_path": getattr(snapshot, "events_log_path", None),
             "last_heartbeat_at": last_heartbeat_at,
             "current_phase": getattr(snapshot, "current_phase", None),
-            "current_step": getattr(snapshot, "current_step", None),
+            "current_step": _resolve_display_current_step(
+                response.status,
+                getattr(snapshot, "current_step", None),
+            ),
             "plan_candidates": _normalize_plan_candidates(getattr(snapshot, "plan_candidates", [])),
             "dag": getattr(snapshot, "dag", None),
             "active_node_id": getattr(snapshot, "active_node_id", None),
@@ -240,6 +316,37 @@ def build_execution_run_response(run: ExecutionRun, snapshot, order: Order | Non
             "stalled_reason": getattr(snapshot, "stalled_reason", None),
         }
     )
+
+
+@router.get("", response_model=list[ExecutionRunResponse])
+def list_execution_runs(
+    machine_id: str | None = Query(default=None),
+    run_kind: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    execution_service=Depends(get_agentskillos_execution_service),
+) -> list[ExecutionRunResponse]:
+    query = db.query(ExecutionRun)
+    if machine_id:
+        query = query.filter(ExecutionRun.machine_id == machine_id)
+    if run_kind:
+        query = query.filter(ExecutionRun.run_kind == run_kind)
+    runs = query.order_by(ExecutionRun.created_at.desc()).all()
+
+    order_ids = [run.order_id for run in runs if run.order_id]
+    orders_by_id: dict[str, Order] = {}
+    if order_ids:
+        orders = db.query(Order).filter(Order.id.in_(order_ids)).all()
+        orders_by_id = {order.id: order for order in orders}
+
+    responses: list[ExecutionRunResponse] = []
+    for run in runs:
+        try:
+            snapshot = execution_service.get_run(run.id)
+        except Exception:
+            snapshot = _snapshot_from_run(run)
+        order = orders_by_id.get(run.order_id) if run.order_id else None
+        responses.append(build_execution_run_response(run, snapshot, order))
+    return responses
 
 
 @router.get("/{run_id}", response_model=ExecutionRunResponse)

@@ -14,7 +14,7 @@ from app.integrations.agentskillos_execution_service import get_agentskillos_exe
 from app.onchain.lifecycle_service import BroadcastReceipt, get_onchain_lifecycle_service
 from app.onchain.order_writer import OrderWriteResult, get_order_writer
 from app.main import create_app
-from app.domain.models import Order
+from app.domain.models import ExecutionRun, Order
 from app.runtime.hardware_simulator import WorkloadSpec, get_shared_hardware_simulator
 
 
@@ -126,6 +126,50 @@ class _ExecutionServiceStub:
         )()
 
     def get_run(self, run_id: str):
+        if run_id == "aso-run-self-use":
+            return type(
+                "Snapshot",
+                (),
+                {
+                    "run_id": run_id,
+                    "external_order_id": "self-use:machine-owner-2:0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+                    "status": ExecutionRunStatus.RUNNING,
+                    "submission_payload": {
+                        "intent": "Generate a cat image",
+                        "files": [],
+                        "execution_strategy": "quality",
+                        "selected_plan_index": 0,
+                    },
+                    "selected_plan": None,
+                    "workspace_path": None,
+                    "run_dir": None,
+                    "preview_manifest": (),
+                    "artifact_manifest": (),
+                    "skills_manifest": (),
+                    "model_usage_manifest": (),
+                    "summary_metrics": {},
+                    "error": None,
+                    "started_at": datetime.now(timezone.utc),
+                    "finished_at": None,
+                    "pid": 814977,
+                    "pid_alive": True,
+                    "stdout_log_path": None,
+                    "stderr_log_path": None,
+                    "events_log_path": None,
+                    "last_heartbeat_at": datetime.now(timezone.utc),
+                    "current_phase": "executing",
+                    "current_step": "phase-1",
+                    "plan_candidates": [],
+                    "dag": {"nodes": [{"id": "generate-image", "status": "running"}], "edges": []},
+                    "active_node_id": "generate-image",
+                    "logs_root_path": None,
+                    "log_files": [],
+                    "event_cursor": 9,
+                    "last_progress_at": datetime.now(timezone.utc),
+                    "stalled": False,
+                    "stalled_reason": None,
+                },
+            )()
         return type(
             "Snapshot",
             (),
@@ -780,3 +824,37 @@ def test_execution_run_get_does_not_broadcast_preview_ready_when_onchain_order_e
     payload = order_fetch.json()
     assert "onchain_preview_ready_tx_hash" not in payload["execution_metadata"]
     assert payload["state"] == "executing"
+
+
+def test_list_execution_runs_includes_machine_scoped_self_use_runs(
+    client: tuple[TestClient, _ExecutionServiceStub]
+) -> None:
+    test_client, _ = client
+    machine = _create_machine(test_client)
+
+    engine = create_engine(os.environ["OUTCOMEX_DATABASE_URL"])
+    with Session(engine) as session:
+        session.add(
+            ExecutionRun(
+                id="aso-run-self-use",
+                order_id=None,
+                machine_id=machine["id"],
+                viewer_user_id="0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+                run_kind="self_use",
+                external_order_id=f"self-use:{machine['id']}:0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+                status=ExecutionRunStatus.RUNNING,
+                submission_payload={"intent": "Generate a cat image", "execution_strategy": "quality", "files": []},
+            )
+        )
+        session.commit()
+    engine.dispose()
+
+    response = test_client.get(f"/api/v1/execution-runs?machine_id={machine['id']}")
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["id"] == "aso-run-self-use"
+    assert payload[0]["machine_id"] == machine["id"]
+    assert payload[0]["run_kind"] == "self_use"
+    assert payload[0]["viewer_wallet_address"] == "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc"
+    assert payload[0]["submission_payload"]["intent"] == "Generate a cat image"

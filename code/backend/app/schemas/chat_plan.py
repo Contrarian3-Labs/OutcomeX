@@ -11,6 +11,7 @@ class ChatPlanRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=64)
     chat_session_id: str = Field(min_length=1, max_length=64)
     user_message: str = Field(min_length=1)
+    benchmark_task_id: str | None = None
     mode: ExecutionStrategy | None = None
     input_files: list[str] = Field(default_factory=list)
 
@@ -32,6 +33,7 @@ class ChatPlanResponse(BaseModel):
     user_id: str
     chat_session_id: str
     user_message: str
+    benchmark_task_id: str | None = None
     mode: ExecutionStrategy | None = None
     input_files: list[str] = Field(default_factory=list)
     recommended_plan_summary: str

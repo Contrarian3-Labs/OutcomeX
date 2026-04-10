@@ -1,6 +1,9 @@
 import re
+from pathlib import Path
+from mimetypes import guess_type
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -39,6 +42,27 @@ def _resolve_owner_machine(*, db: Session, machine_id: str, viewer_wallet_addres
 
 def _self_use_external_order_id(*, machine_id: str, viewer_wallet_address: str) -> str:
     return f"self-use:{machine_id}:{_normalize_wallet_address(viewer_wallet_address)}"
+
+
+def _resolve_self_use_run(
+    *,
+    db: Session,
+    run_id: str,
+    viewer_wallet_address: str,
+) -> tuple[ExecutionRun, Machine, str]:
+    run = db.get(ExecutionRun, run_id)
+    if run is None or run.run_kind != _RUN_KIND_SELF_USE:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Self-use run not found")
+    normalized_viewer_wallet = _normalize_wallet_address(viewer_wallet_address)
+    if run.viewer_user_id != normalized_viewer_wallet:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Self-use is owner-only")
+
+    machine = db.get(Machine, run.machine_id) if run.machine_id is not None else None
+    if machine is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
+    if (machine.owner_chain_address or "").lower() != normalized_viewer_wallet:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Self-use is owner-only")
+    return run, machine, normalized_viewer_wallet
 
 
 @router.post("/plans", response_model=SelfUsePlansResponse)
@@ -199,18 +223,40 @@ def get_self_use_run(
     db: Session = Depends(get_db),
     execution_service=Depends(get_agentskillos_execution_service),
 ) -> ExecutionRunResponse:
-    run = db.get(ExecutionRun, run_id)
-    if run is None or run.run_kind != _RUN_KIND_SELF_USE:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Self-use run not found")
-    normalized_viewer_wallet = _normalize_wallet_address(viewer_wallet_address)
-    if run.viewer_user_id != normalized_viewer_wallet:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Self-use is owner-only")
-
-    machine = db.get(Machine, run.machine_id) if run.machine_id is not None else None
-    if machine is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
-    if (machine.owner_chain_address or "").lower() != normalized_viewer_wallet:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Self-use is owner-only")
-
+    run, _, _ = _resolve_self_use_run(db=db, run_id=run_id, viewer_wallet_address=viewer_wallet_address)
     snapshot = execution_service.get_run(run_id)
     return build_execution_run_response(run, snapshot, None)
+
+
+@router.get("/runs/{run_id}/artifacts/file")
+def read_self_use_artifact_file(
+    run_id: str,
+    path: str = Query(min_length=1),
+    viewer_wallet_address: str = Query(min_length=42, max_length=42, pattern=r"^0x[a-fA-F0-9]{40}$"),
+    db: Session = Depends(get_db),
+    execution_service=Depends(get_agentskillos_execution_service),
+):
+    run, _, _ = _resolve_self_use_run(db=db, run_id=run_id, viewer_wallet_address=viewer_wallet_address)
+    snapshot = execution_service.get_run(run_id)
+    allowed_paths = {
+        str(item.get("path"))
+        for item in [*(getattr(snapshot, "preview_manifest", ()) or ()), *(getattr(snapshot, "artifact_manifest", ()) or ())]
+        if isinstance(item, dict) and item.get("path")
+    }
+    if path not in allowed_paths:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+
+    run_dir_raw = getattr(snapshot, "run_dir", None) or run.run_dir
+    if not run_dir_raw:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact source unavailable")
+    run_dir = Path(run_dir_raw).resolve()
+    candidate = (run_dir / path).resolve()
+    try:
+        candidate.relative_to(run_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Artifact path is outside run root") from exc
+    if not candidate.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact file missing")
+
+    media_type, _ = guess_type(candidate.name)
+    return FileResponse(candidate, media_type=media_type or "application/octet-stream", filename=candidate.name)

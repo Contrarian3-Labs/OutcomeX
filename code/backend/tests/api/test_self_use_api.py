@@ -20,6 +20,7 @@ OTHER_WALLET = "0x2222222222222222222222222222222222222222"
 class _ExecutionServiceStub:
     def __init__(self) -> None:
         self.submit_calls: list[dict[str, object]] = []
+        self.read_run_dir = "/tmp/run-dir"
 
     def submit_task(
         self,
@@ -99,8 +100,8 @@ class _ExecutionServiceStub:
                     "description": "Self-use selected plan",
                     "nodes": [{"id": "n1", "name": "preview"}],
                 },
-                "workspace_path": "/tmp/workspace",
-                "run_dir": "/tmp/run-dir",
+                "workspace_path": str(self.read_run_dir) + "/workspace",
+                "run_dir": self.read_run_dir,
                 "preview_manifest": ({"path": "workspace/preview.png", "type": "image", "role": "final"},),
                 "artifact_manifest": ({"path": "workspace/result.md", "type": "document", "role": "final"},),
                 "skills_manifest": ({"skill_id": "preview", "skill_path": "/skills/preview", "status": "selected"},),
@@ -116,7 +117,7 @@ class _ExecutionServiceStub:
                 "events_log_path": "/tmp/events.ndjson",
                 "last_heartbeat_at": datetime.now(timezone.utc),
                 "current_phase": "finished",
-                "current_step": "preview",
+                "current_step": None,
             },
         )()
 
@@ -132,6 +133,12 @@ def client(tmp_path) -> tuple[TestClient, _ExecutionServiceStub]:
 
     app = create_app()
     stub = _ExecutionServiceStub()
+    run_dir = tmp_path / "run-dir"
+    workspace_dir = run_dir / "workspace"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "preview.png").write_bytes(b"fake-png")
+    (workspace_dir / "result.md").write_text("# hello", encoding="utf-8")
+    stub.read_run_dir = run_dir.as_posix()
     app.dependency_overrides[get_agentskillos_execution_service] = lambda: stub
     with TestClient(app) as test_client:
         yield test_client, stub
@@ -242,6 +249,9 @@ def test_self_use_owner_flow_without_order_side_effects(client: tuple[TestClient
     assert read_payload["machine_id"] == machine["id"]
     assert read_payload["viewer_wallet_address"] == owner_wallet.lower()
     assert read_payload["viewer_user_id"] is None
+    assert read_payload["status"] == "succeeded"
+    assert read_payload["current_phase"] == "finished"
+    assert read_payload["current_step"] == "Completed"
 
     forbidden_read = test_client.get(
         f"/api/v1/self-use/runs/{run_payload['id']}",
@@ -296,3 +306,36 @@ def test_self_use_rejects_native_plan_index_mismatch(client: tuple[TestClient, _
 
     assert response.status_code == 409
     assert response.json()["detail"] == "Selected native plan index does not match selected plan"
+
+
+def test_self_use_artifact_file_endpoint_serves_preview_and_blocks_unknown_paths(
+    client: tuple[TestClient, _ExecutionServiceStub]
+) -> None:
+    test_client, _ = client
+    machine = _create_machine(test_client)
+
+    create_run = test_client.post(
+        "/api/v1/self-use/runs",
+        json={
+            "viewer_wallet_address": OWNER_WALLET,
+            "machine_id": machine["id"],
+            "prompt": "Build owner dashboard",
+            "execution_strategy": "simplicity",
+            "input_files": ["owner-notes.md"],
+        },
+    )
+    assert create_run.status_code == 201
+    run_id = create_run.json()["id"]
+
+    preview = test_client.get(
+        f"/api/v1/self-use/runs/{run_id}/artifacts/file",
+        params={"viewer_wallet_address": OWNER_WALLET, "path": "workspace/preview.png"},
+    )
+    assert preview.status_code == 200
+    assert preview.content == b"fake-png"
+
+    missing = test_client.get(
+        f"/api/v1/self-use/runs/{run_id}/artifacts/file",
+        params={"viewer_wallet_address": OWNER_WALLET, "path": "workspace/unknown.png"},
+    )
+    assert missing.status_code == 404
