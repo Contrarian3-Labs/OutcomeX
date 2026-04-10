@@ -2,9 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GIT_COMMON_DIR="$(cd "$ROOT_DIR" && realpath "$(git rev-parse --git-common-dir)")"
+OUTCOMEX_REPO_ROOT="$(dirname "$GIT_COMMON_DIR")"
+WORKSPACE_ROOT="$(dirname "$OUTCOMEX_REPO_ROOT")"
 BACKEND_DIR="$ROOT_DIR/code/backend"
 CONTRACTS_DIR="$ROOT_DIR/code/contracts"
-FRONTEND_DIR="$ROOT_DIR/../hashkey/forge-yield-ai"
+FRONTEND_DIR="${OUTCOMEX_FRONTEND_DIR:-$WORKSPACE_ROOT/hashkey/forge-yield-ai}"
 STATE_DIR="$ROOT_DIR/.local/browser-demo"
 LOG_DIR="$STATE_DIR/logs"
 PID_DIR="$STATE_DIR/pids"
@@ -119,6 +122,24 @@ if [[ ! -f "$FRONTEND_DIR/.env.local" ]]; then
   cp "$FRONTEND_DIR/.env.example" "$FRONTEND_DIR/.env.local"
 fi
 
+resolve_backend_sqlite_path() {
+  (
+    cd "$BACKEND_DIR"
+    .venv/bin/python - <<'PY'
+from app.core.config import get_settings
+from pathlib import Path
+
+url = get_settings().database_url
+prefix = "sqlite+pysqlite:///"
+if url.startswith(prefix):
+    sqlite_path = Path(url[len(prefix):])
+    if not sqlite_path.is_absolute():
+        sqlite_path = (Path.cwd() / sqlite_path).resolve()
+    print(sqlite_path)
+PY
+  )
+}
+
 mkdir -p "$LOG_DIR" "$PID_DIR"
 
 stop_pid_file "$BACKEND_PID_FILE"
@@ -138,7 +159,10 @@ if port_open 8545; then
   exit 1
 fi
 
-rm -f "$BACKEND_DIR/outcomex-local.db"
+SQLITE_DB_PATH="$(resolve_backend_sqlite_path)"
+if [[ -n "$SQLITE_DB_PATH" ]]; then
+  rm -f "$SQLITE_DB_PATH"
+fi
 rm -rf "$BACKEND_DIR/data/agentskillos-execution"
 
 nohup setsid anvil --host 127.0.0.1 --port 8545 --chain-id 133 >"$ANVIL_LOG" 2>&1 < /dev/null &
@@ -175,15 +199,30 @@ wait_for_http "http://127.0.0.1:8080" "Frontend"
 cat <<EOF
 Local browser demo is ready.
 
+Manual testing checklist:
+- Buyer-1 (0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC) is pre-funded with 100 PWR; use this wallet for purchase flows.
+- Owner-1 owns machine-owner-1 and the machine stays unlisted so you can test listing creation and delisting flows.
+- Owner-2 and owner-3 each own a machine with active secondary listings 2001 (1,250,000 USDC) and 2002 (1,550,000 USDC), matching the marketplace seeds.
+- Primary issuance stock is seeded to 10 so primary issuance flows remain available after seeding.
+
+Seed summary:
+- Buyer: buyer-1 (100 PWR funded, wallet 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC)
+- Owners:
+  - owner-1 → machine-owner-1 (unlisted)
+  - owner-2 → machine-owner-2 (listing 2001, 1,250,000 USDC)
+  - owner-3 → machine-owner-3 (listing 2002, 1,550,000 USDC)
+- Primary issuance stock: 10
+
 URLs:
 - Frontend: http://127.0.0.1:8080
 - Backend:  http://127.0.0.1:8787/api/v1/health
 - Anvil:    http://127.0.0.1:8545
 
 Suggested wallets on Anvil:
-- buyer-1:   0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
-- owner-1:   0x70997970C51812dc3A010C7d01b50e0d17dc79C8
-- treasury-1:0x90F79bf6EB2c4f870365E785982E1f101E93b906
+- buyer-1:  0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
+- owner-1:  0x70997970C51812dc3A010C7d01b50e0d17dc79C8
+- owner-2:  0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65
+- owner-3:  0x90F79bf6EB2c4f870365E785982E1f101E93b906
 
 Logs:
 - $ANVIL_LOG
