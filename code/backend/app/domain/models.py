@@ -378,6 +378,8 @@ class AttachmentSession(Base):
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attachment_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     attachments: Mapped[list["Attachment"]] = relationship(back_populates="attachment_session")
 

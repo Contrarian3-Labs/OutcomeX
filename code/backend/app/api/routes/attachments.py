@@ -148,9 +148,11 @@ def _resolve_session_or_401(*, db: Session, session_id: str, session_token: str)
 
 
 @router.post("/sessions", response_model=AttachmentSessionCreateResponse, status_code=status.HTTP_201_CREATED)
-def create_upload_session(db: Session = Depends(get_db)) -> AttachmentSessionCreateResponse:
+def create_upload_session(response: Response, db: Session = Depends(get_db)) -> AttachmentSessionCreateResponse:
     cleanup_expired_attachment_sessions(db=db)
     attachment_session, session_token = create_attachment_session(db=db)
+    response.headers["Cache-Control"] = PRIVATE_CACHE_CONTROL
+    response.headers["Pragma"] = "no-cache"
     return AttachmentSessionCreateResponse(
         session_id=attachment_session.id,
         session_token=session_token,

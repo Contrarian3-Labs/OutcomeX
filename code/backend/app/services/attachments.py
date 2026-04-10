@@ -1,8 +1,8 @@
 import hashlib
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, load_only
 
 from app.domain.models import Attachment, AttachmentSession, utc_now
@@ -16,6 +16,7 @@ MAX_ATTACHMENT_CONTENT_TYPE_LENGTH = 128
 MAX_ATTACHMENTS_PER_SESSION = 32
 MAX_TOTAL_BYTES_PER_SESSION = 100 * 1024 * 1024
 ATTACHMENT_SESSION_TTL = timedelta(hours=24)
+CLEANUP_BATCH_SIZE = 100
 DEFAULT_CONTENT_TYPE = "application/octet-stream"
 DEFAULT_FILENAME = "attachment.bin"
 
@@ -44,13 +45,9 @@ def _hash_session_token(session_token: str) -> str:
     return hashlib.sha256(session_token.encode("utf-8")).hexdigest()
 
 
-def _is_expired(expires_at: datetime | None, *, now: datetime | None = None) -> bool:
-    if expires_at is None:
-        return True
-    now_value = now or utc_now()
-    if expires_at.tzinfo is None:
-        return expires_at <= now_value.replace(tzinfo=None)
-    return expires_at <= now_value.astimezone(expires_at.tzinfo)
+def _utc_cutoff() -> object:
+    now = utc_now()
+    return now.replace(tzinfo=None)
 
 
 def _sanitize_metadata_value(value: str) -> str:
@@ -80,22 +77,26 @@ def _normalize_content_type(value: str | None) -> str:
 
 
 def cleanup_expired_attachment_sessions(*, db: Session) -> int:
-    now_utc = datetime.now(timezone.utc)
-    session_rows = db.execute(
-        select(AttachmentSession.id, AttachmentSession.expires_at)
-    ).all()
-    expired_session_ids = [
-        session_id
-        for session_id, expires_at in session_rows
-        if _is_expired(expires_at, now=now_utc)
-    ]
-    if not expired_session_ids:
-        return 0
+    total_deleted = 0
+    cutoff = _utc_cutoff()
+    while True:
+        expired_session_ids = list(
+            db.execute(
+                select(AttachmentSession.id)
+                .where(AttachmentSession.expires_at <= cutoff)
+                .limit(CLEANUP_BATCH_SIZE)
+            ).scalars().all()
+        )
+        if not expired_session_ids:
+            break
 
-    db.execute(delete(Attachment).where(Attachment.attachment_session_id.in_(expired_session_ids)))
-    db.execute(delete(AttachmentSession).where(AttachmentSession.id.in_(expired_session_ids)))
-    db.commit()
-    return len(expired_session_ids)
+        db.execute(delete(Attachment).where(Attachment.attachment_session_id.in_(expired_session_ids)))
+        db.execute(delete(AttachmentSession).where(AttachmentSession.id.in_(expired_session_ids)))
+        db.commit()
+        total_deleted += len(expired_session_ids)
+        if len(expired_session_ids) < CLEANUP_BATCH_SIZE:
+            break
+    return total_deleted
 
 
 def create_attachment_session(*, db: Session) -> tuple[AttachmentSession, str]:
@@ -104,6 +105,8 @@ def create_attachment_session(*, db: Session) -> tuple[AttachmentSession, str]:
     attachment_session = AttachmentSession(
         token_hash=_hash_session_token(session_token),
         expires_at=utc_now() + ATTACHMENT_SESSION_TTL,
+        attachment_count=0,
+        total_size_bytes=0,
     )
     db.add(attachment_session)
     db.commit()
@@ -113,13 +116,13 @@ def create_attachment_session(*, db: Session) -> tuple[AttachmentSession, str]:
 
 def resolve_attachment_session(*, db: Session, session_id: str, session_token: str) -> AttachmentSession | None:
     cleanup_expired_attachment_sessions(db=db)
-    attachment_session = db.get(AttachmentSession, session_id)
+    attachment_session = db.scalar(
+        select(AttachmentSession).where(
+            AttachmentSession.id == session_id,
+            AttachmentSession.expires_at > _utc_cutoff(),
+        )
+    )
     if attachment_session is None:
-        return None
-    if _is_expired(attachment_session.expires_at):
-        db.execute(delete(Attachment).where(Attachment.attachment_session_id == attachment_session.id))
-        db.delete(attachment_session)
-        db.commit()
         return None
     supplied_hash = _hash_session_token(session_token)
     if not secrets.compare_digest(attachment_session.token_hash, supplied_hash):
@@ -138,26 +141,50 @@ def create_attachment(
     if len(payload) > MAX_ATTACHMENT_SIZE_BYTES:
         raise AttachmentTooLargeError
 
-    existing_count, existing_total_bytes = db.execute(
-        select(
-            func.count(Attachment.id),
-            func.coalesce(func.sum(Attachment.size_bytes), 0),
-        ).where(Attachment.attachment_session_id == attachment_session_id)
-    ).one()
-    if int(existing_count or 0) >= MAX_ATTACHMENTS_PER_SESSION:
-        raise AttachmentSessionQuotaExceededError("Attachment session file-count quota exceeded")
-    if int(existing_total_bytes or 0) + len(payload) > MAX_TOTAL_BYTES_PER_SESSION:
+    normalized_filename = _normalize_filename(filename)
+    normalized_content_type = _normalize_content_type(content_type)
+    payload_size = len(payload)
+
+    quota_update = (
+        update(AttachmentSession)
+        .where(
+            AttachmentSession.id == attachment_session_id,
+            AttachmentSession.expires_at > _utc_cutoff(),
+            AttachmentSession.attachment_count < MAX_ATTACHMENTS_PER_SESSION,
+            (AttachmentSession.total_size_bytes + payload_size) <= MAX_TOTAL_BYTES_PER_SESSION,
+        )
+        .values(
+            attachment_count=AttachmentSession.attachment_count + 1,
+            total_size_bytes=AttachmentSession.total_size_bytes + payload_size,
+        )
+    )
+    quota_claim = db.execute(quota_update)
+    if quota_claim.rowcount != 1:
+        quota_state = db.execute(
+            select(AttachmentSession.attachment_count, AttachmentSession.total_size_bytes).where(
+                AttachmentSession.id == attachment_session_id,
+                AttachmentSession.expires_at > _utc_cutoff(),
+            )
+        ).one_or_none()
+        if quota_state is None:
+            raise AttachmentSessionQuotaExceededError("Attachment session is expired or unavailable")
+        if int(quota_state.attachment_count or 0) >= MAX_ATTACHMENTS_PER_SESSION:
+            raise AttachmentSessionQuotaExceededError("Attachment session file-count quota exceeded")
         raise AttachmentSessionQuotaExceededError("Attachment session total-bytes quota exceeded")
 
     attachment = Attachment(
         attachment_session_id=attachment_session_id,
-        filename=_normalize_filename(filename),
-        content_type=_normalize_content_type(content_type),
-        size_bytes=len(payload),
+        filename=normalized_filename,
+        content_type=normalized_content_type,
+        size_bytes=payload_size,
         content=payload,
     )
     db.add(attachment)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(attachment)
     return attachment
 

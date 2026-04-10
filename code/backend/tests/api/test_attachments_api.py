@@ -34,6 +34,8 @@ def client(tmp_path) -> TestClient:
 def _issue_session(client: TestClient) -> dict:
     response = client.post("/api/v1/attachments/sessions")
     assert response.status_code == 201
+    assert response.headers["cache-control"] == "no-store, private"
+    assert response.headers["pragma"] == "no-cache"
     payload = response.json()
     assert payload["session_id"]
     assert payload["session_token"]
@@ -290,6 +292,31 @@ def test_per_session_attachment_count_quota_is_enforced(
     )
     assert second.status_code == 409
     assert second.json()["detail"] == "Attachment session file-count quota exceeded"
+
+
+def test_per_session_total_bytes_quota_is_enforced(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    monkeypatch.setattr(attachments_service, "MAX_ATTACHMENTS_PER_SESSION", 50)
+    monkeypatch.setattr(attachments_service, "MAX_TOTAL_BYTES_PER_SESSION", 4)
+    session = _issue_session(client)
+
+    first = client.post(
+        "/api/v1/attachments",
+        data={"session_id": session["session_id"]},
+        headers={"X-Attachment-Session-Token": session["session_token"]},
+        files={"file": ("a.txt", b"ab", "text/plain")},
+    )
+    assert first.status_code == 201
+
+    second = client.post(
+        "/api/v1/attachments",
+        data={"session_id": session["session_id"]},
+        headers={"X-Attachment-Session-Token": session["session_token"]},
+        files={"file": ("b.txt", b"cde", "text/plain")},
+    )
+    assert second.status_code == 409
+    assert second.json()["detail"] == "Attachment session total-bytes quota exceeded"
 
 
 def test_metadata_validation_rejects_overlong_filename_and_content_type(client: TestClient) -> None:
