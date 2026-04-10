@@ -372,10 +372,12 @@ class Attachment(Base):
 
 class AttachmentSession(Base):
     __tablename__ = "attachment_sessions"
+    __table_args__ = (Index("ix_attachment_sessions_expires_at", "expires_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     attachments: Mapped[list["Attachment"]] = relationship(back_populates="attachment_session")
 

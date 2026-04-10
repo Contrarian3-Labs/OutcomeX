@@ -136,3 +136,25 @@ def test_runtime_metadata_contains_attachment_session_structures(tmp_path) -> No
 
     indexes = {index["name"] for index in inspector.get_indexes("attachments")}
     assert "ix_attachments_attachment_session_id" in indexes
+
+    session_columns = {column["name"] for column in inspector.get_columns("attachment_sessions")}
+    assert "expires_at" in session_columns
+    session_indexes = {index["name"] for index in inspector.get_indexes("attachment_sessions")}
+    assert "ix_attachment_sessions_expires_at" in session_indexes
+
+
+def test_attachment_session_expiry_migration_contains_expected_operations() -> None:
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "20260410_05_add_attachment_session_expiry.py"
+    )
+    source = migration_path.read_text(encoding="utf-8")
+    ast.parse(source)
+    assert 'revision = "20260410_05"' in source
+    assert 'down_revision = "20260410_04"' in source
+    assert 'batch_op.add_column(sa.Column("expires_at"' in source
+    assert "UPDATE attachment_sessions SET expires_at" in source
+    assert 'batch_op.alter_column("expires_at"' in source
+    assert 'op.create_index("ix_attachment_sessions_expires_at"' in source

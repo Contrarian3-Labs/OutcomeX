@@ -7,6 +7,7 @@ class AttachmentSessionCreateResponse(BaseModel):
     session_id: str
     session_token: str
     created_at: datetime
+    expires_at: datetime
 
 
 class AttachmentResponse(BaseModel):

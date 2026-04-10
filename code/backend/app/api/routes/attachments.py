@@ -12,7 +12,10 @@ from app.services.attachments import (
     MAX_ATTACHMENT_MULTIPART_OVERHEAD_BYTES,
     MAX_ATTACHMENT_REQUEST_SIZE_BYTES,
     MAX_ATTACHMENT_SIZE_BYTES,
+    AttachmentMetadataInvalidError,
+    AttachmentSessionQuotaExceededError,
     AttachmentTooLargeError,
+    cleanup_expired_attachment_sessions,
     create_attachment,
     create_attachment_session,
     get_attachment_for_session,
@@ -67,6 +70,13 @@ def _apply_private_session_headers(response: Response) -> None:
     if SESSION_TOKEN_VARY in existing_tokens:
         return
     response.headers["Vary"] = f"{existing_vary}, {SESSION_TOKEN_VARY}"
+
+
+def _private_session_headers() -> dict[str, str]:
+    return {
+        "Cache-Control": PRIVATE_CACHE_CONTROL,
+        "Vary": SESSION_TOKEN_VARY,
+    }
 
 
 def _build_content_disposition(filename: str) -> str:
@@ -129,17 +139,23 @@ def _resolve_session_or_401(*, db: Session, session_id: str, session_token: str)
         session_token=session_token,
     )
     if attachment_session is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=INVALID_SESSION_DETAIL)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=INVALID_SESSION_DETAIL,
+            headers=_private_session_headers(),
+        )
     return attachment_session
 
 
 @router.post("/sessions", response_model=AttachmentSessionCreateResponse, status_code=status.HTTP_201_CREATED)
 def create_upload_session(db: Session = Depends(get_db)) -> AttachmentSessionCreateResponse:
+    cleanup_expired_attachment_sessions(db=db)
     attachment_session, session_token = create_attachment_session(db=db)
     return AttachmentSessionCreateResponse(
         session_id=attachment_session.id,
         session_token=session_token,
         created_at=attachment_session.created_at,
+        expires_at=attachment_session.expires_at,
     )
 
 
@@ -149,6 +165,7 @@ async def upload_attachment(
     session_token: str = Depends(_session_token_header),
     db: Session = Depends(get_db),
 ) -> AttachmentResponse:
+    cleanup_expired_attachment_sessions(db=db)
     _early_reject_by_content_length(request)
     try:
         form = await request.form(
@@ -191,6 +208,16 @@ async def upload_attachment(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="Attachment exceeds 25 MB size limit",
         ) from exc
+    except AttachmentSessionQuotaExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.detail,
+        ) from exc
+    except AttachmentMetadataInvalidError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=exc.detail,
+        ) from exc
     return _build_attachment_response(attachment)
 
 
@@ -201,6 +228,7 @@ def list_uploaded_attachments(
     session_token: str = Depends(_session_token_header),
     db: Session = Depends(get_db),
 ) -> list[AttachmentResponse]:
+    cleanup_expired_attachment_sessions(db=db)
     attachment_session = _resolve_session_or_401(
         db=db,
         session_id=session_id.strip(),
@@ -221,6 +249,7 @@ def download_attachment(
     session_token: str = Depends(_session_token_header),
     db: Session = Depends(get_db),
 ) -> Response:
+    cleanup_expired_attachment_sessions(db=db)
     attachment_session = _resolve_session_or_401(
         db=db,
         session_id=session_id.strip(),
@@ -232,7 +261,11 @@ def download_attachment(
         attachment_session_id=attachment_session.id,
     )
     if attachment is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Attachment not found",
+            headers=_private_session_headers(),
+        )
 
     response = Response(
         content=attachment.content,

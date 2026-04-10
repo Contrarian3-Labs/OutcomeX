@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -7,8 +8,11 @@ from starlette.requests import Request
 
 from app.api.routes import attachments as attachments_route
 from app.core.config import reset_settings_cache
+from app.core.container import get_container
 from app.core.container import reset_container_cache
+from app.domain.models import Attachment, AttachmentSession, utc_now
 from app.main import create_app
+from app.services import attachments as attachments_service
 from app.services.attachments import MAX_ATTACHMENT_REQUEST_SIZE_BYTES, MAX_ATTACHMENT_SIZE_BYTES
 
 
@@ -33,6 +37,7 @@ def _issue_session(client: TestClient) -> dict:
     payload = response.json()
     assert payload["session_id"]
     assert payload["session_token"]
+    assert payload["expires_at"]
     return payload
 
 
@@ -112,6 +117,8 @@ def test_invalid_or_missing_session_credentials_are_rejected(client: TestClient)
     )
     assert invalid_list.status_code == 401
     assert invalid_list.json()["detail"] == "Invalid attachment session credentials"
+    assert invalid_list.headers["cache-control"] == "no-store, private"
+    assert "X-Attachment-Session-Token" in invalid_list.headers["vary"]
 
     missing_token_list = client.get(
         "/api/v1/attachments",
@@ -226,3 +233,96 @@ def test_download_content_disposition_sanitizes_filename(client: TestClient) -> 
     assert "filename*=UTF-8''" in content_disposition
     assert download_response.headers["cache-control"] == "no-store, private"
     assert "X-Attachment-Session-Token" in download_response.headers["vary"]
+
+
+def test_expired_session_is_rejected_and_cleaned_up(client: TestClient) -> None:
+    session = _issue_session(client)
+    upload_response = client.post(
+        "/api/v1/attachments",
+        data={"session_id": session["session_id"]},
+        headers={"X-Attachment-Session-Token": session["session_token"]},
+        files={"file": ("brief.txt", b"payload", "text/plain")},
+    )
+    assert upload_response.status_code == 201
+
+    with get_container().session_factory() as db:
+        attachment_session = db.get(AttachmentSession, session["session_id"])
+        assert attachment_session is not None
+        attachment_session.expires_at = utc_now() - timedelta(minutes=1)
+        db.add(attachment_session)
+        db.commit()
+
+    expired_list = client.get(
+        "/api/v1/attachments",
+        params={"session_id": session["session_id"]},
+        headers={"X-Attachment-Session-Token": session["session_token"]},
+    )
+    assert expired_list.status_code == 401
+    assert expired_list.headers["cache-control"] == "no-store, private"
+    assert "X-Attachment-Session-Token" in expired_list.headers["vary"]
+
+    with get_container().session_factory() as db:
+        assert db.get(AttachmentSession, session["session_id"]) is None
+        remaining = db.query(Attachment).filter(Attachment.attachment_session_id == session["session_id"]).count()
+        assert remaining == 0
+
+
+def test_per_session_attachment_count_quota_is_enforced(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    monkeypatch.setattr(attachments_service, "MAX_ATTACHMENTS_PER_SESSION", 1)
+    monkeypatch.setattr(attachments_service, "MAX_TOTAL_BYTES_PER_SESSION", 10 * 1024 * 1024)
+    session = _issue_session(client)
+
+    first = client.post(
+        "/api/v1/attachments",
+        data={"session_id": session["session_id"]},
+        headers={"X-Attachment-Session-Token": session["session_token"]},
+        files={"file": ("a.txt", b"a", "text/plain")},
+    )
+    assert first.status_code == 201
+
+    second = client.post(
+        "/api/v1/attachments",
+        data={"session_id": session["session_id"]},
+        headers={"X-Attachment-Session-Token": session["session_token"]},
+        files={"file": ("b.txt", b"b", "text/plain")},
+    )
+    assert second.status_code == 409
+    assert second.json()["detail"] == "Attachment session file-count quota exceeded"
+
+
+def test_metadata_validation_rejects_overlong_filename_and_content_type(client: TestClient) -> None:
+    session = _issue_session(client)
+
+    long_filename = f"{'a' * 513}.txt"
+    filename_response = client.post(
+        "/api/v1/attachments",
+        data={"session_id": session["session_id"]},
+        headers={"X-Attachment-Session-Token": session["session_token"]},
+        files={"file": (long_filename, b"payload", "text/plain")},
+    )
+    assert filename_response.status_code == 422
+    assert "filename exceeds" in filename_response.json()["detail"]
+
+    long_content_type = "a" * 129
+    content_type_response = client.post(
+        "/api/v1/attachments",
+        data={"session_id": session["session_id"]},
+        headers={"X-Attachment-Session-Token": session["session_token"]},
+        files={"file": ("brief.txt", b"payload", long_content_type)},
+    )
+    assert content_type_response.status_code == 422
+    assert "content_type exceeds" in content_type_response.json()["detail"]
+
+
+def test_download_not_found_includes_private_cache_headers(client: TestClient) -> None:
+    session = _issue_session(client)
+    response = client.get(
+        "/api/v1/attachments/not-found/download",
+        params={"session_id": session["session_id"]},
+        headers={"X-Attachment-Session-Token": session["session_token"]},
+    )
+    assert response.status_code == 404
+    assert response.headers["cache-control"] == "no-store, private"
+    assert "X-Attachment-Session-Token" in response.headers["vary"]
