@@ -5,7 +5,8 @@ from pydantic import BaseModel
 
 class AttachmentResponse(BaseModel):
     id: str
-    user_id: str
+    session_kind: str
+    session_id: str
     filename: str
     content_type: str
     size_bytes: int

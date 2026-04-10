@@ -68,3 +68,28 @@ def test_attachments_migration_file_exists() -> None:
     assert 'down_revision = "20260410_01"' in source
     assert 'op.create_table("attachments"' in source
     assert 'op.create_index("ix_attachments_user_id", "attachments"' in source
+
+
+def test_attachment_session_scope_migration_contains_rekey_and_backfill_logic() -> None:
+    migration_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "20260410_03_rekey_attachments_to_session_scope.py"
+    )
+    source = migration_path.read_text(encoding="utf-8")
+    ast.parse(source)
+    assert 'revision = "20260410_03"' in source
+    assert 'down_revision = "20260410_02"' in source
+    assert "def upgrade() -> None:" in source
+    assert "def downgrade() -> None:" in source
+    assert "batch_op.add_column(sa.Column(\"session_kind\"" in source
+    assert "batch_op.add_column(sa.Column(\"session_id\"" in source
+    assert "UPDATE attachments SET session_kind = 'legacy_user', session_id = user_id" in source
+    assert "batch_op.drop_column(\"user_id\")" in source
+    assert "op.create_index(\"ix_attachments_session_context\", \"attachments\"" in source
+    assert "batch_op.add_column(sa.Column(\"user_id\"" in source
+    assert "UPDATE attachments SET user_id = COALESCE(user_id, session_id)" in source
+    assert "batch_op.drop_column(\"session_kind\")" in source
+    assert "batch_op.drop_column(\"session_id\")" in source
+    assert "op.create_index(\"ix_attachments_user_id\", \"attachments\"" in source

@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Enum, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Enum, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.domain.enums import (
@@ -357,9 +357,11 @@ class ChatPlan(Base):
 
 class Attachment(Base):
     __tablename__ = "attachments"
+    __table_args__ = (Index("ix_attachments_session_context", "session_kind", "session_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    session_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    session_id: Mapped[str] = mapped_column(String(128), nullable=False)
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
     content_type: Mapped[str] = mapped_column(String(128), nullable=False, default="application/octet-stream")
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
