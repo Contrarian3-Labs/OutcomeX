@@ -47,7 +47,7 @@ def test_primary_purchase_intent_rejects_out_of_stock(client: TestClient) -> Non
 
 - [ ] **Step 2: Run the new failing tests**
 
-Run: `cd /mnt/c/users/72988/desktop/OutcomeX/code/backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider code/backend/tests/api/test_primary_issuance_api.py -q`
+Run: `cd /mnt/c/users/72988/desktop/OutcomeX/code/backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider tests/api/test_primary_issuance_api.py -q`
 Expected: FAIL because the route, schema, and persistence model do not exist yet.
 
 - [ ] **Step 3: Add persistence models for stock and primary purchases**
@@ -118,7 +118,7 @@ class PrimaryIssuancePurchaseIntentResponse(BaseModel):
 
 - [ ] **Step 5: Run the targeted tests again**
 
-Run: `cd /mnt/c/users/72988/desktop/OutcomeX/code/backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider code/backend/tests/api/test_primary_issuance_api.py -q`
+Run: `cd /mnt/c/users/72988/desktop/OutcomeX/code/backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider tests/api/test_primary_issuance_api.py -q`
 Expected: still FAIL, but now only because the route implementation is missing.
 
 - [ ] **Step 6: Commit**
@@ -155,13 +155,29 @@ def test_primary_purchase_intent_creates_hsp_payment_and_purchase_record(client:
 
 
 def test_successful_hsp_webhook_decrements_stock_and_mints_once(client: TestClient) -> None:
-    # Arrange purchase intent first, then post a completed webhook twice.
-    ...
+    purchase = client.post(
+        "/api/v1/primary-issuance/skus/apple-96g-qwen/purchase-intent",
+        json={"buyer_user_id": "buyer-1", "buyer_wallet_address": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"},
+    ).json()
+
+    first = client.post(
+        "/api/v1/payments/hsp/webhooks",
+        headers={"x-signature": "test-signature"},
+        content=_completed_hsp_webhook_body(payment_request_id=purchase["provider_reference"]),
+    )
+    second = client.post(
+        "/api/v1/payments/hsp/webhooks",
+        headers={"x-signature": "test-signature"},
+        content=_completed_hsp_webhook_body(payment_request_id=purchase["provider_reference"]),
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
 ```
 
 - [ ] **Step 2: Run the tests to confirm they fail on missing route behavior**
 
-Run: `cd /mnt/c/users/72988/desktop/OutcomeX/code/backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider code/backend/tests/api/test_primary_issuance_api.py -q`
+Run: `cd /mnt/c/users/72988/desktop/OutcomeX/code/backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider tests/api/test_primary_issuance_api.py -q`
 Expected: FAIL because no route is mounted and no HSP branch updates purchase status.
 
 - [ ] **Step 3: Implement the primary issuance route module**
@@ -189,13 +205,23 @@ def create_primary_purchase_intent(
     if sku.stock_available <= 0:
         raise HTTPException(status_code=409, detail="Primary issuance SKU is out of stock")
     # create purchase row + HSP payment row via existing adapter path
-    ...
+    payment = Payment(
+        order_id=synthetic_order.id,
+        provider="hsp",
+        provider_reference=provider_reference,
+        merchant_order_id=purchase.id,
+        checkout_url=checkout_url,
+        amount_cents=390,
+        currency="USD",
+        state=PaymentState.PENDING,
+    )
+    purchase.payment_id = payment.id
 ```
 
 - [ ] **Step 4: Hook HSP success into stock decrement and machine mint**
 
 ```python
-def _finalize_primary_issuance_payment(...):
+def _finalize_primary_issuance_payment(purchase: PrimaryIssuancePurchase, sku: PrimaryIssuanceSku, *, lifecycle_service: OnchainLifecycleService, db: Session):
     if purchase.status in {"minted", "paid"}:
         return purchase
     sku.stock_available -= 1
@@ -219,7 +245,7 @@ If a helper service is needed, register it in `container.py` with the same setti
 
 - [ ] **Step 6: Run targeted backend tests**
 
-Run: `cd /mnt/c/users/72988/desktop/OutcomeX/code/backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider code/backend/tests/api/test_primary_issuance_api.py -q`
+Run: `cd /mnt/c/users/72988/desktop/OutcomeX/code/backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider tests/api/test_primary_issuance_api.py -q`
 Expected: PASS.
 
 - [ ] **Step 7: Run the broader backend suite for regressions**
@@ -245,8 +271,8 @@ git -C /mnt/c/users/72988/desktop/OutcomeX commit -m "feat: add primary issuance
 - [ ] **Step 1: Add failing seed tests for the richer local world**
 
 ```python
-def test_prepare_local_browser_demo_seeds_three_machines_and_two_active_listings(...):
-    result = run_prepare_demo(...)
+def test_prepare_local_browser_demo_seeds_three_machines_and_two_active_listings(run_prepare_demo) -> None:
+    result = run_prepare_demo()
     assert result.machine_count == 3
     assert result.active_listing_count == 2
     assert result.unlisted_machine_count == 1
@@ -255,7 +281,7 @@ def test_prepare_local_browser_demo_seeds_three_machines_and_two_active_listings
 
 - [ ] **Step 2: Run the failing seed tests**
 
-Run: `cd /mnt/c/users/72988/desktop/OutcomeX/code/backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider code/backend/tests/scripts/test_prepare_local_browser_demo.py -q`
+Run: `cd /mnt/c/users/72988/desktop/OutcomeX/code/backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider tests/scripts/test_prepare_local_browser_demo.py -q`
 Expected: FAIL because the script only seeds one machine and no primary SKU inventory.
 
 - [ ] **Step 3: Update the prepare script to seed the full demo world**
@@ -295,7 +321,7 @@ Seeded demo:
 
 - [ ] **Step 5: Run targeted tests**
 
-Run: `cd /mnt/c/users/72988/desktop/OutcomeX/code/backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider code/backend/tests/scripts/test_prepare_local_browser_demo.py code/backend/tests/api/test_marketplace_api.py -q`
+Run: `cd /mnt/c/users/72988/desktop/OutcomeX/code/backend && PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider tests/scripts/test_prepare_local_browser_demo.py tests/api/test_marketplace_api.py -q`
 Expected: PASS.
 
 - [ ] **Step 6: Smoke the seed manually**
@@ -334,7 +360,9 @@ it("renders a primary issuance section above secondary listings", async () => {
 })
 
 it("starts a primary purchase intent when the CTA is clicked", async () => {
-  ...
+  render(<NodeMarket />)
+  await userEvent.click(await screen.findByRole("button", { name: /Buy New Hosted Machine/i }))
+  expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/primary-issuance/skus/apple-96g-qwen/purchase-intent"), expect.anything())
 })
 ```
 
@@ -379,7 +407,7 @@ Expose:
 ```tsx
 <section>
   <h2>Primary Issuance</h2>
-  <PrimarySkuCard ... />
+  <PrimarySkuCard sku={primarySku} onPurchase={handlePrimaryPurchase} isPending={purchaseMutation.isPending} />
 </section>
 <section>
   <h2>Secondary Market</h2>
