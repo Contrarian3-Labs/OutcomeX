@@ -263,6 +263,8 @@ class PrimaryIssuancePurchase(Base):
     amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="USDC")
     state: Mapped[PaymentState] = mapped_column(Enum(PaymentState), default=PaymentState.CREATED, nullable=False)
+    stock_reserved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    stock_released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     callback_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     callback_state: Mapped[str | None] = mapped_column(String(64), nullable=True)
     callback_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

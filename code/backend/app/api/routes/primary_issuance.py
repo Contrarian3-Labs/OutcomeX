@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, get_dependency_container
@@ -68,6 +68,56 @@ def _normalize_hsp_tx_hash(raw_tx_hash: str | None) -> str | None:
     return normalized or None
 
 
+def _mark_primary_purchase_callback(*, purchase: PrimaryIssuancePurchase, event: HSPWebhookEvent) -> None:
+    purchase.callback_event_id = event.event_id
+    purchase.callback_state = event.status
+    purchase.callback_received_at = utc_now()
+    purchase.callback_tx_hash = _normalize_hsp_tx_hash(event.tx_hash)
+
+
+def _require_primary_success_tx_hash(event: HSPWebhookEvent) -> str:
+    normalized_tx_hash = _normalize_hsp_tx_hash(event.tx_hash)
+    if normalized_tx_hash is None or not normalized_tx_hash.startswith("0x"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Successful primary webhook must include tx signature",
+        )
+    return normalized_tx_hash
+
+
+def _assert_primary_tx_hash_not_reused(
+    *,
+    purchase: PrimaryIssuancePurchase,
+    normalized_tx_hash: str,
+    db: Session,
+) -> None:
+    reused_tx = db.scalar(
+        select(PrimaryIssuancePurchase.id).where(
+            PrimaryIssuancePurchase.id != purchase.id,
+            PrimaryIssuancePurchase.state == PaymentState.SUCCEEDED,
+            func.lower(PrimaryIssuancePurchase.callback_tx_hash) == normalized_tx_hash,
+        )
+    )
+    if reused_tx is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Primary tx signature already used by another purchase",
+        )
+
+
+def _release_primary_stock_reservation_if_needed(*, purchase: PrimaryIssuancePurchase, db: Session) -> None:
+    if not purchase.stock_reserved:
+        return
+    sku = db.get(PrimaryIssuanceSku, purchase.sku_id)
+    if sku is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Primary issuance SKU not found")
+    sku.stock_available += 1
+    purchase.stock_reserved = False
+    purchase.stock_released_at = utc_now()
+    db.add(sku)
+    db.add(purchase)
+
+
 def _resolve_primary_purchase_for_hsp_event(*, event: HSPWebhookEvent, db: Session) -> PrimaryIssuancePurchase | None:
     purchase = db.scalar(
         select(PrimaryIssuancePurchase).where(PrimaryIssuancePurchase.provider_reference == event.payment_request_id)
@@ -93,8 +143,8 @@ def _finalize_primary_purchase_success(
     if purchase.minted_machine_id is not None:
         return
 
-    if sku.stock_available <= 0:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Primary issuance stock exhausted")
+    if not purchase.stock_reserved:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Primary issuance stock not reserved")
 
     if not onchain_lifecycle.enabled():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Primary issuance mint unavailable")
@@ -124,10 +174,9 @@ def _finalize_primary_purchase_success(
 
     purchase.minted_machine_id = machine.id
     purchase.minted_onchain_machine_id = machine.onchain_machine_id
+    purchase.stock_reserved = False
     purchase.finalized_at = utc_now()
-    sku.stock_available -= 1
     db.add(purchase)
-    db.add(sku)
 
 
 def apply_primary_purchase_hsp_webhook(
@@ -153,11 +202,56 @@ def apply_primary_purchase_hsp_webhook(
     if event.currency != purchase.currency.upper():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="HSP webhook currency mismatch")
 
+    if mapped_state == PaymentState.SUCCEEDED:
+        normalized_tx_hash = _require_primary_success_tx_hash(event)
+        _assert_primary_tx_hash_not_reused(
+            purchase=purchase,
+            normalized_tx_hash=normalized_tx_hash,
+            db=db,
+        )
+        if purchase.state == PaymentState.SUCCEEDED:
+            _mark_primary_purchase_callback(purchase=purchase, event=event)
+            db.add(purchase)
+            return {
+                "purchase_id": purchase.id,
+                "state": purchase.state.value,
+                "duplicate": True,
+                "minted_machine_id": purchase.minted_machine_id,
+                "minted_onchain_machine_id": purchase.minted_onchain_machine_id,
+            }
+        if purchase.state in {PaymentState.FAILED, PaymentState.REFUNDED}:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Primary issuance purchase is already in terminal state",
+            )
+
+        purchase.state = PaymentState.SUCCEEDED
+        _mark_primary_purchase_callback(purchase=purchase, event=event)
+        db.add(purchase)
+        # Persist a success marker before minting so retries fail closed.
+        db.commit()
+        db.refresh(purchase)
+
+        sku = db.get(PrimaryIssuanceSku, purchase.sku_id)
+        if sku is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Primary issuance SKU not found")
+        _finalize_primary_purchase_success(
+            purchase=purchase,
+            sku=sku,
+            container=container,
+            onchain_lifecycle=onchain_lifecycle,
+            db=db,
+        )
+        return {
+            "purchase_id": purchase.id,
+            "state": purchase.state.value,
+            "duplicate": False,
+            "minted_machine_id": purchase.minted_machine_id,
+            "minted_onchain_machine_id": purchase.minted_onchain_machine_id,
+        }
+
     if purchase.state == PaymentState.SUCCEEDED:
-        purchase.callback_event_id = event.event_id
-        purchase.callback_state = event.status
-        purchase.callback_received_at = utc_now()
-        purchase.callback_tx_hash = _normalize_hsp_tx_hash(event.tx_hash)
+        _mark_primary_purchase_callback(purchase=purchase, event=event)
         db.add(purchase)
         return {
             "purchase_id": purchase.id,
@@ -170,23 +264,11 @@ def apply_primary_purchase_hsp_webhook(
     if purchase.state in {PaymentState.FAILED, PaymentState.REFUNDED} and purchase.state != mapped_state:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Primary issuance purchase is already in terminal state")
 
-    if mapped_state == PaymentState.SUCCEEDED:
-        sku = db.get(PrimaryIssuanceSku, purchase.sku_id)
-        if sku is None:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Primary issuance SKU not found")
-        _finalize_primary_purchase_success(
-            purchase=purchase,
-            sku=sku,
-            container=container,
-            onchain_lifecycle=onchain_lifecycle,
-            db=db,
-        )
+    if mapped_state in {PaymentState.FAILED, PaymentState.REFUNDED}:
+        _release_primary_stock_reservation_if_needed(purchase=purchase, db=db)
 
     purchase.state = mapped_state
-    purchase.callback_event_id = event.event_id
-    purchase.callback_state = event.status
-    purchase.callback_received_at = utc_now()
-    purchase.callback_tx_hash = _normalize_hsp_tx_hash(event.tx_hash)
+    _mark_primary_purchase_callback(purchase=purchase, event=event)
     db.add(purchase)
 
     return {
@@ -234,7 +316,10 @@ def create_primary_issuance_purchase_intent(
         amount_cents=sku.price_cents,
         currency=sku.currency,
         state=PaymentState.PENDING,
+        stock_reserved=True,
     )
+    sku.stock_available -= 1
+    db.add(sku)
     db.add(purchase)
     db.flush()
 

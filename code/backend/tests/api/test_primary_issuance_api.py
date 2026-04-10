@@ -104,6 +104,15 @@ def _webhook_payload(
     return payload
 
 
+def _create_purchase_intent(client: TestClient, *, buyer_user_id: str = "buyer-1") -> dict:
+    response = client.post(
+        "/api/v1/primary-issuance/skus/apple-silicon-96gb-qwen-family/purchase-intent",
+        json={"buyer_user_id": buyer_user_id},
+    )
+    assert response.status_code == 201
+    return response.json()
+
+
 def test_list_primary_issuance_skus_returns_fixed_catalog_with_stock(client: tuple[TestClient, SpyOnchainLifecycleService]) -> None:
     test_client, _spy_lifecycle = client
 
@@ -125,13 +134,7 @@ def test_create_primary_purchase_intent_persists_purchase_and_hsp_intent(
 ) -> None:
     test_client, _spy_lifecycle = client
 
-    response = test_client.post(
-        "/api/v1/primary-issuance/skus/apple-silicon-96gb-qwen-family/purchase-intent",
-        json={"buyer_user_id": "buyer-1"},
-    )
-
-    assert response.status_code == 201
-    payload = response.json()
+    payload = _create_purchase_intent(test_client)
     assert payload["sku_id"] == "apple-silicon-96gb-qwen-family"
     assert payload["buyer_user_id"] == "buyer-1"
     assert payload["state"] == PaymentState.PENDING.value
@@ -149,19 +152,31 @@ def test_create_primary_purchase_intent_persists_purchase_and_hsp_intent(
         assert purchase.minted_machine_id is None
         sku = session.get(PrimaryIssuanceSku, "apple-silicon-96gb-qwen-family")
         assert sku is not None
-        assert sku.stock_available == 10
+        assert sku.stock_available == 9
+
+
+def test_primary_purchase_intent_rejects_out_of_stock_after_reservations(
+    client: tuple[TestClient, SpyOnchainLifecycleService],
+) -> None:
+    test_client, _spy_lifecycle = client
+
+    for _ in range(10):
+        _create_purchase_intent(test_client)
+
+    exhausted = test_client.post(
+        "/api/v1/primary-issuance/skus/apple-silicon-96gb-qwen-family/purchase-intent",
+        json={"buyer_user_id": "buyer-1"},
+    )
+
+    assert exhausted.status_code == 409
+    assert exhausted.json()["detail"] == "Primary issuance stock exhausted"
 
 
 def test_successful_hsp_webhook_finalizes_primary_purchase_exactly_once(
     client: tuple[TestClient, SpyOnchainLifecycleService],
 ) -> None:
     test_client, spy_lifecycle = client
-    create_response = test_client.post(
-        "/api/v1/primary-issuance/skus/apple-silicon-96gb-qwen-family/purchase-intent",
-        json={"buyer_user_id": "buyer-1"},
-    )
-    assert create_response.status_code == 201
-    purchase = create_response.json()
+    purchase = _create_purchase_intent(test_client)
 
     payload = _webhook_payload(
         purchase,
@@ -208,3 +223,109 @@ def test_successful_hsp_webhook_finalizes_primary_purchase_exactly_once(
         assert minted_machine.onchain_machine_id == "9001"
 
     assert len(spy_lifecycle.mint_calls) == 1
+
+
+def test_failed_primary_hsp_webhook_releases_reserved_stock_exactly_once(
+    client: tuple[TestClient, SpyOnchainLifecycleService],
+) -> None:
+    test_client, _spy_lifecycle = client
+    purchase = _create_purchase_intent(test_client)
+    assert test_client.get("/api/v1/primary-issuance/skus").json()[0]["stock_available"] == 9
+
+    fail_payload = _webhook_payload(
+        purchase,
+        status="payment-failed",
+        request_id="evt-primary-failed-1",
+        tx_signature=None,
+    )
+    body, headers = _sign_payload(fail_payload)
+
+    first = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
+    assert first.status_code == 200
+    assert first.json()["state"] == PaymentState.FAILED.value
+    assert first.json()["duplicate"] is False
+
+    duplicate = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
+    assert duplicate.status_code == 200
+    assert duplicate.json()["state"] == PaymentState.FAILED.value
+    assert duplicate.json()["duplicate"] is True
+
+    assert test_client.get("/api/v1/primary-issuance/skus").json()[0]["stock_available"] == 10
+
+
+def test_primary_success_webhook_requires_tx_signature(
+    client: tuple[TestClient, SpyOnchainLifecycleService],
+) -> None:
+    test_client, _spy_lifecycle = client
+    purchase = _create_purchase_intent(test_client)
+    payload = _webhook_payload(
+        purchase,
+        status="payment-successful",
+        request_id="evt-primary-no-tx",
+        tx_signature=None,
+    )
+    body, headers = _sign_payload(payload)
+
+    response = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Successful primary webhook must include tx signature"
+
+
+def test_primary_success_webhook_rejects_reused_tx_hash(
+    client: tuple[TestClient, SpyOnchainLifecycleService],
+) -> None:
+    test_client, _spy_lifecycle = client
+    first_purchase = _create_purchase_intent(test_client)
+    second_purchase = _create_purchase_intent(test_client)
+
+    first_payload = _webhook_payload(
+        first_purchase,
+        status="payment-successful",
+        request_id="evt-primary-tx-1",
+        tx_signature="0xreusedtx",
+    )
+    first_body, first_headers = _sign_payload(first_payload)
+    first = test_client.post("/api/v1/payments/hsp/webhooks", content=first_body, headers=first_headers)
+    assert first.status_code == 200
+
+    second_payload = _webhook_payload(
+        second_purchase,
+        status="payment-successful",
+        request_id="evt-primary-tx-2",
+        tx_signature="0xreusedtx",
+    )
+    second_body, second_headers = _sign_payload(second_payload)
+    second = test_client.post("/api/v1/payments/hsp/webhooks", content=second_body, headers=second_headers)
+
+    assert second.status_code == 409
+    assert second.json()["detail"] == "Primary tx signature already used by another purchase"
+
+
+def test_primary_success_retry_with_new_event_does_not_remint_after_success_marker(
+    client: tuple[TestClient, SpyOnchainLifecycleService],
+) -> None:
+    test_client, spy_lifecycle = client
+    purchase = _create_purchase_intent(test_client)
+
+    with get_container().session_factory() as session:
+        persisted = session.get(PrimaryIssuancePurchase, purchase["purchase_id"])
+        assert persisted is not None
+        persisted.state = PaymentState.SUCCEEDED
+        persisted.callback_event_id = "evt-initial-success"
+        session.add(persisted)
+        session.commit()
+
+    retry_payload = _webhook_payload(
+        purchase,
+        status="payment-successful",
+        request_id="evt-primary-retry-success",
+        tx_signature="0xretrynewtx",
+    )
+    retry_body, retry_headers = _sign_payload(retry_payload)
+    retry = test_client.post("/api/v1/payments/hsp/webhooks", content=retry_body, headers=retry_headers)
+
+    assert retry.status_code == 200
+    assert retry.json()["duplicate"] is True
+    assert retry.json()["minted_machine_id"] is None
+    assert len(spy_lifecycle.mint_calls) == 0
