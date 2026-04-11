@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.domain.enums import OrderState, PaymentState, SettlementState
-from app.domain.models import Order, RevenueEntry, SettlementClaimRecord, SettlementRecord
+from app.domain.models import Order, Payment, RevenueEntry, SettlementClaimRecord, SettlementRecord
 
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
@@ -18,6 +18,7 @@ class OrderRefundClaimProjection:
     refundable_cents: int
     claimed_cents: int
     claimable_cents: int
+    pwr_anchor_price_cents: int | None = None
 
 
 @dataclass(frozen=True)
@@ -62,7 +63,11 @@ def project_order_refund_claim(*, order: Order, db: Session) -> OrderRefundClaim
         )
         if candidate_currency != currency:
             continue
-        refundable_cents = _refund_due_cents(settlement)
+        refundable_cents, pwr_anchor_price_cents = _project_refundable_cents_for_order(
+            order=candidate_order,
+            settlement=settlement,
+            db=db,
+        )
         if refundable_cents <= 0:
             continue
 
@@ -73,6 +78,7 @@ def project_order_refund_claim(*, order: Order, db: Session) -> OrderRefundClaim
                 refundable_cents=refundable_cents,
                 claimed_cents=allocated_cents,
                 claimable_cents=max(0, refundable_cents - allocated_cents),
+                pwr_anchor_price_cents=pwr_anchor_price_cents,
             )
         remaining_claimed = max(0, remaining_claimed - refundable_cents)
 
@@ -152,6 +158,40 @@ def project_platform_revenue_overview(*, currency: str, db: Session) -> tuple[in
         if _claim_record_matches_currency(record.token_address, normalized_currency)
     )
     return projected_cents, claimed_cents
+
+
+def _latest_success_payment(*, order_id: str, db: Session) -> Payment | None:
+    return db.scalar(
+        select(Payment)
+        .where(Payment.order_id == order_id, Payment.state == PaymentState.SUCCEEDED)
+        .order_by(Payment.created_at.desc(), Payment.id.desc())
+        .limit(1)
+    )
+
+
+def _pwr_payment_terms(payment: Payment | None) -> tuple[int | None, int | None]:
+    if payment is None or payment.currency.upper() != "PWR":
+        return None, None
+    payload = dict(payment.provider_payload or {})
+    direct_payload = dict(payload.get("direct_intent_payload") or {})
+    raw_amount = direct_payload.get("pwr_amount")
+    raw_anchor = direct_payload.get("pwr_anchor_price_cents")
+    if raw_amount is None or raw_anchor in {None, 0}:
+        return None, None
+    try:
+        return int(str(raw_amount)), int(raw_anchor)
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _project_refundable_cents_for_order(*, order: Order, settlement: SettlementRecord, db: Session) -> tuple[int, int | None]:
+    currency = order.latest_success_payment_currency.upper() if order.latest_success_payment_currency else None
+    if currency != "PWR":
+        return _refund_due_cents(settlement), None
+
+    payment = _latest_success_payment(order_id=order.id, db=db)
+    _pwr_amount_wei, pwr_anchor_price_cents = _pwr_payment_terms(payment)
+    return _refund_due_cents(settlement), pwr_anchor_price_cents
 
 
 def _refund_due_cents(settlement: SettlementRecord) -> int:

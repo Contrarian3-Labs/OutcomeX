@@ -90,8 +90,9 @@ def test_execution_service_submit_and_poll_reads_run_record(tmp_path: Path) -> N
     assert snapshot.plan_candidates == ()
     assert snapshot.dag is None
     assert snapshot.active_node_id is None
-    assert snapshot.logs_root_path is None
-    assert snapshot.log_files == ()
+    assert snapshot.logs_root_path == "/tmp/run-dir/logs"
+    assert snapshot.log_files
+    assert snapshot.log_files[0]["name"] == "planner.log"
     assert snapshot.event_cursor == 0
     assert snapshot.stalled is False
     assert snapshot.stalled_reason is None

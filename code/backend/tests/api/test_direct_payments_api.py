@@ -17,8 +17,9 @@ class SpyOrderWriter:
         self.create_calls: list[dict] = []
         self.mark_paid_calls: list[dict] = []
 
-    def create_order(self, order, *, buyer_wallet_address):
-        self.create_calls.append({"order_id": order.id, "buyer_wallet_address": buyer_wallet_address})
+    def create_order(self, order, *, buyer_wallet_address, gross_amount_override=None):
+        gross_amount = order.quoted_amount_cents if gross_amount_override is None else gross_amount_override
+        self.create_calls.append({"order_id": order.id, "buyer_wallet_address": buyer_wallet_address, "gross_amount": gross_amount})
         return OrderWriteResult(
             tx_hash="0xcreateorder",
             submitted_at=order.created_at,
@@ -30,7 +31,7 @@ class SpyOrderWriter:
             payload={
                 "buyer": buyer_wallet_address,
                 "machine_id": order.machine_id,
-                "gross_amount": order.quoted_amount_cents,
+                "gross_amount": gross_amount,
             },
         )
 
@@ -289,7 +290,8 @@ def test_create_direct_payment_intent_supports_pwr_when_anchor_exists(
     assert payload["submit_payload"]["value"] == "0x0"
     assert payload["submit_payload"]["currency"] == "PWR"
     assert payload["submit_payload"]["order_id"] is not None
-    assert payload["submit_payload"]["pwr_amount"] == "36000000000000000000"
+    assert payload["submit_payload"]["pwr_amount"] == "40000000000000000000"
+    assert _spy_writer.create_calls[-1]["gross_amount"] == 40_000_000_000_000_000_000
     assert payload["quote"]["pwr_anchor_price_cents"] == 25
     anchored_order = test_client.get(f"/api/v1/orders/{order['id']}").json()
     assert anchored_order["onchain_order_id"] is not None

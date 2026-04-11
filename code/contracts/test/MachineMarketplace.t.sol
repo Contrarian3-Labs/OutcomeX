@@ -37,8 +37,8 @@ contract MachineMarketplaceTest is TestBase {
         usdt = new MockUSDT();
         pwr = new PWRToken(ADMIN);
         machineAsset = new MachineAssetNFT(ADMIN);
-        revenueVault = new RevenueVault(ADMIN, address(pwr), address(machineAsset));
-        settlement = new SettlementController(ADMIN, address(revenueVault), PLATFORM_TREASURY);
+        revenueVault = new RevenueVault(ADMIN, address(pwr), address(machineAsset), 25);
+        settlement = new SettlementController(ADMIN, address(revenueVault), address(pwr), PLATFORM_TREASURY);
         orderBook = new OrderBook(ADMIN, address(machineAsset));
 
         address[] memory supportedTokens = new address[](2);

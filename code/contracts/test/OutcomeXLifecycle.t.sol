@@ -31,6 +31,7 @@ contract OutcomeXLifecycleTest is TestBase {
     address internal constant BUYER = address(0xB0B);
     address internal constant BUYER_TWO = address(0xB0C);
     address internal constant RECEIVER = address(0xD00D);
+    uint256 internal constant PWR_ANCHOR_PRICE_CENTS = 25;
 
     PWRToken internal pwr;
     MachineAssetNFT internal machineAsset;
@@ -40,11 +41,15 @@ contract OutcomeXLifecycleTest is TestBase {
 
     uint256 internal machineId;
 
+    function _pwrWeiForCents(uint256 amountCents) internal pure returns (uint256) {
+        return (amountCents * 1 ether) / PWR_ANCHOR_PRICE_CENTS;
+    }
+
     function setUp() public {
         pwr = new PWRToken(ADMIN);
         machineAsset = new MachineAssetNFT(ADMIN);
-        revenueVault = new RevenueVault(ADMIN, address(pwr), address(machineAsset));
-        settlement = new SettlementController(ADMIN, address(revenueVault), PLATFORM_TREASURY);
+        revenueVault = new RevenueVault(ADMIN, address(pwr), address(machineAsset), 25);
+        settlement = new SettlementController(ADMIN, address(revenueVault), address(pwr), PLATFORM_TREASURY);
         orderBook = new OrderBook(ADMIN, address(machineAsset));
 
         vm.startPrank(ADMIN);
@@ -75,7 +80,7 @@ contract OutcomeXLifecycleTest is TestBase {
         OrderRecord memory order = orderBook.getOrder(orderId);
         assertEq(uint256(order.status), uint256(OrderStatus.Confirmed), "expected confirmed status");
         assertEq(settlement.platformAccruedUSDT(), 100, "platform should receive 10%");
-        assertEq(revenueVault.unsettledRevenueByMachine(machineId), 900, "machine side should receive 90%");
+        assertEq(revenueVault.unsettledRevenueByMachine(machineId), _pwrWeiForCents(900), "machine side should receive anchored PWR");
 
         vm.startPrank(MACHINE_OWNER);
         vm.expectRevert(
@@ -85,11 +90,11 @@ contract OutcomeXLifecycleTest is TestBase {
         vm.stopPrank();
 
         vm.expectEmit(true, true, false, true, address(revenueVault));
-        emit MachineRevenueClaimedDetailed(machineId, MACHINE_OWNER, 900, 0, 0);
+        emit MachineRevenueClaimedDetailed(machineId, MACHINE_OWNER, _pwrWeiForCents(900), 0, 0);
         vm.prank(MACHINE_OWNER);
         uint256 claimed = revenueVault.claim(machineId);
-        assertEq(claimed, 900, "machine owner claim mismatch");
-        assertEq(pwr.balanceOf(MACHINE_OWNER), 900, "PWR balance mismatch");
+        assertEq(claimed, _pwrWeiForCents(900), "machine owner claim mismatch");
+        assertEq(pwr.balanceOf(MACHINE_OWNER), _pwrWeiForCents(900), "PWR balance mismatch");
 
         vm.prank(MACHINE_OWNER);
         machineAsset.transferFrom(MACHINE_OWNER, RECEIVER, machineId);
@@ -119,7 +124,7 @@ contract OutcomeXLifecycleTest is TestBase {
         assertEq(uint256(order.status), uint256(OrderStatus.Rejected), "expected rejected status");
         assertEq(settlement.refundableUSDT(BUYER), 700, "buyer refund should be 70%");
         assertEq(settlement.platformAccruedUSDT(), 30, "platform share should be 3%");
-        assertEq(revenueVault.unsettledRevenueByMachine(machineId), 270, "machine share should be 27%");
+        assertEq(revenueVault.unsettledRevenueByMachine(machineId), _pwrWeiForCents(270), "machine share should be 27% in anchored PWR");
 
         vm.expectEmit(true, true, false, true, address(settlement));
         emit RefundClaimedDetailed(BUYER, address(0), 700, 0);
@@ -128,11 +133,11 @@ contract OutcomeXLifecycleTest is TestBase {
         assertEq(buyerClaimed, 700, "refund claim mismatch");
 
         vm.expectEmit(true, true, false, true, address(revenueVault));
-        emit MachineRevenueClaimedDetailed(machineId, MACHINE_OWNER, 270, 0, 0);
+        emit MachineRevenueClaimedDetailed(machineId, MACHINE_OWNER, _pwrWeiForCents(270), 0, 0);
         vm.prank(MACHINE_OWNER);
         uint256 machineClaimed = revenueVault.claim(machineId);
-        assertEq(machineClaimed, 270, "machine claim mismatch");
-        assertEq(pwr.balanceOf(MACHINE_OWNER), 270, "machine PWR mismatch");
+        assertEq(machineClaimed, _pwrWeiForCents(270), "machine claim mismatch");
+        assertEq(pwr.balanceOf(MACHINE_OWNER), _pwrWeiForCents(270), "machine PWR mismatch");
     }
 
     function testRefundWhenNoValidPreviewAndActiveTaskGuard() public {
@@ -240,7 +245,7 @@ contract OutcomeXLifecycleTest is TestBase {
         vm.prank(BUYER);
         orderBook.confirmResult(orderId);
 
-        assertEq(revenueVault.claimableByMachineOwner(machineId, MACHINE_OWNER), 900, "snapshot owner should accrue claim");
+        assertEq(revenueVault.claimableByMachineOwner(machineId, MACHINE_OWNER), _pwrWeiForCents(900), "snapshot owner should accrue anchored claim");
         assertEq(revenueVault.claimableByMachineOwner(machineId, RECEIVER), 0, "new owner should not accrue old order");
 
         vm.startPrank(RECEIVER);
@@ -252,7 +257,7 @@ contract OutcomeXLifecycleTest is TestBase {
 
         vm.prank(MACHINE_OWNER);
         uint256 claimed = revenueVault.claim(machineId);
-        assertEq(claimed, 900, "snapshot owner claim mismatch");
+        assertEq(claimed, _pwrWeiForCents(900), "snapshot owner claim mismatch");
 
         vm.prank(RECEIVER);
         machineAsset.transferFrom(RECEIVER, BUYER_TWO, machineId);

@@ -27,11 +27,17 @@ class OrderWriter:
     def __init__(self, contracts_registry: ContractsRegistry | None = None) -> None:
         self._contracts_registry = contracts_registry or ContractsRegistry()
 
-    def create_order(self, order: Order, *, buyer_wallet_address: str) -> OrderWriteResult:
+    def create_order(
+        self,
+        order: Order,
+        *,
+        buyer_wallet_address: str,
+        gross_amount_override: int | None = None,
+    ) -> OrderWriteResult:
         payload = {
             "buyer": buyer_wallet_address.lower(),
             "machine_id": self._chain_machine_id(order),
-            "gross_amount": order.quoted_amount_cents,
+            "gross_amount": order.quoted_amount_cents if gross_amount_override is None else gross_amount_override,
         }
         return self._submit_to_target(
             self._contracts_registry.payment_router(),

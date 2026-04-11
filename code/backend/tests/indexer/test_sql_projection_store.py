@@ -25,6 +25,12 @@ from app.indexer.events import (
 )
 from app.indexer.sql_projection import SqlProjectionStore
 
+PWR_ANCHOR_PRICE_CENTS = 25
+
+
+def _pwr_wei_for_cents(amount_cents: int) -> int:
+    return (amount_cents * 10**18) // PWR_ANCHOR_PRICE_CENTS
+
 
 def _event(
     *,
@@ -516,7 +522,7 @@ def test_sql_projection_records_machine_claim_from_revenue_claimed_event() -> No
             payload=RevenueClaimedEvent(
                 machine_id="7",
                 account="0xowner",
-                amount_wei=900,
+                amount_wei=_pwr_wei_for_cents(900),
                 claim_nonce=None,
                 claim_kind="machine_revenue",
                 remaining_claimable_wei=0,
@@ -559,11 +565,11 @@ def test_sql_projection_keeps_machine_locked_when_claim_event_reports_remaining_
             payload=RevenueClaimedEvent(
                 machine_id="7",
                 account="0xowner",
-                amount_wei=400,
+                amount_wei=_pwr_wei_for_cents(400),
                 claim_nonce=None,
                 claim_kind="machine_revenue",
                 remaining_claimable_wei=0,
-                remaining_unsettled_wei=500,
+                remaining_unsettled_wei=_pwr_wei_for_cents(500),
             ),
         )
     )

@@ -17,6 +17,7 @@ contract SettlementController is Ownable {
     uint256 public constant VALID_PREVIEW_REJECT_REFUND_BPS = 7_000;
 
     IRevenueVault public immutable revenueVault;
+    address public immutable pwrToken;
 
     address public orderBook;
     address public platformTreasury;
@@ -47,8 +48,10 @@ contract SettlementController is Ownable {
         address indexed treasury, address indexed token, uint256 amount, uint256 remainingPlatformAccruedAfter
     );
 
-    constructor(address initialOwner, address revenueVaultAddress, address initialTreasury) Ownable(initialOwner) {
+    constructor(address initialOwner, address revenueVaultAddress, address pwrTokenAddress, address initialTreasury) Ownable(initialOwner) {
+        require(pwrTokenAddress != address(0), "ZERO_PWR_TOKEN");
         revenueVault = IRevenueVault(revenueVaultAddress);
+        pwrToken = pwrTokenAddress;
         platformTreasury = initialTreasury;
     }
 
@@ -114,7 +117,8 @@ contract SettlementController is Ownable {
                 input.settlementBeneficiary,
                 input.orderId,
                 breakdown.machineShare,
-                breakdown.dividendEligible
+                breakdown.dividendEligible,
+                input.paymentToken == pwrToken
             );
         }
 

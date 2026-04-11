@@ -7,7 +7,8 @@ interface IRevenueVault {
         address machineOwner,
         uint256 orderId,
         uint256 amount,
-        bool dividendEligible
+        bool dividendEligible,
+        bool amountIsPwrWei
     ) external;
 
     function hasUnsettledRevenue(uint256 machineId) external view returns (bool);

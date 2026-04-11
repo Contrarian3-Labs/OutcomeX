@@ -55,7 +55,7 @@ def test_quote_for_order_amount_has_deterministic_split_math() -> None:
     assert quote.official_quote_cents == 1000
     assert quote.platform_fee_cents == 100
     assert quote.machine_share_cents == 900
-    assert quote.pwr_quote == "36.0000"
+    assert quote.pwr_quote == "40.0000"
 
 
 def test_quote_for_order_amount_exposes_pwr_anchor_metadata() -> None:
@@ -63,7 +63,7 @@ def test_quote_for_order_amount_exposes_pwr_anchor_metadata() -> None:
 
     quote = service.quote_for_order_amount(1000)
 
-    assert quote.pwr_quote == "36.0000"
+    assert quote.pwr_quote == "40.0000"
     assert quote.pwr_anchor_price_cents == 25
     assert quote.pricing_version == "phase1_v3"
 
@@ -110,7 +110,7 @@ def test_chat_plan_and_payment_intent_expose_quote_outputs(client: TestClient) -
         "official_quote_cents": 1250,
         "platform_fee_cents": 125,
         "machine_share_cents": 1125,
-        "pwr_quote": "45.0000",
+        "pwr_quote": "50.0000",
         "pwr_anchor_price_cents": 25,
         "currency": "USD",
         "pricing_version": "phase1_v3",

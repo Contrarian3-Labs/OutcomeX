@@ -58,6 +58,8 @@ def _seed_refundable_order(
     gross_amount_cents: int = 1000,
     platform_fee_cents: int = 100,
     machine_share_cents: int = 200,
+    payment_currency: str = "USDC",
+    provider_payload: dict | None = None,
     created_at: datetime | None = None,
 ) -> str:
     container = get_container()
@@ -91,7 +93,8 @@ def _seed_refundable_order(
             order_id=order.id,
             provider="onchain_router",
             amount_cents=gross_amount_cents,
-            currency="USDC",
+            currency=payment_currency,
+            provider_payload=provider_payload,
             state=PaymentState.SUCCEEDED,
         )
         settlement = SettlementRecord(
@@ -194,3 +197,32 @@ def test_available_actions_projects_refund_claims_per_order_fifo(client) -> None
     assert older_payload["refund_claim_amount_cents"] == 0
     assert newer_payload["can_claim_refund"] is True
     assert newer_payload["refund_claim_amount_cents"] == 500
+
+
+def test_available_actions_uses_frozen_pwr_quote_for_pwr_refund_projection(client) -> None:
+    test_client, _ = client
+    order_id = _seed_refundable_order(
+        order_id="order-pwr",
+        payment_id="payment-pwr",
+        settlement_id="settlement-pwr",
+        onchain_order_id="99",
+        gross_amount_cents=1000,
+        platform_fee_cents=30,
+        machine_share_cents=270,
+        payment_currency="PWR",
+        provider_payload={
+            "direct_intent_payload": {
+                "pwr_amount": str(36 * 10**18),
+                "pwr_anchor_price_cents": 25,
+            }
+        },
+    )
+
+    response = test_client.get(f"/api/v1/orders/{order_id}/available-actions")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["can_claim_refund"] is True
+    assert payload["refund_claim_currency"] == "PWR"
+    assert payload["refund_claim_amount_cents"] == 700
+    assert payload["refund_claim_pwr_anchor_price_cents"] == 25

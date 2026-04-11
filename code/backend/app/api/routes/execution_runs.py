@@ -17,7 +17,7 @@ from app.api.execution_contract import (
     build_selected_plan_payload,
     merge_submission_payload,
 )
-from app.domain.enums import ExecutionRunStatus, ExecutionState
+from app.domain.enums import ExecutionRunStatus, ExecutionState, OrderState
 from app.domain.models import ExecutionRun, Order
 from app.execution.observability import (
     list_log_files,
@@ -190,6 +190,43 @@ def _build_artifact_archive(snapshot, fallback_run_dir: str | None, archive_name
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact files are unavailable")
     buffer.seek(0)
     return buffer.getvalue(), archive_name
+
+
+def _resolve_preview_manifest_paths(snapshot) -> set[str]:
+    paths: set[str] = set()
+    for item in getattr(snapshot, "preview_manifest", ()) or ():
+        if isinstance(item, dict) and item.get("path"):
+            paths.add(str(item.get("path")))
+    return paths
+
+
+def _outputs_unlocked(order: Order | None) -> bool:
+    if order is None:
+        return True
+    if order.result_confirmed_at is not None:
+        return True
+    return order.state == OrderState.RESULT_CONFIRMED
+
+
+def _assert_order_output_access(
+    *,
+    order: Order | None,
+    snapshot,
+    relative_path: str | None = None,
+    inline_preview: bool = False,
+) -> None:
+    if _outputs_unlocked(order):
+        return
+
+    if inline_preview and relative_path:
+        preview_paths = _resolve_preview_manifest_paths(snapshot)
+        if relative_path in preview_paths:
+            return
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Outputs unlock after result confirmation",
+    )
 
 
 def _resolve_runtime_event_cursor(snapshot) -> int:
@@ -487,13 +524,23 @@ def stream_execution_run_events(
 def read_execution_run_artifact_file(
     run_id: str,
     path: str = Query(min_length=1),
+    inline_preview: bool = Query(default=False),
     db: Session = Depends(get_db),
     execution_service=Depends(get_agentskillos_execution_service),
 ):
     run = _get_run_or_404(db, run_id)
     snapshot = execution_service.get_run(run_id)
+    order = db.get(Order, run.order_id) if run.order_id else None
+    _assert_order_output_access(order=order, snapshot=snapshot, relative_path=path, inline_preview=inline_preview)
     candidate = _resolve_artifact_source_path(snapshot, run.run_dir, path)
     media_type, _ = guess_type(candidate.name)
+    if inline_preview and (media_type or "").startswith("image/"):
+        return FileResponse(candidate, media_type=media_type or "application/octet-stream", filename=candidate.name)
+    if inline_preview:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only image preview is available before confirmation",
+        )
     return FileResponse(candidate, media_type=media_type or "application/octet-stream", filename=candidate.name)
 
 
@@ -505,6 +552,8 @@ def download_execution_run_artifact_archive(
 ):
     run = _get_run_or_404(db, run_id)
     snapshot = execution_service.get_run(run_id)
+    order = db.get(Order, run.order_id) if run.order_id else None
+    _assert_order_output_access(order=order, snapshot=snapshot)
     archive_bytes, archive_name = _build_artifact_archive(snapshot, run.run_dir, f"execution-run-{run_id}-outputs.zip")
     headers = {"Content-Disposition": f'attachment; filename="{archive_name}"'}
     return StreamingResponse(iter([archive_bytes]), media_type="application/zip", headers=headers)

@@ -39,7 +39,9 @@ from app.onchain.lifecycle_service import (  # noqa: E402
 )
 
 TARGET_BUYER_USER_ID = "buyer-1"
-TARGET_BUYER_PWR = 100 * 10**18
+TARGET_BUYER_NATIVE = 10_000 * 10**18
+TARGET_BUYER_PWR = 10_000 * 10**18
+TARGET_BUYER_STABLE = 10_000 * 10**6
 PRIMARY_ISSUANCE_INITIAL_STOCK = PRIMARY_ISSUANCE_DEFAULT_STOCK
 LOCAL_DEMO_WALLET_FALLBACKS = {
     "buyer-1": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
@@ -106,7 +108,7 @@ DEMO_ACTIVE_LISTING_SEEDS = (
     ),
 )
 
-PWR_ABI = [
+ERC20_ABI = [
     {
         "type": "function",
         "name": "balanceOf",
@@ -123,6 +125,16 @@ PWR_ABI = [
             {"name": "amount", "type": "uint256"},
         ],
         "outputs": [{"name": "", "type": "bool"}],
+    },
+    {
+        "type": "function",
+        "name": "mint",
+        "stateMutability": "nonpayable",
+        "inputs": [
+            {"name": "to", "type": "address"},
+            {"name": "amount", "type": "uint256"},
+        ],
+        "outputs": [],
     },
 ]
 ERC721_APPROVAL_ABI = [
@@ -174,7 +186,7 @@ def _web3(rpc_url: str) -> Web3:
     return web3
 
 
-def _fund_buyer_with_pwr(*, web3: Web3, settings, resolver: BuyerAddressResolver) -> tuple[str, int]:
+def _ensure_native_balance(*, web3: Web3, settings, resolver: BuyerAddressResolver) -> tuple[str, int]:
     buyer = resolver.resolve_wallet(TARGET_BUYER_USER_ID)
     if buyer is None:
         raise RuntimeError("buyer_wallet_unresolved")
@@ -182,19 +194,52 @@ def _fund_buyer_with_pwr(*, web3: Web3, settings, resolver: BuyerAddressResolver
     if not admin_key:
         raise RuntimeError("admin_private_key_missing")
 
-    contract = web3.eth.contract(
-        address=Web3.to_checksum_address(settings.onchain_pwr_token_address),
-        abi=PWR_ABI,
-    )
-    current_balance = int(contract.functions.balanceOf(Web3.to_checksum_address(buyer)).call())
-    if current_balance >= TARGET_BUYER_PWR:
+    buyer_checksum = Web3.to_checksum_address(buyer)
+    current_balance = int(web3.eth.get_balance(buyer_checksum))
+    if current_balance >= TARGET_BUYER_NATIVE:
         return "already_funded", current_balance
 
     admin = web3.eth.account.from_key(admin_key)
-    tx = contract.functions.transfer(
-        Web3.to_checksum_address(buyer),
-        TARGET_BUYER_PWR - current_balance,
-    ).build_transaction(
+    value = TARGET_BUYER_NATIVE - current_balance
+    tx = {
+        "from": admin.address,
+        "to": buyer_checksum,
+        "value": value,
+        "nonce": web3.eth.get_transaction_count(admin.address, "pending"),
+        "chainId": settings.onchain_chain_id,
+        "gasPrice": web3.eth.gas_price,
+    }
+    tx["gas"] = web3.eth.estimate_gas(tx)
+    signed = admin.sign_transaction(tx)
+    tx_hash = web3.eth.send_raw_transaction(signed.raw_transaction)
+    receipt = web3.eth.wait_for_transaction_receipt(tx_hash, timeout=max(15, int(settings.onchain_tx_timeout_seconds)))
+    if receipt.status != 1:
+        raise RuntimeError(f"native_funding_failed:{tx_hash.hex()}")
+    new_balance = int(web3.eth.get_balance(buyer_checksum))
+    return tx_hash.hex(), new_balance
+
+
+def _ensure_erc20_balance(*, web3: Web3, settings, token_address: str, resolver: BuyerAddressResolver, target_balance: int, method: str) -> tuple[str, int]:
+    buyer = resolver.resolve_wallet(TARGET_BUYER_USER_ID)
+    if buyer is None:
+        raise RuntimeError("buyer_wallet_unresolved")
+    admin_key = settings.onchain_broadcaster_private_key.strip()
+    if not admin_key:
+        raise RuntimeError("admin_private_key_missing")
+
+    buyer_checksum = Web3.to_checksum_address(buyer)
+    contract = web3.eth.contract(
+        address=Web3.to_checksum_address(token_address),
+        abi=ERC20_ABI,
+    )
+    current_balance = int(contract.functions.balanceOf(buyer_checksum).call())
+    if current_balance >= target_balance:
+        return "already_funded", current_balance
+
+    admin = web3.eth.account.from_key(admin_key)
+    amount = target_balance - current_balance
+    fn = getattr(contract.functions, method)
+    tx = fn(buyer_checksum, amount).build_transaction(
         {
             "from": admin.address,
             "nonce": web3.eth.get_transaction_count(admin.address, "pending"),
@@ -207,9 +252,43 @@ def _fund_buyer_with_pwr(*, web3: Web3, settings, resolver: BuyerAddressResolver
     tx_hash = web3.eth.send_raw_transaction(signed.raw_transaction)
     receipt = web3.eth.wait_for_transaction_receipt(tx_hash, timeout=max(15, int(settings.onchain_tx_timeout_seconds)))
     if receipt.status != 1:
-        raise RuntimeError(f"pwr_funding_failed:{tx_hash.hex()}")
-    new_balance = int(contract.functions.balanceOf(Web3.to_checksum_address(buyer)).call())
+        raise RuntimeError(f"erc20_funding_failed:{method}:{tx_hash.hex()}")
+    new_balance = int(contract.functions.balanceOf(buyer_checksum).call())
     return tx_hash.hex(), new_balance
+
+
+def _fund_buyer_balances(*, web3: Web3, settings, resolver: BuyerAddressResolver) -> dict[str, dict[str, int | str]]:
+    native_tx, native_balance = _ensure_native_balance(web3=web3, settings=settings, resolver=resolver)
+    pwr_tx, pwr_balance = _ensure_erc20_balance(
+        web3=web3,
+        settings=settings,
+        token_address=settings.onchain_pwr_token_address,
+        resolver=resolver,
+        target_balance=TARGET_BUYER_PWR,
+        method="transfer",
+    )
+    usdc_tx, usdc_balance = _ensure_erc20_balance(
+        web3=web3,
+        settings=settings,
+        token_address=settings.onchain_usdc_address,
+        resolver=resolver,
+        target_balance=TARGET_BUYER_STABLE,
+        method="mint",
+    )
+    usdt_tx, usdt_balance = _ensure_erc20_balance(
+        web3=web3,
+        settings=settings,
+        token_address=settings.onchain_usdt_address,
+        resolver=resolver,
+        target_balance=TARGET_BUYER_STABLE,
+        method="mint",
+    )
+    return {
+        "hsk": {"balance": native_balance, "tx": native_tx},
+        "pwr": {"balance": pwr_balance, "tx": pwr_tx},
+        "usdc": {"balance": usdc_balance, "tx": usdc_tx},
+        "usdt": {"balance": usdt_balance, "tx": usdt_tx},
+    }
 
 
 def _resolve_wallet_or_raise(*, resolver: BuyerAddressResolver, user_id: str) -> str:
@@ -522,7 +601,7 @@ def seed_demo_projection_state(*, settings, container, resolver: BuyerAddressRes
     }
 
 
-def format_seed_report(*, seeded: dict[str, object], buyer_balance: int, funding_tx: str) -> str:
+def format_seed_report(*, seeded: dict[str, object], buyer_balances: dict[str, dict[str, int | str]]) -> str:
     lines = [
         "Prepared local browser demo:",
         f"- buyer_user_id={seeded['buyer_user_id']}",
@@ -547,8 +626,16 @@ def format_seed_report(*, seeded: dict[str, object], buyer_balance: int, funding
             f"price_units={listing['price_units']}"
         )
     lines.append(f"- primary_issuance_stock={seeded['primary_issuance_stock']}")
-    lines.append(f"- buyer_pwr_balance_wei={buyer_balance}")
-    lines.append(f"- pwr_funding_tx={funding_tx}")
+    lines.append("- buyer_balances:")
+    lines.append(f"  - hsk_wei={buyer_balances['hsk']['balance']}")
+    lines.append(f"  - pwr_wei={buyer_balances['pwr']['balance']}")
+    lines.append(f"  - usdc_units={buyer_balances['usdc']['balance']}")
+    lines.append(f"  - usdt_units={buyer_balances['usdt']['balance']}")
+    lines.append("- funding_txs:")
+    lines.append(f"  - hsk={buyer_balances['hsk']['tx']}")
+    lines.append(f"  - pwr={buyer_balances['pwr']['tx']}")
+    lines.append(f"  - usdc={buyer_balances['usdc']['tx']}")
+    lines.append(f"  - usdt={buyer_balances['usdt']['tx']}")
     return "\n".join(lines)
 
 
@@ -563,14 +650,14 @@ def main() -> None:
     lifecycle = OnchainLifecycleService(settings=settings, buyer_address_resolver=resolver)
     web3 = _web3(settings.onchain_rpc_url)
 
-    funding_tx, buyer_balance = _fund_buyer_with_pwr(web3=web3, settings=settings, resolver=resolver)
+    buyer_balances = _fund_buyer_balances(web3=web3, settings=settings, resolver=resolver)
     seeded = seed_demo_projection_state(
         settings=settings,
         container=container,
         resolver=resolver,
         lifecycle=lifecycle,
     )
-    print(format_seed_report(seeded=seeded, buyer_balance=buyer_balance, funding_tx=funding_tx))
+    print(format_seed_report(seeded=seeded, buyer_balances=buyer_balances))
 
 
 if __name__ == "__main__":

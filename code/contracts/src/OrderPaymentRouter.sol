@@ -108,7 +108,7 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
     }
 
     function payWithPWR(uint256 orderId, uint256 amount) external {
-        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender, false);
+        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender, true);
 
         bool success = pwr.transferFrom(msg.sender, _settlementEscrow(), amount);
         require(success, "PWR_TRANSFER_FAILED");
@@ -171,7 +171,7 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
 
     function createOrderAndPayWithPWR(uint256 machineId, uint256 amount) external returns (uint256 orderId) {
         orderId = orderBook.createOrderForBuyer(msg.sender, machineId, amount);
-        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender, false);
+        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender, true);
 
         bool success = pwr.transferFrom(msg.sender, _settlementEscrow(), amount);
         require(success, "PWR_TRANSFER_FAILED");

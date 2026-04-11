@@ -406,6 +406,7 @@ def get_order_available_actions(
         can_claim_refund=can_claim_refund,
         refund_claim_currency=refund_claim_currency,
         refund_claim_amount_cents=refund_claim_amount_cents,
+        refund_claim_pwr_anchor_price_cents=refund_projection.pwr_anchor_price_cents,
     )
 
 

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import reset_settings_cache
 from app.core.container import reset_container_cache
-from app.domain.enums import ExecutionRunStatus
+from app.domain.enums import ExecutionRunStatus, OrderState
 from app.execution.contracts import ExecutionStrategy
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
 from app.onchain.lifecycle_service import BroadcastReceipt, get_onchain_lifecycle_service
@@ -56,8 +56,9 @@ class _WriterSpy:
         self.create_calls = []
         self.paid_calls = []
 
-    def create_order(self, order, *, buyer_wallet_address):
-        self.create_calls.append((order.id, buyer_wallet_address))
+    def create_order(self, order, *, buyer_wallet_address, gross_amount_override=None):
+        gross_amount = order.quoted_amount_cents if gross_amount_override is None else gross_amount_override
+        self.create_calls.append((order.id, buyer_wallet_address, gross_amount))
         return OrderWriteResult(
             tx_hash="0xcreateorder",
             submitted_at=datetime.now(timezone.utc),
@@ -66,7 +67,7 @@ class _WriterSpy:
             contract_address="0x0000000000000000000000000000000000000134",
             method_name="createOrderByAdapter",
             idempotency_key="create-order",
-            payload={"buyer": buyer_wallet_address, "machine_id": order.machine_id, "gross_amount": order.quoted_amount_cents},
+            payload={"buyer": buyer_wallet_address, "machine_id": order.machine_id, "gross_amount": gross_amount},
         )
 
     def mark_order_paid(self, order, payment) -> None:
@@ -494,6 +495,7 @@ def test_execution_run_snapshot_coerces_invalid_observability_scalars_safely(
 
     malformed_snapshot = stub.get_run("aso-run-test")
     malformed_snapshot.event_cursor = "not-an-int"
+    malformed_snapshot.events_log_path = None
     malformed_snapshot.stalled = "false"
     stub.get_run = lambda _run_id: malformed_snapshot  # type: ignore[assignment]
 
@@ -866,3 +868,129 @@ def test_list_execution_runs_includes_machine_scoped_self_use_runs(
     assert payload[0]["run_kind"] == "self_use"
     assert payload[0]["viewer_wallet_address"] == "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc"
     assert payload[0]["submission_payload"]["intent"] == "Generate a cat image"
+
+
+def test_execution_run_artifact_download_requires_result_confirmation(
+    client: tuple[TestClient, _ExecutionServiceStub],
+    tmp_path,
+) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order(test_client, machine["id"])
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert start.status_code == 200
+
+    run_dir = tmp_path / "run-artifacts-locked"
+    workspace = run_dir / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "preview.png").write_bytes(b"fake-png")
+    (workspace / "report.docx").write_bytes(b"final-report")
+
+    snapshot = stub.get_run("aso-run-test")
+    snapshot.run_dir = str(run_dir)
+    snapshot.preview_manifest = ({"path": "workspace/preview.png", "type": "image", "role": "preview"},)
+    snapshot.artifact_manifest = ({"path": "workspace/report.docx", "type": "document", "role": "final"},)
+    stub.get_run = lambda _run_id: snapshot  # type: ignore[assignment]
+
+    engine = create_engine(os.environ["OUTCOMEX_DATABASE_URL"])
+    with Session(engine) as session:
+        db_order = session.get(Order, order["id"])
+        assert db_order is not None
+        db_order.state = OrderState.RESULT_PENDING_CONFIRMATION
+        db_order.result_confirmed_at = None
+        session.add(db_order)
+        session.commit()
+    engine.dispose()
+
+    artifact_response = test_client.get(
+        "/api/v1/execution-runs/aso-run-test/artifacts/file",
+        params={"path": "workspace/report.docx"},
+    )
+    assert artifact_response.status_code == 403
+    assert artifact_response.json()["detail"] == "Outputs unlock after result confirmation"
+
+    archive_response = test_client.get("/api/v1/execution-runs/aso-run-test/artifacts/archive")
+    assert archive_response.status_code == 403
+
+
+def test_execution_run_preview_image_can_render_before_result_confirmation(
+    client: tuple[TestClient, _ExecutionServiceStub],
+    tmp_path,
+) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order(test_client, machine["id"])
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert start.status_code == 200
+
+    run_dir = tmp_path / "run-preview-inline"
+    workspace = run_dir / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "preview.png").write_bytes(b"fake-png")
+
+    snapshot = stub.get_run("aso-run-test")
+    snapshot.run_dir = str(run_dir)
+    snapshot.preview_manifest = ({"path": "workspace/preview.png", "type": "image", "role": "preview"},)
+    snapshot.artifact_manifest = ({"path": "workspace/preview.png", "type": "image", "role": "final"},)
+    stub.get_run = lambda _run_id: snapshot  # type: ignore[assignment]
+
+    engine = create_engine(os.environ["OUTCOMEX_DATABASE_URL"])
+    with Session(engine) as session:
+        db_order = session.get(Order, order["id"])
+        assert db_order is not None
+        db_order.state = OrderState.RESULT_PENDING_CONFIRMATION
+        db_order.result_confirmed_at = None
+        session.add(db_order)
+        session.commit()
+    engine.dispose()
+
+    preview_response = test_client.get(
+        "/api/v1/execution-runs/aso-run-test/artifacts/file",
+        params={"path": "workspace/preview.png", "inline_preview": "true"},
+    )
+    assert preview_response.status_code == 200
+    assert preview_response.headers["content-type"].startswith("image/png")
+
+
+def test_execution_run_artifact_download_unlocks_after_result_confirmation(
+    client: tuple[TestClient, _ExecutionServiceStub],
+    tmp_path,
+) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order(test_client, machine["id"])
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert start.status_code == 200
+
+    run_dir = tmp_path / "run-artifacts-open"
+    workspace = run_dir / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "preview.png").write_bytes(b"fake-png")
+    (workspace / "report.docx").write_bytes(b"final-report")
+
+    snapshot = stub.get_run("aso-run-test")
+    snapshot.run_dir = str(run_dir)
+    snapshot.preview_manifest = ({"path": "workspace/preview.png", "type": "image", "role": "preview"},)
+    snapshot.artifact_manifest = ({"path": "workspace/report.docx", "type": "document", "role": "final"},)
+    stub.get_run = lambda _run_id: snapshot  # type: ignore[assignment]
+
+    engine = create_engine(os.environ["OUTCOMEX_DATABASE_URL"])
+    with Session(engine) as session:
+        db_order = session.get(Order, order["id"])
+        assert db_order is not None
+        db_order.state = OrderState.RESULT_CONFIRMED
+        db_order.result_confirmed_at = datetime.now(timezone.utc)
+        session.add(db_order)
+        session.commit()
+    engine.dispose()
+
+    artifact_response = test_client.get(
+        "/api/v1/execution-runs/aso-run-test/artifacts/file",
+        params={"path": "workspace/report.docx"},
+    )
+    assert artifact_response.status_code == 200
+    assert artifact_response.content == b"final-report"
+
+    archive_response = test_client.get("/api/v1/execution-runs/aso-run-test/artifacts/archive")
+    assert archive_response.status_code == 200
+    assert archive_response.headers["content-type"].startswith("application/zip")

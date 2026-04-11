@@ -877,6 +877,10 @@ class AgentSkillOSExecutionService:
             raise FileNotFoundError(run_id)
         payload = json.loads(record_path.read_text(encoding="utf-8"))
         payload = self._reconcile_stale_process(payload, record_path=record_path)
+        inferred_run_dir = self._infer_live_run_dir(payload, record_path=record_path)
+        if inferred_run_dir is not None and not payload.get("run_dir"):
+            payload = dict(payload)
+            payload["run_dir"] = str(inferred_run_dir)
         sanitized_payload = sanitize_visible_manifests(payload)
         if sanitized_payload is not payload:
             payload = sanitized_payload
@@ -937,6 +941,31 @@ class AgentSkillOSExecutionService:
             stalled=stalled,
             stalled_reason=payload.get("stalled_reason") or stalled_reason,
         )
+
+    @staticmethod
+    def _infer_live_run_dir(payload: dict, *, record_path: Path) -> Path | None:
+        explicit_run_dir = payload.get("run_dir")
+        if explicit_run_dir:
+            candidate = Path(str(explicit_run_dir))
+            if candidate.exists() and candidate.is_dir():
+                return candidate
+
+        service_run_dir = record_path.parent
+        agentskillos_runs_root = service_run_dir / "agentskillos-runs"
+        if not agentskillos_runs_root.exists() or not agentskillos_runs_root.is_dir():
+            return None
+
+        candidates = [entry for entry in agentskillos_runs_root.iterdir() if entry.is_dir()]
+        if not candidates:
+            return None
+
+        preferred = [
+            entry
+            for entry in candidates
+            if (entry / "logs").is_dir() or (entry / "workspace").is_dir() or (entry / "plan.json").is_file()
+        ]
+        pool = preferred or candidates
+        return max(pool, key=lambda item: item.stat().st_mtime)
 
     def _reconcile_stale_process(self, payload: dict, *, record_path: Path) -> dict:
         status = ExecutionRunStatus(payload["status"])

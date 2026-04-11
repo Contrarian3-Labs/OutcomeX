@@ -206,3 +206,16 @@ def test_writer_builds_pwr_direct_payment_call_spec() -> None:
     calldata = encode_contract_call(intent)
     assert calldata is not None
     assert calldata.startswith("0xd4099cc2")
+
+
+def test_create_order_can_override_gross_amount_for_frozen_pwr_anchor() -> None:
+    writer = OrderWriter(ContractsRegistry())
+    order = _build_order()
+
+    create_result = writer.create_order(
+        order,
+        buyer_wallet_address="0x1111111111111111111111111111111111111111",
+        gross_amount_override=40_000_000_000_000_000_000,
+    )
+
+    assert create_result.payload["gross_amount"] == 40_000_000_000_000_000_000

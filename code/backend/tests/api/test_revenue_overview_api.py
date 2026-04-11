@@ -149,6 +149,7 @@ def test_revenue_overview_defaults_to_zero(client: TestClient) -> None:
     assert payload["claimable_cents"] == 0
     assert payload["claimed_cents"] == 0
     assert payload["currency"] == "USD"
+    assert payload["pwr_anchor_price_cents"] is None
     assert payload["withdraw_history"] == []
 
 
@@ -166,6 +167,7 @@ def test_revenue_overview_reports_projected_and_claimed_history(client: TestClie
     payload = response.json()
     assert payload["paid_cents"] == 1000
     assert payload["currency"] == "PWR"
+    assert payload["pwr_anchor_price_cents"] == 25
     assert payload["projected_cents"] == 900
     assert payload["claimed_cents"] == 350
     assert payload["claimable_cents"] == 550
@@ -208,10 +210,12 @@ def test_revenue_overview_stays_with_beneficiary_after_machine_owner_changes(cli
     assert original_payload["projected_cents"] == 900
     assert original_payload["claimed_cents"] == 300
     assert original_payload["claimable_cents"] == 600
+    assert original_payload["pwr_anchor_price_cents"] == 25
     assert original_payload["withdraw_history"][0]["tx_hash"] == "0xbeneficiary-claim"
     assert new_owner_payload["projected_cents"] == 0
     assert new_owner_payload["claimed_cents"] == 0
     assert new_owner_payload["claimable_cents"] == 0
+    assert new_owner_payload["pwr_anchor_price_cents"] is None
 
 
 def test_payment_ledger_lists_payments_for_user_descending(client: TestClient) -> None:

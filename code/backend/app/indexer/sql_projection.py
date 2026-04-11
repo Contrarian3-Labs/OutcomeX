@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
@@ -21,6 +22,7 @@ from app.domain.models import (
     SettlementRecord,
 )
 from app.domain.order_truth import set_authoritative_order_truth
+from app.runtime.cost_service import get_runtime_cost_service
 from app.domain.rules import (
     calculate_failed_or_no_valid_preview_breakdown,
     calculate_rejected_valid_preview_breakdown,
@@ -65,6 +67,22 @@ def _payment_token_decimals(address: str | None) -> int | None:
     if symbol == "PWR":
         return 18
     return None
+
+
+def _pwr_wei_to_cents(amount_wei: int) -> int:
+    anchor_price_cents = get_runtime_cost_service().pwr_anchor_price_cents
+    if anchor_price_cents <= 0:
+        return 0
+    cents = (Decimal(amount_wei) * Decimal(anchor_price_cents) / Decimal(10**18)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return int(cents)
+
+
+def _claim_amount_to_cents(payload: RevenueClaimedEvent) -> int:
+    if payload.claim_kind == "machine_revenue":
+        return _pwr_wei_to_cents(payload.amount_wei)
+    if _payment_token_symbol(payload.token_address) == "PWR":
+        return _pwr_wei_to_cents(payload.amount_wei)
+    return payload.amount_wei
 
 
 class SqlProjectionStore:
@@ -449,6 +467,7 @@ class SqlProjectionStore:
             )
             if existing_claim_record is None:
                 claimant_user_id = self._user_resolver(payload.account) if self._user_resolver is not None else None
+                amount_cents = _claim_amount_to_cents(payload)
                 db.add(
                     SettlementClaimRecord(
                         event_id=event.event_id,
@@ -456,7 +475,7 @@ class SqlProjectionStore:
                         claimant_user_id=claimant_user_id,
                         account_address=payload.account,
                         token_address=payload.token_address,
-                        amount_cents=payload.amount_wei,
+                        amount_cents=amount_cents,
                         tx_hash=event.transaction_hash,
                         machine_id=machine.id if machine is not None else None,
                     )
@@ -476,7 +495,7 @@ class SqlProjectionStore:
                 db.add(
                     MachineRevenueClaim(
                         machine_id=machine.id,
-                        amount_cents=payload.amount_wei,
+                        amount_cents=_claim_amount_to_cents(payload),
                         tx_hash=event.transaction_hash,
                     )
                 )

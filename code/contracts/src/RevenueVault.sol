@@ -14,6 +14,7 @@ error NotSettlementController(address caller);
 contract RevenueVault is Ownable, IRevenueVault {
     PWRToken public immutable pwrToken;
     IMachineAssetOwnership public immutable machineAsset;
+    uint256 public immutable pwrAnchorPriceCents;
 
     address public settlementController;
 
@@ -37,9 +38,11 @@ contract RevenueVault is Ownable, IRevenueVault {
         uint256 remainingUnsettledRevenueByMachineAfter
     );
 
-    constructor(address initialOwner, address pwrTokenAddress, address machineAssetAddress) Ownable(initialOwner) {
+    constructor(address initialOwner, address pwrTokenAddress, address machineAssetAddress, uint256 pwrAnchorPriceCents_) Ownable(initialOwner) {
+        require(pwrAnchorPriceCents_ > 0, "ZERO_PWR_ANCHOR");
         pwrToken = PWRToken(pwrTokenAddress);
         machineAsset = IMachineAssetOwnership(machineAssetAddress);
+        pwrAnchorPriceCents = pwrAnchorPriceCents_;
     }
 
     modifier onlySettlementController() {
@@ -60,16 +63,19 @@ contract RevenueVault is Ownable, IRevenueVault {
         address machineOwner,
         uint256 orderId,
         uint256 amount,
-        bool dividendEligible
+        bool dividendEligible,
+        bool amountIsPwrWei
     ) external onlySettlementController {
         if (amount == 0) {
             return;
         }
 
         if (dividendEligible) {
-            unsettledRevenueByMachine[machineId] += amount;
-            claimableByMachineOwner[machineId][machineOwner] += amount;
-            pwrToken.mint(address(this), amount);
+            uint256 pwrAmount = amountIsPwrWei ? amount : _centsToPwrWei(amount);
+            unsettledRevenueByMachine[machineId] += pwrAmount;
+            claimableByMachineOwner[machineId][machineOwner] += pwrAmount;
+            pwrToken.mint(address(this), pwrAmount);
+            amount = pwrAmount;
         } else {
             nonDividendRevenueByMachine[machineId] += amount;
         }
@@ -98,5 +104,9 @@ contract RevenueVault is Ownable, IRevenueVault {
 
     function hasUnsettledRevenue(uint256 machineId) external view returns (bool) {
         return unsettledRevenueByMachine[machineId] > 0;
+    }
+
+    function _centsToPwrWei(uint256 amountCents) internal view returns (uint256) {
+        return (amountCents * 1 ether) / pwrAnchorPriceCents;
     }
 }

@@ -38,6 +38,8 @@ contract OrderPaymentRouterTest is TestBase {
     address internal constant MACHINE_OWNER = address(0xCAFE);
     address internal constant BUYER = address(0xB0B);
 
+    uint256 internal constant PWR_ANCHOR_PRICE_CENTS = 25;
+
     MockUSDCWithAuthorization internal usdc;
     MockUSDT internal usdt;
     MockPermit2 internal permit2;
@@ -50,14 +52,18 @@ contract OrderPaymentRouterTest is TestBase {
 
     uint256 internal machineId;
 
+    function _pwrWeiForCents(uint256 amountCents) internal pure returns (uint256) {
+        return (amountCents * 1 ether) / PWR_ANCHOR_PRICE_CENTS;
+    }
+
     function setUp() public {
         usdc = new MockUSDCWithAuthorization();
         usdt = new MockUSDT();
         permit2 = new MockPermit2();
         pwr = new PWRToken(ADMIN);
         machineAsset = new MachineAssetNFT(ADMIN);
-        revenueVault = new RevenueVault(ADMIN, address(pwr), address(machineAsset));
-        settlement = new SettlementController(ADMIN, address(revenueVault), PLATFORM_TREASURY);
+        revenueVault = new RevenueVault(ADMIN, address(pwr), address(machineAsset), 25);
+        settlement = new SettlementController(ADMIN, address(revenueVault), address(pwr), PLATFORM_TREASURY);
         orderBook = new OrderBook(ADMIN, address(machineAsset));
         router = new OrderPaymentRouter(ADMIN, address(orderBook), address(usdc), address(usdt), address(pwr), address(permit2));
 
@@ -133,19 +139,19 @@ contract OrderPaymentRouterTest is TestBase {
     function testCreateAndPayWithPWRRecordsBuyerAsCaller() public {
         vm.startPrank(ADMIN);
         pwr.setMinter(ADMIN, true);
-        pwr.mint(BUYER, 1_000);
+        pwr.mint(BUYER, _pwrWeiForCents(1000));
         vm.stopPrank();
 
         vm.prank(BUYER);
-        pwr.approve(address(router), 1_000);
+        pwr.approve(address(router), _pwrWeiForCents(1000));
 
         vm.prank(BUYER);
-        uint256 orderId = router.createOrderAndPayWithPWR(machineId, 1_000);
+        uint256 orderId = router.createOrderAndPayWithPWR(machineId, _pwrWeiForCents(1000));
 
         OrderRecord memory order = orderBook.getOrder(orderId);
         assertEq(order.buyer, BUYER, "buyer should be external caller");
         assertEq(uint256(order.status), uint256(OrderStatus.Paid), "order should be paid");
-        assertEq(pwr.balanceOf(address(settlement)), 1_000, "settlement should escrow pwr");
+        assertEq(pwr.balanceOf(address(settlement)), _pwrWeiForCents(1000), "settlement should escrow pwr");
     }
 
     function testCreateOrderByAdapterCreatesUnpaidOrderForBuyer() public {
@@ -196,25 +202,21 @@ contract OrderPaymentRouterTest is TestBase {
         assertEq(usdc.balanceOf(ADMIN), adminBalanceBefore - 1_000_000, "adapter caller should fund escrow");
     }
 
-    function testPayWithPWRAcceptsAnchorAmountDifferentFromOrderGrossAmount() public {
+    function testPayWithPWRRejectsAmountDifferentFromFrozenOrderGross() public {
         vm.prank(BUYER);
-        uint256 orderId = orderBook.createOrder(machineId, 1_000);
+        uint256 orderId = orderBook.createOrder(machineId, _pwrWeiForCents(1000));
 
         vm.startPrank(ADMIN);
         pwr.setMinter(ADMIN, true);
-        pwr.mint(BUYER, 3_600);
+        pwr.mint(BUYER, _pwrWeiForCents(1000));
         vm.stopPrank();
 
         vm.prank(BUYER);
-        pwr.approve(address(router), 3_600);
+        pwr.approve(address(router), _pwrWeiForCents(1000));
 
         vm.prank(BUYER);
-        router.payWithPWR(orderId, 3_600);
-
-        OrderRecord memory order = orderBook.getOrder(orderId);
-        assertEq(order.buyer, BUYER, "legacy path should keep original buyer");
-        assertEq(uint256(order.status), uint256(OrderStatus.Paid), "legacy path should mark paid");
-        assertEq(pwr.balanceOf(address(settlement)), 3_600, "settlement should escrow the anchor-sized pwr payment");
+        vm.expectRevert(bytes("INVALID_AMOUNT"));
+        router.payWithPWR(orderId, _pwrWeiForCents(900));
     }
 
     function testUSDTConfirmedOrderCreatesRealPlatformClaimAndReserve() public {
@@ -234,7 +236,7 @@ contract OrderPaymentRouterTest is TestBase {
         orderBook.confirmResult(orderId);
 
         assertEq(settlement.platformAccruedByToken(address(usdt)), 100_000, "platform usdt claim mismatch");
-        assertEq(revenueVault.unsettledRevenueByMachine(machineId), 900_000, "machine pwr claim mismatch");
+        assertEq(revenueVault.unsettledRevenueByMachine(machineId), _pwrWeiForCents(900_000), "machine pwr claim mismatch");
         assertEq(usdt.balanceOf(address(settlement)), 1_000_000, "escrow should hold full reserve before claims");
 
         vm.expectEmit(true, true, false, true, address(settlement));
@@ -248,20 +250,20 @@ contract OrderPaymentRouterTest is TestBase {
 
     function testPWRConfirmedOrderCreatesPlatformClaimAndMachineReserve() public {
         vm.prank(BUYER);
-        uint256 orderId = orderBook.createOrder(machineId, 1_000);
+        uint256 orderId = orderBook.createOrder(machineId, _pwrWeiForCents(1000));
 
         vm.startPrank(ADMIN);
         pwr.setMinter(ADMIN, true);
-        pwr.mint(BUYER, 1_000);
+        pwr.mint(BUYER, _pwrWeiForCents(1000));
         vm.stopPrank();
 
         vm.prank(BUYER);
-        pwr.approve(address(router), 1_000);
+        pwr.approve(address(router), _pwrWeiForCents(1000));
 
         vm.prank(BUYER);
-        router.payWithPWR(orderId, 1_000);
+        router.payWithPWR(orderId, _pwrWeiForCents(1000));
 
-        assertEq(pwr.balanceOf(address(settlement)), 1_000, "settlement should escrow pwr");
+        assertEq(pwr.balanceOf(address(settlement)), _pwrWeiForCents(1000), "settlement should escrow pwr");
 
         vm.prank(MACHINE_OWNER);
         orderBook.markPreviewReady(orderId, true);
@@ -269,54 +271,54 @@ contract OrderPaymentRouterTest is TestBase {
         vm.prank(BUYER);
         orderBook.confirmResult(orderId);
 
-        assertEq(settlement.platformAccruedByToken(address(pwr)), 100, "platform pwr claim mismatch");
-        assertEq(revenueVault.unsettledRevenueByMachine(machineId), 900, "machine pwr accrual mismatch");
+        assertEq(settlement.platformAccruedByToken(address(pwr)), _pwrWeiForCents(100), "platform pwr claim mismatch");
+        assertEq(revenueVault.unsettledRevenueByMachine(machineId), _pwrWeiForCents(900), "machine pwr accrual mismatch");
     }
 
     function testPWRFailedBeforePreviewCanRefundPaidPWR() public {
         vm.prank(BUYER);
-        uint256 orderId = orderBook.createOrder(machineId, 1_000);
+        uint256 orderId = orderBook.createOrder(machineId, _pwrWeiForCents(1000));
 
         vm.startPrank(ADMIN);
         pwr.setMinter(ADMIN, true);
-        pwr.mint(BUYER, 1_000);
+        pwr.mint(BUYER, _pwrWeiForCents(1000));
         vm.stopPrank();
 
         vm.prank(BUYER);
-        pwr.approve(address(router), 1_000);
+        pwr.approve(address(router), _pwrWeiForCents(1000));
 
         vm.prank(BUYER);
-        router.payWithPWR(orderId, 1_000);
+        router.payWithPWR(orderId, _pwrWeiForCents(1000));
 
         vm.prank(BUYER);
         orderBook.refundFailedOrNoValidPreview(orderId);
 
-        assertEq(settlement.refundableByToken(BUYER, address(pwr)), 1_000, "refund ledger mismatch");
+        assertEq(settlement.refundableByToken(BUYER, address(pwr)), _pwrWeiForCents(1000), "refund ledger mismatch");
 
         vm.expectEmit(true, true, false, true, address(settlement));
-        emit RefundClaimedDetailed(BUYER, address(pwr), 1_000, 0);
+        emit RefundClaimedDetailed(BUYER, address(pwr), _pwrWeiForCents(1000), 0);
         vm.prank(BUYER);
         uint256 claimed = settlement.claimRefund(address(pwr));
-        assertEq(claimed, 1_000, "refund amount mismatch");
-        assertEq(pwr.balanceOf(BUYER), 1_000, "buyer should recover all pwr");
-        assertEq(pwr.balanceOf(address(settlement)), 0, "settlement escrow should be empty");
+        assertEq(claimed, _pwrWeiForCents(1000), "refund amount mismatch");
+        assertEq(pwr.balanceOf(BUYER), _pwrWeiForCents(1000), "buyer should recover full pwr refund");
+        assertEq(pwr.balanceOf(address(settlement)), 0, "settlement should release the full anchored payment");
     }
 
     function testPaymentRouterRejectsExpiredUnpaidOrder() public {
         vm.prank(BUYER);
-        uint256 orderId = orderBook.createOrder(machineId, 1_000);
+        uint256 orderId = orderBook.createOrder(machineId, _pwrWeiForCents(1000));
 
         vm.startPrank(ADMIN);
         pwr.setMinter(ADMIN, true);
-        pwr.mint(BUYER, 1_000);
+        pwr.mint(BUYER, _pwrWeiForCents(1000));
         vm.stopPrank();
 
         vm.prank(BUYER);
-        pwr.approve(address(router), 1_000);
+        pwr.approve(address(router), _pwrWeiForCents(1000));
 
         vm.warp(block.timestamp + orderBook.UNPAID_ORDER_TTL() + 1);
         vm.prank(BUYER);
         vm.expectRevert(bytes("ORDER_EXPIRED"));
-        router.payWithPWR(orderId, 1_000);
+        router.payWithPWR(orderId, _pwrWeiForCents(1000));
     }
 }

@@ -30,7 +30,7 @@ class RuntimeCostService:
         runtime_cost_cents = max(0, official_quote_cents - target_margin_cents)
         platform_fee_cents, machine_share_cents = calculate_revenue_split(official_quote_cents)
         pwr_quote = (
-            Decimal(machine_share_cents) / Decimal(self.pwr_anchor_price_cents)
+            Decimal(official_quote_cents) / Decimal(self.pwr_anchor_price_cents)
         ).quantize(PWR_QUANTIZE, rounding=ROUND_HALF_UP)
         return QuoteResponse(
             runtime_cost_cents=runtime_cost_cents,

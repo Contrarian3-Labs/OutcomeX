@@ -96,6 +96,10 @@ def _pwr_quote_to_wei_string(pwr_quote: str) -> str:
     return str(int((Decimal(pwr_quote) * PWR_WEI_MULTIPLIER).to_integral_value()))
 
 
+def _pwr_quote_to_wei_int(pwr_quote: str) -> int:
+    return int(_pwr_quote_to_wei_string(pwr_quote))
+
+
 def _normalize_signature(signature: str) -> str:
     normalized = str(signature).strip().lower()
     if not normalized.startswith("0x"):
@@ -350,6 +354,7 @@ def _ensure_onchain_order_anchor(
     tx_sender: TransactionSender,
     db: Session,
     unresolved_wallet_detail: str,
+    gross_amount_override: int | None = None,
 ) -> None:
     if order.onchain_order_id is not None:
         return
@@ -358,7 +363,11 @@ def _ensure_onchain_order_anchor(
         order=order,
         detail=unresolved_wallet_detail,
     )
-    write_result = order_writer.create_order(order, buyer_wallet_address=buyer_wallet_address)
+    write_result = order_writer.create_order(
+        order,
+        buyer_wallet_address=buyer_wallet_address,
+        gross_amount_override=gross_amount_override,
+    )
     broadcasted_write = tx_sender.send(write_result)
     create_order_receipt = onchain_broadcaster.broadcast_create_order(write_result=broadcasted_write)
     db.refresh(order)
@@ -499,6 +508,9 @@ def create_direct_payment_intent(
     if order.is_cancelled or order.is_expired:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Order is not payable")
 
+    quote = cost_service.quote_for_order_amount(order.quoted_amount_cents)
+    pwr_amount_wei = _pwr_quote_to_wei_int(quote.pwr_quote) if currency == "PWR" else None
+
     _ensure_onchain_order_anchor(
         order=order,
         container=container,
@@ -507,6 +519,7 @@ def create_direct_payment_intent(
         tx_sender=tx_sender,
         db=db,
         unresolved_wallet_detail="Buyer wallet address unresolved for direct payment",
+        gross_amount_override=pwr_amount_wei,
     )
 
     payment = Payment(
@@ -519,12 +532,11 @@ def create_direct_payment_intent(
     db.add(payment)
     db.flush()
 
-    quote = cost_service.quote_for_order_amount(order.quoted_amount_cents)
     if currency == "PWR":
         direct_intent = order_writer.build_direct_payment_intent(
             order,
             payment,
-            pwr_amount=_pwr_quote_to_wei_string(quote.pwr_quote),
+            pwr_amount=str(pwr_amount_wei),
             pricing_version=quote.pricing_version,
             pwr_anchor_price_cents=quote.pwr_anchor_price_cents,
         )

@@ -23,7 +23,7 @@ class SpyOrderWriter:
         self.pay_order_by_adapter_calls: list[dict] = []
         self.mark_paid_calls: list[dict] = []
 
-    def create_order(self, order, *, buyer_wallet_address):
+    def create_order(self, order, *, buyer_wallet_address, gross_amount_override=None):
         self.create_order_calls.append(
             {
                 "order_id": order.id,

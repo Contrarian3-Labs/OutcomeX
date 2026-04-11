@@ -93,6 +93,7 @@ class RevenueAccountOverviewResponse(BaseModel):
     projected_cents: int
     claimable_cents: int
     claimed_cents: int
+    pwr_anchor_price_cents: int | None = None
     withdraw_history: list[WithdrawHistoryItem]
 
     model_config = {"from_attributes": True}

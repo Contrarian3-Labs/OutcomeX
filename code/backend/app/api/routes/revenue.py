@@ -9,6 +9,7 @@ from app.domain.claim_projection import project_machine_entry_claims, project_pl
 from app.domain.enums import PaymentState, SettlementState
 from app.domain.models import Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementClaimRecord, SettlementRecord
 from app.domain.rules import has_sufficient_payment
+from app.runtime.cost_service import get_runtime_cost_service
 from app.schemas.revenue import (
     PaymentLedgerItem,
     PlatformRevenueOverviewResponse,
@@ -204,15 +205,19 @@ def revenue_account_overview(owner_user_id: str, db: Session = Depends(get_db)) 
             .order_by(SettlementClaimRecord.claimed_at.desc(), SettlementClaimRecord.id.desc())
         )
     )
+    currency = (
+        "PWR"
+        if (projected_cents > 0 or claimed_cents > 0 or claimable_cents > 0)
+        else _user_primary_currency(user_id=owner_user_id, db=db)
+    )
     return RevenueAccountOverviewResponse(
         owner_user_id=owner_user_id,
         paid_cents=_user_paid_cents(user_id=owner_user_id, db=db),
         projected_cents=projected_cents,
         claimable_cents=claimable_cents,
         claimed_cents=claimed_cents,
-        currency="PWR"
-        if (projected_cents > 0 or claimed_cents > 0 or claimable_cents > 0)
-        else _user_primary_currency(user_id=owner_user_id, db=db),
+        currency=currency,
+        pwr_anchor_price_cents=(get_runtime_cost_service().pwr_anchor_price_cents if currency == "PWR" else None),
         withdraw_history=[
             {
                 "id": record.id,

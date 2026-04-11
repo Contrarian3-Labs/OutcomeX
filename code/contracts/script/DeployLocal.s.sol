@@ -63,9 +63,9 @@ contract DeployLocal {
         supportedTokens[0] = deployed.usdc;
         supportedTokens[1] = deployed.usdt;
         deployed.machineMarketplace = address(new MachineMarketplace(initialOwner, deployed.machineAsset, supportedTokens));
-        deployed.revenueVault = address(new RevenueVault(initialOwner, deployed.pwr, deployed.machineAsset));
+        deployed.revenueVault = address(new RevenueVault(initialOwner, deployed.pwr, deployed.machineAsset, 25));
         deployed.settlementController =
-            address(new SettlementController(initialOwner, deployed.revenueVault, platformTreasury));
+            address(new SettlementController(initialOwner, deployed.revenueVault, deployed.pwr, platformTreasury));
         deployed.orderBook = address(new OrderBook(initialOwner, deployed.machineAsset));
         deployed.orderPaymentRouter = address(new OrderPaymentRouter(
             initialOwner,

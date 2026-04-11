@@ -136,8 +136,12 @@ def test_format_seed_report_prints_owners_machines_listings_and_stock(seed_conte
     )
     report = format_seed_report(
         seeded=summary,
-        buyer_balance=100 * 10**18,
-        funding_tx="0xseed",
+        buyer_balances={
+            "hsk": {"balance": 10_000 * 10**18, "tx": "already_funded"},
+            "pwr": {"balance": 10_000 * 10**18, "tx": "0xpwr"},
+            "usdc": {"balance": 10_000 * 10**6, "tx": "0xusdc"},
+            "usdt": {"balance": 10_000 * 10**6, "tx": "0xusdt"},
+        },
     )
 
     assert "- buyer_wallet=0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc" in report
@@ -153,8 +157,16 @@ def test_format_seed_report_prints_owners_machines_listings_and_stock(seed_conte
     assert "onchain_listing_id=2001 machine_id=machine-owner-2 owner=owner-2 price_units=1250000" in report
     assert "onchain_listing_id=2002 machine_id=machine-owner-3 owner=owner-3 price_units=1550000" in report
     assert "primary_issuance_stock=10" in report
-    assert "buyer_pwr_balance_wei=100000000000000000000" in report
-    assert "pwr_funding_tx=0xseed" in report
+    assert "buyer_balances:" in report
+    assert "hsk_wei=10000000000000000000000" in report
+    assert "pwr_wei=10000000000000000000000" in report
+    assert "usdc_units=10000000000" in report
+    assert "usdt_units=10000000000" in report
+    assert "funding_txs:" in report
+    assert "hsk=already_funded" in report
+    assert "pwr=0xpwr" in report
+    assert "usdc=0xusdc" in report
+    assert "usdt=0xusdt" in report
 
 
 def test_seed_demo_projection_state_is_idempotent_without_duplicate_rows(seed_context) -> None:

@@ -27,7 +27,7 @@ Usage: $(basename "$0") [--prepare-only]
 Starts a deterministic local browser demo stack for OutcomeX:
 - fresh Anvil chain on 127.0.0.1:8545
 - local contract deployment
-- buyer PWR funding + machine mint seed
+- buyer HSK/PWR/USDC/USDT funding + machine mint seed
 - backend on 127.0.0.1:8787
 - frontend on 127.0.0.1:8080
 
@@ -206,14 +206,13 @@ if [[ "$PREPARE_ONLY" -eq 1 ]]; then
 fi
 
 AGENTSKILLOS_PYTHON=""
+BACKEND_ENV=(OUTCOMEX_AGENTSKILLOS_ROOT="$AGENTSKILLOS_DIR")
 if AGENTSKILLOS_PYTHON="$(resolve_agentskillos_python)"; then
   echo "Using vendored AgentSkillOS python: $AGENTSKILLOS_PYTHON" >>"$BACKEND_LOG"
+  BACKEND_ENV+=(OUTCOMEX_AGENTSKILLOS_PYTHON_EXECUTABLE="$AGENTSKILLOS_PYTHON")
 fi
 
-nohup setsid env \
-  OUTCOMEX_AGENTSKILLOS_ROOT="$AGENTSKILLOS_DIR" \
-  OUTCOMEX_AGENTSKILLOS_PYTHON_EXECUTABLE="$AGENTSKILLOS_PYTHON" \
-  "$BACKEND_DIR/.venv/bin/python" -m uvicorn app.main:app --host 127.0.0.1 --port 8787 >"$BACKEND_LOG" 2>&1 < /dev/null &
+nohup setsid env   "${BACKEND_ENV[@]}"   "$BACKEND_DIR/.venv/bin/python" -m uvicorn app.main:app --host 127.0.0.1 --port 8787 >"$BACKEND_LOG" 2>&1 < /dev/null &
 echo $! >"$BACKEND_PID_FILE"
 wait_for_http "http://127.0.0.1:8787/api/v1/health" "Backend"
 
@@ -225,13 +224,13 @@ cat <<EOF
 Local browser demo is ready.
 
 Manual testing checklist:
-- Buyer-1 (0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC) is pre-funded with 100 PWR; use this wallet for purchase flows.
+- Buyer-1 (0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC) is pre-funded with 10,000 HSK, 10,000 PWR, 10,000 USDC, and 10,000 USDT; use this wallet for purchase flows.
 - Owner-1 owns machine-owner-1 and the machine stays unlisted so you can test listing creation and delisting flows.
 - Owner-2 and owner-3 each own a machine with active onchain secondary listings seeded during startup.
 - Primary issuance stock is seeded to 10 so primary issuance flows remain available after seeding.
 
 Seed summary:
-- Buyer: buyer-1 (100 PWR funded, wallet 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC)
+- Buyer: buyer-1 (10,000 HSK / 10,000 PWR / 10,000 USDC / 10,000 USDT, wallet 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC)
 - Owners:
   - owner-1 → machine-owner-1 (unlisted)
   - owner-2 → machine-owner-2 (active USDC listing, 1,250,000 units)
