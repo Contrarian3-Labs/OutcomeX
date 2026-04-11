@@ -361,6 +361,7 @@ def _ensure_onchain_order_anchor(
     write_result = order_writer.create_order(order, buyer_wallet_address=buyer_wallet_address)
     broadcasted_write = tx_sender.send(write_result)
     create_order_receipt = onchain_broadcaster.broadcast_create_order(write_result=broadcasted_write)
+    db.refresh(order)
     _backfill_order_chain_anchor_from_receipt(order, create_order_receipt)
     _mark_authoritative_order_created_projection(order, event_id=create_order_receipt.event_id)
     db.add(order)
@@ -656,6 +657,7 @@ def sync_onchain_payment(
     payload: DirectPaymentSyncRequest,
     db: Session = Depends(get_db),
     verifier: OnchainPaymentVerifier = Depends(get_onchain_payment_verifier),
+    order_writer: OrderWriter = Depends(get_order_writer),
 ) -> DirectPaymentSyncResponse:
     payment = db.get(Payment, payment_id)
     if payment is None:
@@ -686,6 +688,17 @@ def sync_onchain_payment(
             detail="Onchain receipt did not confirm a successful payment",
         )
 
+    db.refresh(order)
+    db.refresh(payment)
+
+    if (
+        order.onchain_order_id is None
+        or order.create_order_tx_hash is None
+        or order.create_order_event_id is None
+        or order.create_order_block_number is None
+    ):
+        _backfill_order_chain_anchor_from_verification(order, verification)
+    _mark_authoritative_paid_projection(order, order_status="PAID", event_id=verification.event_id)
     _persist_order_tx_correlation(order, payment_tx_hash=verification.tx_hash)
     db.add(order)
 
@@ -693,6 +706,7 @@ def sync_onchain_payment(
     payment.callback_state = verification.state.value
     payment.callback_received_at = utc_now()
     payment.callback_tx_hash = verification.tx_hash
+    _apply_payment_state(payment, state=PaymentState.SUCCEEDED, db=db, order_writer=order_writer, write_chain=False)
     db.add(payment)
     db.commit()
     return DirectPaymentSyncResponse(

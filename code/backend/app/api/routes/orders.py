@@ -150,6 +150,45 @@ def _machine_is_runtime_available(order: Order, machine_id: str) -> bool:
     return snapshot.queued_count < simulator.profile.max_queue_depth
 
 
+def _serialize_order(order: Order, *, db: Session) -> OrderResponse:
+    machine = db.get(Machine, order.machine_id) if order.machine_id else None
+    machine_is_available = _machine_is_runtime_available(order, machine.id) if machine is not None else None
+    return OrderResponse.model_validate(
+        {
+            "id": order.id,
+            "onchain_order_id": order.onchain_order_id,
+            "onchain_machine_id": order.onchain_machine_id,
+            "create_order_tx_hash": order.create_order_tx_hash,
+            "create_order_event_id": order.create_order_event_id,
+            "create_order_block_number": order.create_order_block_number,
+            "user_id": order.user_id,
+            "machine_id": order.machine_id,
+            "chat_session_id": order.chat_session_id,
+            "user_prompt": order.user_prompt,
+            "recommended_plan_summary": order.recommended_plan_summary,
+            "quoted_amount_cents": order.quoted_amount_cents,
+            "payment_state": order.payment_state,
+            "unpaid_expiry_at": order.unpaid_expiry_at,
+            "cancelled_at": order.cancelled_at,
+            "is_expired": order.is_expired,
+            "is_cancelled": order.is_cancelled,
+            "machine_is_available": machine_is_available,
+            "state": order.state,
+            "execution_state": order.execution_state,
+            "preview_state": order.preview_state,
+            "settlement_state": order.settlement_state,
+            "settlement_beneficiary_user_id": order.settlement_beneficiary_user_id,
+            "settlement_is_self_use": order.settlement_is_self_use,
+            "settlement_is_dividend_eligible": order.settlement_is_dividend_eligible,
+            "execution_request": order.execution_request,
+            "execution_metadata": order.execution_metadata,
+            "latest_success_payment_currency": order.latest_success_payment_currency,
+            "result_confirmed_at": order.result_confirmed_at,
+            "created_at": order.created_at,
+        }
+    )
+
+
 def _has_active_execution_run(order_id: str, db: Session) -> bool:
     active_count = db.scalar(
         select(func.count(ExecutionRun.id)).where(
@@ -210,7 +249,7 @@ def _encode_orders_cursor(order: Order) -> str:
 def create_order(
     payload: OrderCreateRequest,
     db: Session = Depends(get_db),
-) -> Order:
+) -> OrderResponse:
     machine = db.get(Machine, payload.machine_id)
     if machine is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
@@ -310,7 +349,7 @@ def create_order(
     db.add(order)
     db.commit()
     db.refresh(order)
-    return order
+    return _serialize_order(order, db=db)
 
 
 @router.get("", response_model=OrderListResponse)
@@ -343,7 +382,7 @@ def list_orders(
     has_more = len(orders) > limit
     items = orders[:limit]
     next_cursor = _encode_orders_cursor(items[-1]) if has_more and items else None
-    return OrderListResponse(items=items, next_cursor=next_cursor)
+    return OrderListResponse(items=[_serialize_order(order, db=db) for order in items], next_cursor=next_cursor)
 
 
 @router.get("/{order_id}/available-actions", response_model=OrderAvailableActionsResponse)
@@ -371,11 +410,11 @@ def get_order_available_actions(
 
 
 @router.get("/{order_id}", response_model=OrderResponse)
-def get_order(order_id: str, db: Session = Depends(get_db)) -> Order:
+def get_order(order_id: str, db: Session = Depends(get_db)) -> OrderResponse:
     order = db.get(Order, order_id)
     if order is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
-    return order
+    return _serialize_order(order, db=db)
 
 
 @router.post("/{order_id}/mock-result-ready", response_model=ResultReadyResponse)
@@ -396,9 +435,10 @@ def mock_mark_result_ready(
     order.execution_state = ExecutionState.SUCCEEDED
     order.preview_state = PreviewState.READY
     valid_preview = True if payload is None else payload.valid_preview
-    metadata = dict(order.execution_metadata or {})
-    metadata["preview_valid"] = valid_preview
-    order.execution_metadata = metadata
+    metadata_updates = {"preview_valid": valid_preview}
+    merged_metadata = dict(order.execution_metadata or {})
+    merged_metadata.update(metadata_updates)
+    order.execution_metadata = merged_metadata
     db.add(order)
     db.flush()
     if onchain_lifecycle.enabled() and order.onchain_order_id:
@@ -415,9 +455,11 @@ def mock_mark_result_ready(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Onchain machine-owner signer is not configured: {exc}",
             ) from exc
-        metadata_with_tx = dict(metadata)
-        metadata_with_tx["onchain_preview_ready_tx_hash"] = broadcast.tx_hash
-        order.execution_metadata = metadata_with_tx
+        db.refresh(order)
+        metadata_updates["onchain_preview_ready_tx_hash"] = broadcast.tx_hash
+        merged_metadata = dict(order.execution_metadata or {})
+        merged_metadata.update(metadata_updates)
+        order.execution_metadata = merged_metadata
         db.add(order)
     else:
         order_writer.mark_preview_ready(order, valid_preview=valid_preview)

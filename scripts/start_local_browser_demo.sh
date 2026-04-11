@@ -227,15 +227,15 @@ Local browser demo is ready.
 Manual testing checklist:
 - Buyer-1 (0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC) is pre-funded with 100 PWR; use this wallet for purchase flows.
 - Owner-1 owns machine-owner-1 and the machine stays unlisted so you can test listing creation and delisting flows.
-- Owner-2 and owner-3 each own a machine with active secondary listings 2001 (1,250,000 USDC) and 2002 (1,550,000 USDC), matching the marketplace seeds.
+- Owner-2 and owner-3 each own a machine with active onchain secondary listings seeded during startup.
 - Primary issuance stock is seeded to 10 so primary issuance flows remain available after seeding.
 
 Seed summary:
 - Buyer: buyer-1 (100 PWR funded, wallet 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC)
 - Owners:
   - owner-1 → machine-owner-1 (unlisted)
-  - owner-2 → machine-owner-2 (listing 2001, 1,250,000 USDC)
-  - owner-3 → machine-owner-3 (listing 2002, 1,550,000 USDC)
+  - owner-2 → machine-owner-2 (active USDC listing, 1,250,000 units)
+  - owner-3 → machine-owner-3 (active USDC listing, 1,550,000 units)
 - Primary issuance stock: 10
 
 URLs:

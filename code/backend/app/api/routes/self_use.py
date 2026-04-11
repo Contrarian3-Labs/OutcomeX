@@ -1,13 +1,21 @@
 import re
+import time
 from pathlib import Path
 from mimetypes import guess_type
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.api.routes.execution_runs import build_execution_run_response
+from app.api.routes.execution_runs import (
+    _ACTIVE_EXECUTION_STATUSES,
+    _format_sse,
+    _resolve_runtime_log_files,
+    _resolve_runtime_log_path,
+    _resolve_runtime_logs_root_path,
+    build_execution_run_response,
+)
 from app.domain.enums import ExecutionRunStatus
 from app.domain.models import ExecutionRun, Machine
 from app.domain.planning import build_recommended_plans, select_recommended_plan
@@ -17,6 +25,7 @@ from app.integrations.agentskillos_execution_service import get_agentskillos_exe
 from app.schemas.chat_plan import RecommendedPlanResponse
 from app.schemas.execution_run import ExecutionRunResponse
 from app.schemas.self_use import SelfUsePlansRequest, SelfUsePlansResponse, SelfUseRunCreateRequest
+from app.execution.observability import read_events_after_seq, read_log_chunk
 from app.services.attachments import (
     AttachmentResolutionError,
     build_planning_context_id,
@@ -227,6 +236,15 @@ def create_self_use_run(
                 attachment_ids=tuple(payload.attachment_ids),
             )
 
+            plan_candidates = tuple(
+                {
+                    "index": plan.native_plan_index if plan.native_plan_index is not None else index,
+                    "name": plan.native_plan_name or plan.title,
+                    "description": plan.native_plan_description or plan.summary,
+                    "strategy": plan.strategy.value,
+                }
+                for index, plan in enumerate(recommended_plans)
+            )
             dispatch = ExecutionEngineService(execution_service=execution_service).dispatch(
                 IntentRequest(
                     intent_id=external_order_id,
@@ -234,7 +252,8 @@ def create_self_use_run(
                     input_files=resolved_input_files,
                     execution_strategy=ExecutionStrategy(selected_plan.strategy.value),
                     context=dispatch_context,
-                )
+                ),
+                plan_candidates=plan_candidates,
             )
     except AttachmentResolutionError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
@@ -286,7 +305,8 @@ def create_self_use_run(
     db.add(machine)
     db.commit()
     db.refresh(run)
-    return build_execution_run_response(run, dispatch, None)
+    snapshot = execution_service.get_run(run.id)
+    return build_execution_run_response(run, snapshot, None)
 
 
 @router.get("/runs/{run_id}", response_model=ExecutionRunResponse)
@@ -333,3 +353,127 @@ def read_self_use_artifact_file(
 
     media_type, _ = guess_type(candidate.name)
     return FileResponse(candidate, media_type=media_type or "application/octet-stream", filename=candidate.name)
+
+
+@router.get("/runs/{run_id}/events")
+def get_self_use_run_events(
+    run_id: str,
+    viewer_wallet_address: str = Query(min_length=42, max_length=42, pattern=r"^0x[a-fA-F0-9]{40}$"),
+    after_seq: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    execution_service=Depends(get_agentskillos_execution_service),
+) -> dict:
+    _resolve_self_use_run(db=db, run_id=run_id, viewer_wallet_address=viewer_wallet_address)
+    snapshot = execution_service.get_run(run_id)
+    result = read_events_after_seq(getattr(snapshot, "events_log_path", None), after_seq=after_seq)
+    return {"items": result.items, "next_cursor": result.next_cursor}
+
+
+@router.get("/runs/{run_id}/stream")
+def stream_self_use_run_events(
+    run_id: str,
+    viewer_wallet_address: str = Query(min_length=42, max_length=42, pattern=r"^0x[a-fA-F0-9]{40}$"),
+    after_seq: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    execution_service=Depends(get_agentskillos_execution_service),
+) -> StreamingResponse:
+    _resolve_self_use_run(db=db, run_id=run_id, viewer_wallet_address=viewer_wallet_address)
+
+    def event_stream():
+        cursor = after_seq
+        while True:
+            snapshot = execution_service.get_run(run_id)
+            result = read_events_after_seq(getattr(snapshot, "events_log_path", None), after_seq=cursor)
+            emitted = False
+            for item in result.items:
+                cursor = max(cursor, int(item.get("seq", cursor) or cursor))
+                emitted = True
+                yield _format_sse("execution_event", item)
+            if snapshot.status not in _ACTIVE_EXECUTION_STATUSES and not emitted:
+                break
+            if not emitted:
+                yield ": keep-alive\n\n"
+                time.sleep(0.25)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.get("/runs/{run_id}/logs")
+def list_self_use_run_logs(
+    run_id: str,
+    viewer_wallet_address: str = Query(min_length=42, max_length=42, pattern=r"^0x[a-fA-F0-9]{40}$"),
+    db: Session = Depends(get_db),
+    execution_service=Depends(get_agentskillos_execution_service),
+) -> dict:
+    _resolve_self_use_run(db=db, run_id=run_id, viewer_wallet_address=viewer_wallet_address)
+    snapshot = execution_service.get_run(run_id)
+    return {
+        "logs_root_path": _resolve_runtime_logs_root_path(snapshot),
+        "files": [item.model_dump() for item in _resolve_runtime_log_files(snapshot)],
+    }
+
+
+@router.get("/runs/{run_id}/logs/read")
+def read_self_use_run_log(
+    run_id: str,
+    file: str,
+    viewer_wallet_address: str = Query(min_length=42, max_length=42, pattern=r"^0x[a-fA-F0-9]{40}$"),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    execution_service=Depends(get_agentskillos_execution_service),
+) -> dict:
+    _resolve_self_use_run(db=db, run_id=run_id, viewer_wallet_address=viewer_wallet_address)
+    snapshot = execution_service.get_run(run_id)
+    log_path = _resolve_runtime_log_path(snapshot, file)
+    if log_path is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution log not found")
+    result = read_log_chunk(log_path, offset=offset)
+    return {"file": result.file, "lines": result.content.splitlines(), "next_offset": result.next_offset}
+
+
+@router.get("/runs/{run_id}/logs/stream")
+def stream_self_use_run_log(
+    run_id: str,
+    file: str,
+    viewer_wallet_address: str = Query(min_length=42, max_length=42, pattern=r"^0x[a-fA-F0-9]{40}$"),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    execution_service=Depends(get_agentskillos_execution_service),
+) -> StreamingResponse:
+    _resolve_self_use_run(db=db, run_id=run_id, viewer_wallet_address=viewer_wallet_address)
+    initial_snapshot = execution_service.get_run(run_id)
+    initial_log_path = _resolve_runtime_log_path(initial_snapshot, file)
+    if initial_log_path is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution log not found")
+
+    def log_stream():
+        cursor = offset
+        while True:
+            snapshot = execution_service.get_run(run_id)
+            log_path = _resolve_runtime_log_path(snapshot, file)
+            if log_path is None:
+                break
+            result = read_log_chunk(log_path, offset=cursor)
+            emitted = False
+            if result.content:
+                line_offset = cursor
+                for raw_line in result.content.splitlines(keepends=True):
+                    line = raw_line.rstrip("\r\n")
+                    emitted = True
+                    yield _format_sse(
+                        "log_line",
+                        {
+                            "file": result.file,
+                            "offset": line_offset,
+                            "line": line,
+                        },
+                    )
+                    line_offset += len(raw_line)
+                cursor = result.next_offset
+            if snapshot.status not in _ACTIVE_EXECUTION_STATUSES and not emitted:
+                break
+            if not emitted:
+                yield ": keep-alive\n\n"
+                time.sleep(0.25)
+
+    return StreamingResponse(log_stream(), media_type="text/event-stream")

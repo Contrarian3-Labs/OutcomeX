@@ -49,7 +49,12 @@ class ExecutionService(Protocol):
     def plan(self, intent: IntentRequest) -> ExecutionPlan:
         """Normalize intent and resolve execution candidates."""
 
-    def dispatch(self, intent: IntentRequest) -> ExecutionDispatchResult:
+    def dispatch(
+        self,
+        intent: IntentRequest,
+        *,
+        plan_candidates: tuple[dict, ...] = (),
+    ) -> ExecutionDispatchResult:
         """Plan and submit execution to runtime/provider layers."""
 
 
@@ -84,7 +89,12 @@ class ExecutionEngineService:
             },
         )
 
-    def dispatch(self, intent: IntentRequest) -> ExecutionDispatchResult:
+    def dispatch(
+        self,
+        intent: IntentRequest,
+        *,
+        plan_candidates: tuple[dict, ...] = (),
+    ) -> ExecutionDispatchResult:
         plan = self.plan(intent)
         workload = self._estimate_workload(intent)
         admission = self._resolve_simulator(intent).submit(workload)
@@ -107,6 +117,8 @@ class ExecutionEngineService:
         }
         if selected_plan_index is not None and self._supports_selected_plan_index():
             submit_kwargs["selected_plan_index"] = selected_plan_index
+        if plan_candidates and self._supports_submit_arg("plan_candidates"):
+            submit_kwargs["plan_candidates"] = plan_candidates
 
         submitted_run = self._execution_service.submit_task(**submit_kwargs)
         accepted = submitted_run.status in {
@@ -139,11 +151,14 @@ class ExecutionEngineService:
         return self._simulator
 
     def _supports_selected_plan_index(self) -> bool:
+        return self._supports_submit_arg("selected_plan_index")
+
+    def _supports_submit_arg(self, argument_name: str) -> bool:
         try:
             signature = inspect.signature(self._execution_service.submit_task)
         except (TypeError, ValueError):
             return False
-        return "selected_plan_index" in signature.parameters
+        return argument_name in signature.parameters
 
     @staticmethod
     def _estimate_workload(intent: IntentRequest) -> WorkloadSpec:

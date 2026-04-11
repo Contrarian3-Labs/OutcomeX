@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from app.domain.enums import ExecutionState, OrderState, PreviewState, SettlementState
+from app.domain.enums import ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
 from app.execution.contracts import ExecutionStrategy
 
 
@@ -35,6 +35,12 @@ class OrderResponse(BaseModel):
     user_prompt: str
     recommended_plan_summary: str
     quoted_amount_cents: int
+    payment_state: PaymentState
+    unpaid_expiry_at: datetime | None
+    cancelled_at: datetime | None
+    is_expired: bool
+    is_cancelled: bool
+    machine_is_available: bool | None
     state: OrderState
     execution_state: ExecutionState
     preview_state: PreviewState

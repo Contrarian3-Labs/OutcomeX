@@ -56,3 +56,17 @@ def test_resolve_python_executable_prefers_configured_override(tmp_path) -> None
     python_path = bridge.resolve_python_executable(repo_root)
 
     assert python_path == configured_python
+
+
+def test_resolve_python_executable_prefers_legacy_reference_venv_before_current_interpreter(tmp_path) -> None:
+    repo_root = tmp_path / 'OutcomeX' / 'code' / 'agentskillos'
+    legacy_python = tmp_path / 'Hashkey' / 'reference-code' / 'AgentSkillOS' / '.venv' / 'bin' / 'python'
+    _make_repo_root(repo_root)
+    legacy_python.parent.mkdir(parents=True, exist_ok=True)
+    legacy_python.write_text('', encoding='utf-8')
+
+    bridge = AgentSkillOSBridge(settings=Settings(dashscope_api_key='test-key', agentskillos_python_executable=''))
+
+    python_path = bridge.resolve_python_executable(repo_root)
+
+    assert python_path == legacy_python

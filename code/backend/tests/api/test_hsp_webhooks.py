@@ -306,6 +306,9 @@ def test_hsp_webhook_is_idempotent_and_freezes_settlement_policy(
     assert order_after_payment.json()["execution_metadata"]["authoritative_order_status"] == "PAID"
     assert order_after_payment.json()["execution_metadata"]["authoritative_paid_projection"] is True
     assert order_after_payment.json()["execution_metadata"]["authoritative_order_event_id"] == "OrderCreated:98001:0xpaybyadapter"
+    assert order_after_payment.json()["payment_state"] == "succeeded"
+    assert order_after_payment.json()["is_cancelled"] is False
+    assert order_after_payment.json()["machine_is_available"] is True
     assert spy_writer.create_order_calls == [
         {
             "order_id": order["id"],
@@ -390,6 +393,68 @@ def test_hsp_webhook_marks_authoritative_paid_projection_when_order_is_already_a
         }
     ]
     assert spy_broadcaster.create_paid_calls == [
+        {
+            "method_name": "payOrderByAdapter",
+            "order_id": "97001",
+        }
+    ]
+    assert spy_sender.calls == [
+        {"method_name": "createOrderByAdapter", "tx_hash": "0xcreateorder"},
+        {"method_name": "payOrderByAdapter", "tx_hash": "0xpaybyadapter"},
+    ]
+
+
+def test_hsp_webhook_preserves_concurrent_projection_metadata(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
+) -> None:
+    test_client, spy_writer, _spy_broadcaster, spy_sender = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine_id=machine["id"])
+    payment = _create_payment_intent(test_client, order_id=order["id"])
+
+    class ConcurrentProjectionBroadcaster(SpyOnchainBroadcaster):
+        def broadcast_create_paid_order(self, *, write_result):
+            receipt = super().broadcast_create_paid_order(write_result=write_result)
+            with get_container().session_factory() as session:
+                persisted_order = session.get(Order, order["id"])
+                assert persisted_order is not None
+                metadata = dict(persisted_order.execution_metadata or {})
+                metadata["concurrent_projection_marker"] = "kept"
+                persisted_order.execution_metadata = metadata
+                session.add(persisted_order)
+                session.commit()
+            return receipt
+
+    broadcaster = ConcurrentProjectionBroadcaster()
+    app = test_client.app
+    app.dependency_overrides[get_onchain_broadcaster] = lambda: broadcaster
+    try:
+        payload = _webhook_payload(
+            payment,
+            status="payment-successful",
+            currency="USDC",
+            tx_signature="0xpreservemeta",
+            request_id="evt_preserve_meta",
+        )
+        body, headers = _sign_payload(payload)
+        response = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
+    finally:
+        app.dependency_overrides.pop(get_onchain_broadcaster, None)
+
+    assert response.status_code == 200
+    order_after_payment = test_client.get(f"/api/v1/orders/{order['id']}")
+    assert order_after_payment.status_code == 200
+    metadata = order_after_payment.json()["execution_metadata"]
+    assert metadata["concurrent_projection_marker"] == "kept"
+    assert metadata["authoritative_order_status"] == "PAID"
+    assert metadata["authoritative_paid_projection"] is True
+    assert spy_writer.pay_order_by_adapter_calls == [
+        {
+            "order_id": order["id"],
+            "payment_id": payment["payment_id"],
+        }
+    ]
+    assert broadcaster.create_paid_calls == [
         {
             "method_name": "payOrderByAdapter",
             "order_id": "97001",

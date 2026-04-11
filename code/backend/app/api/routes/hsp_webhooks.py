@@ -138,6 +138,8 @@ async def ingest_hsp_webhook(
         write_result = order_writer.pay_order_by_adapter(order, payment)
         broadcasted_write = tx_sender.send(write_result)
         create_paid_receipt = onchain_broadcaster.broadcast_create_paid_order(write_result=broadcasted_write)
+        db.refresh(order)
+        db.refresh(payment)
         if order.onchain_order_id is None:
             _backfill_order_chain_anchor_from_receipt(order, create_paid_receipt)
         _mark_authoritative_paid_projection(

@@ -366,9 +366,21 @@ class AgentSkillOSBridge:
             [
                 repo_root / ".venv" / "bin" / "python",
                 repo_root / ".venv" / "Scripts" / "python.exe",
-                Path(sys.executable),
             ]
         )
+
+        workspace_root = repo_root.parent.parent.parent if len(repo_root.parents) >= 3 else None
+        if workspace_root is not None:
+            candidates.extend(
+                [
+                    workspace_root / "Hashkey" / "reference-code" / "AgentSkillOS" / ".venv" / "bin" / "python",
+                    workspace_root / "Hashkey" / "reference-code" / "AgentSkillOS" / ".venv" / "Scripts" / "python.exe",
+                    workspace_root / "hashkey" / "reference-code" / "AgentSkillOS" / ".venv" / "bin" / "python",
+                    workspace_root / "hashkey" / "reference-code" / "AgentSkillOS" / ".venv" / "Scripts" / "python.exe",
+                ]
+            )
+
+        candidates.append(Path(sys.executable))
         for candidate in candidates:
             if candidate.exists():
                 return candidate

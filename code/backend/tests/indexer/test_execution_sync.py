@@ -204,3 +204,80 @@ def test_sync_execution_runs_sends_preview_ready_onchain_when_order_is_anchored(
 
     assert writer.calls == ["order-1"]
     assert lifecycle.calls == ["markPreviewReady"]
+
+
+def test_sync_execution_runs_preserves_concurrent_projection_metadata() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, future=True)
+
+    with session_factory() as db:
+        machine = Machine(
+            id="machine-1",
+            display_name="node-1",
+            owner_user_id="owner-1",
+            onchain_machine_id="7",
+            has_active_tasks=True,
+        )
+        order = Order(
+            id="order-1",
+            machine_id=machine.id,
+            onchain_machine_id="7",
+            onchain_order_id="42",
+            user_id="user-1",
+            chat_session_id="chat-1",
+            user_prompt="make image",
+            recommended_plan_summary="plan",
+            quoted_amount_cents=100,
+            state=OrderState.EXECUTING,
+            execution_state=ExecutionState.RUNNING,
+            preview_state=PreviewState.GENERATING,
+        )
+        run = ExecutionRun(
+            id="run-1",
+            order_id=order.id,
+            external_order_id=order.id,
+            status=ExecutionRunStatus.RUNNING,
+        )
+        db.add(machine)
+        db.add(order)
+        db.add(run)
+        db.commit()
+
+    writer = _WriterSpy()
+
+    class _ConcurrentProjectionLifecycle(_LifecycleSpy):
+        def send_as_user(self, *, user_id: str, write_result: OrderWriteResult) -> BroadcastReceipt:
+            receipt = super().send_as_user(user_id=user_id, write_result=write_result)
+            with session_factory() as session:
+                projected_order = session.get(Order, "order-1")
+                assert projected_order is not None
+                metadata = dict(projected_order.execution_metadata or {})
+                metadata["authoritative_order_status"] = "PREVIEW_READY"
+                metadata["authoritative_order_event_id"] = "evt_preview_ready"
+                metadata["concurrent_projection_marker"] = "kept"
+                projected_order.execution_metadata = metadata
+                session.add(projected_order)
+                session.commit()
+            return receipt
+
+    lifecycle = _ConcurrentProjectionLifecycle()
+    sync_execution_runs_once(
+        session_factory=session_factory,
+        execution_service=_ExecutionServiceStub(),
+        onchain_lifecycle=lifecycle,
+        order_writer=writer,
+    )
+
+    with session_factory() as db:
+        order = db.get(Order, "order-1")
+        assert order is not None
+        assert order.execution_metadata["run_id"] == "run-1"
+        assert order.execution_metadata["run_status"] == "succeeded"
+        assert order.execution_metadata["onchain_preview_ready_tx_hash"] == "0xlive-preview"
+        assert order.execution_metadata["authoritative_order_status"] == "PREVIEW_READY"
+        assert order.execution_metadata["authoritative_order_event_id"] == "evt_preview_ready"
+        assert order.execution_metadata["concurrent_projection_marker"] == "kept"
+
+    assert writer.calls == ["order-1"]
+    assert lifecycle.calls == ["markPreviewReady"]

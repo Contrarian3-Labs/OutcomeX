@@ -765,6 +765,7 @@ class AgentSkillOSExecutionService:
         input_files: tuple[str, ...] = (),
         execution_strategy: ExecutionStrategy = ExecutionStrategy.QUALITY,
         selected_plan_index: int | None = None,
+        plan_candidates: tuple[dict, ...] = (),
     ) -> ExecutionRunSnapshot:
         repo_root = self._bridge.resolve_repo_root()
         if repo_root is None:
@@ -814,7 +815,7 @@ class AgentSkillOSExecutionService:
             "current_phase": "queued",
             "current_step": None,
             "selected_plan": None,
-            "plan_candidates": [],
+            "plan_candidates": list(plan_candidates),
             "dag": None,
             "active_node_id": None,
             "logs_root_path": None,

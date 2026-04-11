@@ -47,6 +47,12 @@ LOCAL_DEMO_WALLET_FALLBACKS = {
     "owner-2": "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65",
     "owner-3": "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
 }
+LOCAL_DEMO_PRIVATE_KEY_FALLBACKS = {
+    "buyer-1": "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
+    "owner-1": "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+    "owner-2": "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a",
+    "owner-3": "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6",
+}
 
 
 @dataclass(frozen=True)
@@ -119,6 +125,46 @@ PWR_ABI = [
         "outputs": [{"name": "", "type": "bool"}],
     },
 ]
+ERC721_APPROVAL_ABI = [
+    {
+        "type": "function",
+        "name": "approve",
+        "stateMutability": "nonpayable",
+        "inputs": [
+            {"name": "to", "type": "address"},
+            {"name": "tokenId", "type": "uint256"},
+        ],
+        "outputs": [],
+    },
+    {
+        "type": "function",
+        "name": "getApproved",
+        "stateMutability": "view",
+        "inputs": [{"name": "tokenId", "type": "uint256"}],
+        "outputs": [{"name": "", "type": "address"}],
+    },
+]
+MACHINE_MARKETPLACE_ABI = [
+    {
+        "type": "function",
+        "name": "activeListingIdByMachine",
+        "stateMutability": "view",
+        "inputs": [{"name": "machineId", "type": "uint256"}],
+        "outputs": [{"name": "", "type": "uint256"}],
+    },
+    {
+        "type": "function",
+        "name": "createListing",
+        "stateMutability": "nonpayable",
+        "inputs": [
+            {"name": "machineId", "type": "uint256"},
+            {"name": "paymentToken", "type": "address"},
+            {"name": "price", "type": "uint256"},
+            {"name": "expiry", "type": "uint64"},
+        ],
+        "outputs": [{"name": "listingId", "type": "uint256"}],
+    },
+]
 
 
 def _web3(rpc_url: str) -> Web3:
@@ -185,6 +231,127 @@ def _build_demo_wallet_resolver(*, settings) -> BuyerAddressResolver:
     wallet_map.setdefault("owner-2", wallet_map.get("transferee-1", LOCAL_DEMO_WALLET_FALLBACKS["owner-2"]))
     wallet_map.setdefault("owner-3", wallet_map.get("treasury-1", LOCAL_DEMO_WALLET_FALLBACKS["owner-3"]))
     return BuyerAddressResolver(wallet_map)
+
+
+def _normalize_private_key(private_key: str | None) -> str | None:
+    if private_key is None:
+        return None
+    normalized = private_key.strip()
+    if not normalized:
+        return None
+    return normalized if normalized.startswith("0x") else f"0x{normalized}"
+
+
+def _build_private_key_lookup(*, settings) -> dict[str, str]:
+    wallet_to_private_key: dict[str, str] = {}
+
+    def register(private_key: str | None) -> None:
+        normalized = _normalize_private_key(private_key)
+        if normalized is None:
+            return
+        wallet = Web3().eth.account.from_key(normalized).address.lower()
+        wallet_to_private_key[wallet] = normalized
+
+    parsed = json.loads(settings.user_signer_private_keys_json or "{}")
+    if isinstance(parsed, dict):
+        for private_key in parsed.values():
+            register(str(private_key))
+
+    for private_key in (
+        settings.onchain_machine_owner_private_key,
+        settings.onchain_buyer_private_key,
+        settings.onchain_platform_treasury_private_key,
+        settings.onchain_broadcaster_private_key,
+    ):
+        register(private_key)
+
+    for private_key in LOCAL_DEMO_PRIVATE_KEY_FALLBACKS.values():
+        register(private_key)
+
+    return wallet_to_private_key
+
+
+def _send_contract_transaction(*, web3: Web3, settings, private_key: str, contract, fn_name: str, args: list[object]) -> str:
+    signer = web3.eth.account.from_key(private_key)
+    transaction = getattr(contract.functions, fn_name)(*args).build_transaction(
+        {
+            "from": signer.address,
+            "nonce": web3.eth.get_transaction_count(signer.address, "pending"),
+            "chainId": settings.onchain_chain_id,
+            "gasPrice": web3.eth.gas_price,
+        }
+    )
+    transaction["gas"] = web3.eth.estimate_gas(transaction)
+    signed = signer.sign_transaction(transaction)
+    tx_hash = web3.eth.send_raw_transaction(signed.raw_transaction)
+    receipt = web3.eth.wait_for_transaction_receipt(tx_hash, timeout=max(15, int(settings.onchain_tx_timeout_seconds)))
+    if receipt.status != 1:
+        raise RuntimeError(f"contract_transaction_failed:{fn_name}:{tx_hash.hex()}")
+    return tx_hash.hex()
+
+
+def _activate_demo_listing_onchain(
+    *,
+    listing_seed: DemoListingSeed,
+    machine: Machine,
+    settings,
+    resolver: BuyerAddressResolver,
+) -> str:
+    rpc_url = settings.onchain_rpc_url.strip()
+    if not rpc_url:
+        return listing_seed.onchain_listing_id
+
+    seller_wallet = _resolve_wallet_or_raise(resolver=resolver, user_id=listing_seed.owner_user_id)
+    private_key = _build_private_key_lookup(settings=settings).get(seller_wallet.lower())
+    if private_key is None:
+        return listing_seed.onchain_listing_id
+
+    web3 = _web3(rpc_url)
+    machine_id = int(machine.onchain_machine_id or 0)
+    if machine_id <= 0:
+        raise RuntimeError(f"machine_missing_onchain_id:{machine.id}")
+
+    marketplace_address = Web3.to_checksum_address(settings.onchain_machine_marketplace_address)
+    machine_asset = web3.eth.contract(
+        address=Web3.to_checksum_address(settings.onchain_machine_asset_address),
+        abi=ERC721_APPROVAL_ABI,
+    )
+    marketplace = web3.eth.contract(address=marketplace_address, abi=MACHINE_MARKETPLACE_ABI)
+
+    active_listing_id = int(marketplace.functions.activeListingIdByMachine(machine_id).call())
+    if active_listing_id != 0:
+        return str(active_listing_id)
+
+    approved = str(machine_asset.functions.getApproved(machine_id).call()).lower()
+    if approved != marketplace_address.lower():
+        _send_contract_transaction(
+            web3=web3,
+            settings=settings,
+            private_key=private_key,
+            contract=machine_asset,
+            fn_name="approve",
+            args=[marketplace_address, machine_id],
+        )
+
+    expiry = int((utc_now() + timedelta(days=30)).timestamp())
+    _send_contract_transaction(
+        web3=web3,
+        settings=settings,
+        private_key=private_key,
+        contract=marketplace,
+        fn_name="createListing",
+        args=[
+            machine_id,
+            Web3.to_checksum_address(settings.onchain_usdc_address),
+            listing_seed.price_units,
+            expiry,
+        ],
+    )
+
+    active_listing_id = int(marketplace.functions.activeListingIdByMachine(machine_id).call())
+    if active_listing_id == 0:
+        raise RuntimeError(f"listing_not_created_onchain:{machine.id}")
+    return str(active_listing_id)
 
 
 def _ensure_machine_record(
@@ -265,9 +432,15 @@ def _seed_demo_listings(*, settings, resolver: BuyerAddressResolver, machines_by
     for listing_seed in DEMO_ACTIVE_LISTING_SEEDS:
         machine = machines_by_id[listing_seed.machine_id]
         seller_wallet = _resolve_wallet_or_raise(resolver=resolver, user_id=listing_seed.owner_user_id)
+        onchain_listing_id = _activate_demo_listing_onchain(
+            listing_seed=listing_seed,
+            machine=machine,
+            settings=settings,
+            resolver=resolver,
+        )
         listing = MachineListing(
             id=listing_seed.listing_id,
-            onchain_listing_id=listing_seed.onchain_listing_id,
+            onchain_listing_id=onchain_listing_id,
             machine_id=machine.id,
             onchain_machine_id=machine.onchain_machine_id,
             seller_chain_address=seller_wallet,

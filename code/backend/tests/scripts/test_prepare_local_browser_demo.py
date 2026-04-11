@@ -14,6 +14,7 @@ from scripts.prepare_local_browser_demo import (
     format_seed_report,
     seed_demo_projection_state,
 )
+import scripts.prepare_local_browser_demo as prepare_local_browser_demo
 
 
 class FakeLifecycleService:
@@ -213,3 +214,28 @@ def test_seed_demo_projection_state_uses_local_demo_wallet_fallback_for_owner2_o
     assert machine_wallets["owner-1"] == "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
     assert machine_wallets["owner-2"] == "0x15d34aaf54267db7d7c367839aaf71a00a2c6a65"
     assert machine_wallets["owner-3"] == "0x90f79bf6eb2c4f870365e785982e1f101e93b906"
+
+
+def test_seed_demo_projection_state_uses_real_onchain_listing_ids_when_available(seed_context, monkeypatch) -> None:
+    settings, container, resolver, lifecycle = seed_context
+    created_listing_ids = iter(["11", "12"])
+
+    monkeypatch.setattr(
+        prepare_local_browser_demo,
+        "_activate_demo_listing_onchain",
+        lambda **_: next(created_listing_ids),
+    )
+
+    summary = seed_demo_projection_state(
+        settings=settings,
+        container=container,
+        resolver=resolver,
+        lifecycle=lifecycle,
+    )
+
+    assert [listing["onchain_listing_id"] for listing in summary["active_listings"]] == ["11", "12"]
+
+    with container.session_factory() as session:
+        listings = session.query(MachineListing).order_by(MachineListing.machine_id.asc()).all()
+
+    assert [listing.onchain_listing_id for listing in listings] == ["11", "12"]

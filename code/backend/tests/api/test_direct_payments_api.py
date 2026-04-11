@@ -349,7 +349,7 @@ def test_finalize_usdt_direct_payment_intent_returns_wallet_envelope(
     assert payload["submit_payload"]["value"] == "0x0"
 
 
-def test_sync_onchain_payment_records_correlation_without_route_side_state_mutation(
+def test_sync_onchain_payment_marks_paid_projection_and_records_correlation(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
 ) -> None:
     test_client, spy_writer, spy_verifier = client
@@ -379,22 +379,27 @@ def test_sync_onchain_payment_records_correlation_without_route_side_state_mutat
         json={"state": "succeeded", "tx_hash": "0xabc123", "wallet_address": "0xbuyer"},
     )
     assert sync.status_code == 200
-    assert sync.json()["state"] == "pending"
+    assert sync.json()["state"] == "succeeded"
     assert sync.json()["synced_onchain"] is True
 
     order_after = test_client.get(f"/api/v1/orders/{order['id']}")
     assert order_after.status_code == 200
-    assert order_after.json()["onchain_order_id"] is None
-    assert order_after.json()["create_order_tx_hash"] is None
-    assert order_after.json()["create_order_event_id"] is None
-    assert order_after.json()["create_order_block_number"] is None
+    assert order_after.json()["onchain_order_id"] == "oc_42001"
+    assert order_after.json()["create_order_tx_hash"] == "0xabc123"
+    assert order_after.json()["create_order_event_id"] == "OrderCreated:oc_42001:0xabc123"
+    assert order_after.json()["create_order_block_number"] == 2001001
     assert order_after.json()["execution_metadata"]["last_payment_tx_hash"] == "0xabc123"
-    assert order_after.json()["settlement_beneficiary_user_id"] is None
-    assert order_after.json()["settlement_is_dividend_eligible"] is None
+    assert order_after.json()["execution_metadata"]["authoritative_paid_projection"] is True
+    assert order_after.json()["execution_metadata"]["authoritative_order_status"] == "PAID"
+    assert order_after.json()["payment_state"] == "succeeded"
+    assert order_after.json()["is_cancelled"] is False
+    assert order_after.json()["machine_is_available"] is True
+    assert order_after.json()["settlement_beneficiary_user_id"] == machine["owner_user_id"]
+    assert order_after.json()["settlement_is_dividend_eligible"] is True
     assert spy_writer.mark_paid_calls == []
 
 
-def test_sync_onchain_pwr_payment_records_correlation_without_route_side_state_mutation(
+def test_sync_onchain_pwr_payment_marks_paid_projection_and_records_correlation(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
 ) -> None:
     test_client, spy_writer, spy_verifier = client
@@ -430,7 +435,7 @@ def test_sync_onchain_pwr_payment_records_correlation_without_route_side_state_m
         json={"state": "succeeded", "tx_hash": "0xpwr123", "wallet_address": "0xbuyer"},
     )
     assert sync.status_code == 200
-    assert sync.json()["state"] == "pending"
+    assert sync.json()["state"] == "succeeded"
     assert sync.json()["synced_onchain"] is True
 
     order_after = test_client.get(f"/api/v1/orders/{order['id']}")
@@ -440,8 +445,13 @@ def test_sync_onchain_pwr_payment_records_correlation_without_route_side_state_m
     assert order_after.json()["create_order_event_id"] is not None
     assert order_after.json()["create_order_block_number"] is not None
     assert order_after.json()["execution_metadata"]["last_payment_tx_hash"] == "0xpwr123"
-    assert order_after.json()["settlement_beneficiary_user_id"] is None
-    assert order_after.json()["settlement_is_dividend_eligible"] is None
+    assert order_after.json()["execution_metadata"]["authoritative_paid_projection"] is True
+    assert order_after.json()["execution_metadata"]["authoritative_order_status"] == "PAID"
+    assert order_after.json()["payment_state"] == "succeeded"
+    assert order_after.json()["is_cancelled"] is False
+    assert order_after.json()["machine_is_available"] is True
+    assert order_after.json()["settlement_beneficiary_user_id"] == machine["owner_user_id"]
+    assert order_after.json()["settlement_is_dividend_eligible"] is True
     assert spy_writer.mark_paid_calls == []
 
 

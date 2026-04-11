@@ -124,41 +124,51 @@ def _sync_order_from_snapshot(
     onchain_lifecycle: OnchainLifecycleService,
     order_writer: OrderWriter,
 ) -> None:
-    metadata = dict(order.execution_metadata or {})
-    metadata["run_id"] = run.id
-    metadata["run_status"] = run.status.value
+    metadata_updates = {
+        "run_id": run.id,
+        "run_status": run.status.value,
+    }
+    next_execution_state = order.execution_state
+    next_preview_state = order.preview_state
+    next_order_state = order.state
 
     if run.status == ExecutionRunStatus.SUCCEEDED:
         _broadcast_preview_ready_if_needed(
             db=db,
             order=order,
             valid_preview=True,
-            metadata=metadata,
+            metadata=metadata_updates,
             onchain_lifecycle=onchain_lifecycle,
             order_writer=order_writer,
         )
-        order.execution_state = ExecutionState.SUCCEEDED
-        order.preview_state = PreviewState.READY
+        next_execution_state = ExecutionState.SUCCEEDED
+        next_preview_state = PreviewState.READY
         if order.state == OrderState.EXECUTING:
-            order.state = OrderState.RESULT_PENDING_CONFIRMATION
+            next_order_state = OrderState.RESULT_PENDING_CONFIRMATION
         _release_machine_active_task(db=db, machine_id=order.machine_id)
     elif run.status in {ExecutionRunStatus.FAILED, ExecutionRunStatus.CANCELLED}:
         _broadcast_failed_preview_refund_if_needed(
             db=db,
             order=order,
-            metadata=metadata,
+            metadata=metadata_updates,
             onchain_lifecycle=onchain_lifecycle,
             order_writer=order_writer,
         )
-        order.execution_state = (
+        next_execution_state = (
             ExecutionState.FAILED
             if run.status == ExecutionRunStatus.FAILED
             else ExecutionState.CANCELLED
         )
-        order.state = OrderState.CANCELLED
+        next_order_state = OrderState.CANCELLED
         _release_machine_active_task(db=db, machine_id=order.machine_id)
 
-    order.execution_metadata = metadata
+    db.refresh(order)
+    merged_metadata = dict(order.execution_metadata or {})
+    merged_metadata.update(metadata_updates)
+    order.execution_state = next_execution_state
+    order.preview_state = next_preview_state
+    order.state = next_order_state
+    order.execution_metadata = merged_metadata
     db.add(order)
 
 

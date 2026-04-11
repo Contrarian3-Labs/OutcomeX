@@ -33,6 +33,7 @@ class _ExecutionServiceStub:
         input_files=(),
         execution_strategy=ExecutionStrategy.QUALITY,
         selected_plan_index: int | None = None,
+        plan_candidates=(),
     ):
         self.submit_calls.append(
             {
@@ -41,6 +42,7 @@ class _ExecutionServiceStub:
                 "input_files": list(input_files),
                 "execution_strategy": execution_strategy.value,
                 "selected_plan_index": selected_plan_index,
+                "plan_candidates": list(plan_candidates),
             }
         )
         return type(
@@ -80,10 +82,16 @@ class _ExecutionServiceStub:
                 "last_heartbeat_at": datetime.now(timezone.utc),
                 "current_phase": "queued",
                 "current_step": None,
+                "plan_candidates": tuple(plan_candidates),
             },
         )()
 
     def get_run(self, run_id: str):
+        latest_submit = self.submit_calls[-1] if self.submit_calls else None
+        plan_candidates = tuple((latest_submit or {}).get("plan_candidates", []))
+        selected_plan_index = (latest_submit or {}).get("selected_plan_index", 2)
+        execution_strategy = (latest_submit or {}).get("execution_strategy", "simplicity")
+        submission_files = list((latest_submit or {}).get("input_files", ["owner-notes.md"]))
         return type(
             "Snapshot",
             (),
@@ -93,12 +101,12 @@ class _ExecutionServiceStub:
                 "status": ExecutionRunStatus.SUCCEEDED,
                 "submission_payload": {
                     "intent": "Build owner dashboard",
-                    "files": ["owner-notes.md"],
-                    "execution_strategy": "simplicity",
-                    "selected_plan_index": 2,
+                    "files": submission_files,
+                    "execution_strategy": execution_strategy,
+                    "selected_plan_index": selected_plan_index,
                 },
                 "selected_plan": {
-                    "index": 2,
+                    "index": selected_plan_index,
                     "name": "Selected Native Plan",
                     "description": "Self-use selected plan",
                     "nodes": [{"id": "n1", "name": "preview"}],
@@ -121,6 +129,7 @@ class _ExecutionServiceStub:
                 "last_heartbeat_at": datetime.now(timezone.utc),
                 "current_phase": "finished",
                 "current_step": None,
+                "plan_candidates": plan_candidates,
             },
         )()
 
@@ -396,6 +405,12 @@ def test_self_use_owner_flow_without_order_side_effects(client: tuple[TestClient
     assert run_payload["external_order_id"] == f"self-use:{machine['id']}:{owner_wallet.lower()}"
     assert run_payload["submission_payload"]["selected_plan_index"] == 2
     assert stub.submit_calls[0]["selected_plan_index"] == 2
+    assert len(run_payload["plan_candidates"]) == 3
+    assert [item["strategy"] for item in run_payload["plan_candidates"]] == [
+        "simplicity",
+        "quality",
+        "efficiency",
+    ]
 
     after_orders = test_client.get("/api/v1/orders", params={"user_id": owner_user_id})
     assert after_orders.status_code == 200
@@ -503,3 +518,65 @@ def test_self_use_artifact_file_endpoint_serves_preview_and_blocks_unknown_paths
         params={"viewer_wallet_address": OWNER_WALLET, "path": "workspace/unknown.png"},
     )
     assert missing.status_code == 404
+
+
+def test_self_use_run_events_and_logs_endpoints_use_owner_scoped_routes(
+    client: tuple[TestClient, _ExecutionServiceStub],
+) -> None:
+    test_client, _ = client
+    machine = _create_machine(test_client)
+
+    create_run = test_client.post(
+        "/api/v1/self-use/runs",
+        json={
+            "viewer_wallet_address": OWNER_WALLET,
+            "machine_id": machine["id"],
+            "prompt": "Build owner dashboard",
+            "execution_strategy": "simplicity",
+            "input_files": ["owner-notes.md"],
+        },
+    )
+    assert create_run.status_code == 201
+    run_id = create_run.json()["id"]
+
+    logs_dir = Path(client[1].read_run_dir) / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    (logs_dir / "planner.log").write_text("line one\nline two\n", encoding="utf-8")
+    Path("/tmp/events.ndjson").write_text(
+        "\n".join(
+            [
+                '{"seq":1,"event":"run_started","phase":"starting"}',
+                '{"seq":2,"event":"plan_selected","phase":"plan_selection"}',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    Path("/tmp/stdout.log").write_text("", encoding="utf-8")
+    Path("/tmp/stderr.log").write_text("warning\n", encoding="utf-8")
+
+    events = test_client.get(
+        f"/api/v1/self-use/runs/{run_id}/events",
+        params={"viewer_wallet_address": OWNER_WALLET, "after_seq": 1},
+    )
+    assert events.status_code == 200
+    assert [item["seq"] for item in events.json()["items"]] == [2]
+
+    logs = test_client.get(
+        f"/api/v1/self-use/runs/{run_id}/logs",
+        params={"viewer_wallet_address": OWNER_WALLET},
+    )
+    assert logs.status_code == 200
+    assert [item["name"] for item in logs.json()["files"]] == ["planner.log", "stdout.log", "stderr.log"]
+
+    read_log = test_client.get(
+        f"/api/v1/self-use/runs/{run_id}/logs/read",
+        params={"viewer_wallet_address": OWNER_WALLET, "file": "planner.log", "offset": 0},
+    )
+    assert read_log.status_code == 200
+    assert read_log.json()["lines"] == ["line one", "line two"]
+
+    forbidden = test_client.get(
+        f"/api/v1/self-use/runs/{run_id}/events",
+        params={"viewer_wallet_address": OTHER_WALLET, "after_seq": 0},
+    )
+    assert forbidden.status_code == 403
