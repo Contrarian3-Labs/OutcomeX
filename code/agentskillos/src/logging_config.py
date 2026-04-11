@@ -6,6 +6,7 @@ import sys
 
 # Prevent litellm from installing a DEBUG StreamHandler at import time
 os.environ.setdefault("LITELLM_LOG", "WARNING")
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 from pathlib import Path
 from typing import Optional
 

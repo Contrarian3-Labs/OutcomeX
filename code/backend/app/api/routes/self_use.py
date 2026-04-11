@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.api.routes.execution_runs import (
     _ACTIVE_EXECUTION_STATUSES,
+    _build_artifact_archive,
     _format_sse,
+    _resolve_artifact_source_path,
     _resolve_runtime_log_files,
     _resolve_runtime_log_path,
     _resolve_runtime_logs_root_path,
@@ -331,28 +333,23 @@ def read_self_use_artifact_file(
 ):
     run, _, _ = _resolve_self_use_run(db=db, run_id=run_id, viewer_wallet_address=viewer_wallet_address)
     snapshot = execution_service.get_run(run_id)
-    allowed_paths = {
-        str(item.get("path"))
-        for item in [*(getattr(snapshot, "preview_manifest", ()) or ()), *(getattr(snapshot, "artifact_manifest", ()) or ())]
-        if isinstance(item, dict) and item.get("path")
-    }
-    if path not in allowed_paths:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
-
-    run_dir_raw = getattr(snapshot, "run_dir", None) or run.run_dir
-    if not run_dir_raw:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact source unavailable")
-    run_dir = Path(run_dir_raw).resolve()
-    candidate = (run_dir / path).resolve()
-    try:
-        candidate.relative_to(run_dir)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Artifact path is outside run root") from exc
-    if not candidate.is_file():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact file missing")
-
+    candidate = _resolve_artifact_source_path(snapshot, run.run_dir, path)
     media_type, _ = guess_type(candidate.name)
     return FileResponse(candidate, media_type=media_type or "application/octet-stream", filename=candidate.name)
+
+
+@router.get("/runs/{run_id}/artifacts/archive")
+def download_self_use_artifact_archive(
+    run_id: str,
+    viewer_wallet_address: str = Query(min_length=42, max_length=42, pattern=r"^0x[a-fA-F0-9]{40}$"),
+    db: Session = Depends(get_db),
+    execution_service=Depends(get_agentskillos_execution_service),
+):
+    run, _, _ = _resolve_self_use_run(db=db, run_id=run_id, viewer_wallet_address=viewer_wallet_address)
+    snapshot = execution_service.get_run(run_id)
+    archive_bytes, archive_name = _build_artifact_archive(snapshot, run.run_dir, f"self-use-run-{run_id}-outputs.zip")
+    headers = {"Content-Disposition": f'attachment; filename="{archive_name}"'}
+    return StreamingResponse(iter([archive_bytes]), media_type="application/zip", headers=headers)
 
 
 @router.get("/runs/{run_id}/events")

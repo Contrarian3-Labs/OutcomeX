@@ -1,10 +1,14 @@
 import json
 import time
 from datetime import datetime
+from io import BytesIO
+from mimetypes import guess_type
+from pathlib import Path
 from types import SimpleNamespace
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -137,6 +141,55 @@ def _resolve_runtime_logs_root_path(snapshot) -> str | None:
     if explicit:
         return explicit
     return resolve_logs_root_path(getattr(snapshot, "run_dir", None))
+
+
+def _resolve_artifact_manifest_paths(snapshot) -> list[str]:
+    paths: list[str] = []
+    for item in [*(getattr(snapshot, "preview_manifest", ()) or ()), *(getattr(snapshot, "artifact_manifest", ()) or ())]:
+        if isinstance(item, dict) and item.get("path"):
+            paths.append(str(item.get("path")))
+    return paths
+
+
+def _resolve_artifact_source_path(snapshot, fallback_run_dir: str | None, relative_path: str) -> Path:
+    allowed_paths = set(_resolve_artifact_manifest_paths(snapshot))
+    if relative_path not in allowed_paths:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
+
+    run_dir_raw = getattr(snapshot, "run_dir", None) or fallback_run_dir
+    if not run_dir_raw:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact source unavailable")
+    run_dir = Path(run_dir_raw).resolve()
+    candidate = (run_dir / relative_path).resolve()
+    try:
+        candidate.relative_to(run_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Artifact path is outside run root") from exc
+    if not candidate.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact file missing")
+    return candidate
+
+
+def _build_artifact_archive(snapshot, fallback_run_dir: str | None, archive_name: str) -> tuple[bytes, str]:
+    paths = _resolve_artifact_manifest_paths(snapshot)
+    if not paths:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No artifacts available")
+
+    buffer = BytesIO()
+    included = 0
+    with ZipFile(buffer, mode="w", compression=ZIP_DEFLATED) as archive:
+        for relative_path in paths:
+            try:
+                source = _resolve_artifact_source_path(snapshot, fallback_run_dir, relative_path)
+            except HTTPException:
+                continue
+            archive.write(source, arcname=relative_path)
+            included += 1
+
+    if included == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact files are unavailable")
+    buffer.seek(0)
+    return buffer.getvalue(), archive_name
 
 
 def _resolve_runtime_event_cursor(snapshot) -> int:
@@ -428,6 +481,33 @@ def stream_execution_run_events(
                 time.sleep(0.25)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.get("/{run_id}/artifacts/file")
+def read_execution_run_artifact_file(
+    run_id: str,
+    path: str = Query(min_length=1),
+    db: Session = Depends(get_db),
+    execution_service=Depends(get_agentskillos_execution_service),
+):
+    run = _get_run_or_404(db, run_id)
+    snapshot = execution_service.get_run(run_id)
+    candidate = _resolve_artifact_source_path(snapshot, run.run_dir, path)
+    media_type, _ = guess_type(candidate.name)
+    return FileResponse(candidate, media_type=media_type or "application/octet-stream", filename=candidate.name)
+
+
+@router.get("/{run_id}/artifacts/archive")
+def download_execution_run_artifact_archive(
+    run_id: str,
+    db: Session = Depends(get_db),
+    execution_service=Depends(get_agentskillos_execution_service),
+):
+    run = _get_run_or_404(db, run_id)
+    snapshot = execution_service.get_run(run_id)
+    archive_bytes, archive_name = _build_artifact_archive(snapshot, run.run_dir, f"execution-run-{run_id}-outputs.zip")
+    headers = {"Content-Disposition": f'attachment; filename="{archive_name}"'}
+    return StreamingResponse(iter([archive_bytes]), media_type="application/zip", headers=headers)
 
 
 @router.get("/{run_id}/logs")

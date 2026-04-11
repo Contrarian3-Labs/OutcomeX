@@ -31,6 +31,6 @@ def ensure_cache():
             litellm.cache.cache.disk_cache.reset('size_limit', int(20e9))  # 20GB
             litellm.enable_cache()
             _cache_initialized = True
-        except Exception as e:
-            from rich.console import Console
-            Console(stderr=True).print(f"[yellow]Warning: LiteLLM cache init failed: {e}[/yellow]")
+        except Exception:
+            # Disk cache is optional; keep runtime silent if the extra is unavailable.
+            return
