@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
+from shutil import which
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -324,27 +326,52 @@ class AgentSkillOSBridge:
     def resolve_repo_root(self) -> Path | None:
         configured = self._settings.agentskillos_root.strip()
         candidates: list[Path] = []
-        if configured:
-            candidates.append(Path(configured))
+        seen: set[str] = set()
 
-        for parent in Path(__file__).resolve().parents:
-            sibling = parent.parent / "Hashkey" / "reference-code" / "AgentSkillOS"
-            candidates.append(sibling)
+        def add_candidate(path: Path) -> None:
+            resolved = str(path)
+            if resolved not in seen:
+                seen.add(resolved)
+                candidates.append(path)
+
+        if configured:
+            add_candidate(Path(configured))
+
+        current_file = Path(__file__).resolve()
+        for parent in current_file.parents:
+            add_candidate(parent / "code" / "agentskillos")
+            if parent.name == "code":
+                add_candidate(parent / "agentskillos")
+
+        for parent in current_file.parents:
+            add_candidate(parent.parent / "Hashkey" / "reference-code" / "AgentSkillOS")
 
         for candidate in candidates:
             if (candidate / "run.py").exists() and (candidate / "src" / "workflow" / "service.py").exists():
                 return candidate
         return None
 
-    @staticmethod
-    def resolve_python_executable(repo_root: Path) -> Path | None:
-        candidates = (
-            repo_root / ".venv" / "bin" / "python",
-            repo_root / ".venv" / "Scripts" / "python.exe",
+    def resolve_python_executable(self, repo_root: Path) -> Path | None:
+        configured = self._settings.agentskillos_python_executable.strip()
+        candidates = []
+        if configured:
+            candidates.append(Path(configured))
+
+        candidates.extend(
+            [
+                repo_root / ".venv" / "bin" / "python",
+                repo_root / ".venv" / "Scripts" / "python.exe",
+                Path(sys.executable),
+            ]
         )
         for candidate in candidates:
             if candidate.exists():
                 return candidate
+
+        for command in ("python3", "python"):
+            resolved = which(command)
+            if resolved:
+                return Path(resolved)
         return None
 
     def build_execution_env(self) -> dict[str, str]:
