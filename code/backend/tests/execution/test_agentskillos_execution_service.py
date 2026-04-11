@@ -317,6 +317,8 @@ def test_structured_events_round_trip_from_persisted_file(tmp_path: Path) -> Non
 def test_embedded_execution_script_compiles() -> None:
     assert "list_log_files(" not in execution_module._EXECUTION_SCRIPT
     assert "discover_log_sources(" in execution_module._EXECUTION_SCRIPT
+    assert "def emit_search_event(" in execution_module._EXECUTION_SCRIPT
+    assert "event_callback=emit_search_event" in execution_module._EXECUTION_SCRIPT
     assert "initial.update(failed)" in execution_module._EXECUTION_SCRIPT
     assert "initial.update(final)" in execution_module._EXECUTION_SCRIPT
     compile(execution_module._EXECUTION_SCRIPT, "<agentskillos_execution_script>", "exec")

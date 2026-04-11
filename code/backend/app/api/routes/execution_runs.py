@@ -153,9 +153,36 @@ def _resolve_last_progress_at(snapshot) -> datetime | None:
     return _coerce_datetime(getattr(snapshot, "last_heartbeat_at", None))
 
 
-def _resolve_display_current_step(status: ExecutionRunStatus, current_step: str | None) -> str | None:
+def _resolve_display_current_step(
+    status: ExecutionRunStatus,
+    current_step: str | None,
+    current_phase: str | None = None,
+) -> str | None:
     if current_step:
         return current_step
+    normalized_phase = (current_phase or "").strip().lower()
+    if normalized_phase == "queued":
+        return "Queued"
+    if normalized_phase in {
+        "starting",
+    }:
+        return "Starting"
+    if normalized_phase in {
+        "planning",
+        "anchor_inference",
+        "skill_discovery",
+        "plan_generation",
+        "plan_selection",
+    }:
+        return "Planning"
+    if normalized_phase in {"executing", "collecting_artifacts"}:
+        return "Running"
+    if status == ExecutionRunStatus.QUEUED:
+        return "Queued"
+    if status == ExecutionRunStatus.PLANNING:
+        return "Planning"
+    if status == ExecutionRunStatus.RUNNING:
+        return "Running"
     if status == ExecutionRunStatus.SUCCEEDED:
         return "Completed"
     if status == ExecutionRunStatus.FAILED:
@@ -304,6 +331,7 @@ def build_execution_run_response(run: ExecutionRun, snapshot, order: Order | Non
             "current_step": _resolve_display_current_step(
                 response.status,
                 getattr(snapshot, "current_step", None),
+                getattr(snapshot, "current_phase", None),
             ),
             "plan_candidates": _normalize_plan_candidates(getattr(snapshot, "plan_candidates", [])),
             "dag": getattr(snapshot, "dag", None),

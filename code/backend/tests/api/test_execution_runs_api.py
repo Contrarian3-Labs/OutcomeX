@@ -15,6 +15,7 @@ from app.onchain.lifecycle_service import BroadcastReceipt, get_onchain_lifecycl
 from app.onchain.order_writer import OrderWriteResult, get_order_writer
 from app.main import create_app
 from app.domain.models import ExecutionRun, Order
+from app.api.routes.execution_runs import _resolve_display_current_step
 from app.runtime.hardware_simulator import WorkloadSpec, get_shared_hardware_simulator
 
 
@@ -41,6 +42,13 @@ class _LifecycleSpy:
     def send_as_user(self, *, user_id: str, write_result: OrderWriteResult) -> BroadcastReceipt:
         self.calls.append((user_id, write_result.method_name, write_result.payload))
         return BroadcastReceipt(tx_hash="0xpreview", receipt=None)
+
+
+def test_resolve_display_current_step_falls_back_to_phase_labels() -> None:
+    assert _resolve_display_current_step(ExecutionRunStatus.QUEUED, None) == "Queued"
+    assert _resolve_display_current_step(ExecutionRunStatus.PLANNING, None) == "Planning"
+    assert _resolve_display_current_step(ExecutionRunStatus.RUNNING, None) == "Running"
+    assert _resolve_display_current_step(ExecutionRunStatus.SUCCEEDED, None) == "Completed"
 
 
 class _WriterSpy:

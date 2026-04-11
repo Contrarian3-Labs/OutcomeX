@@ -126,6 +126,46 @@ def heartbeat(payload, *, phase, step=None):
     append_event("heartbeat", phase=phase, step=step, message=f"Heartbeat: {phase}")
 
 
+def search_event_context(event_type, data):
+    data = data or {}
+    if event_type == "search_start":
+        return ("skill_discovery", "Searching skills", f"Searching skill tree for task")
+    if event_type == "node_enter":
+        node_name = data.get("node_name") or data.get("node_id") or "node"
+        depth = data.get("depth")
+        suffix = f" (depth {depth})" if depth is not None else ""
+        return ("skill_discovery", f"Exploring {node_name}", f"Exploring skill node {node_name}{suffix}")
+    if event_type == "children_selected":
+        selected = list(data.get("selected") or [])
+        parent_id = data.get("parent_id") or "node"
+        return (
+            "skill_discovery",
+            f"Routing via {parent_id}",
+            f"Selected {len(selected)} child paths under {parent_id}",
+        )
+    if event_type == "skills_selected":
+        selected = list(data.get("selected") or [])
+        return ("skill_discovery", "Selecting candidate skills", f"Selected {len(selected)} candidate skills")
+    if event_type == "prune_start":
+        count = data.get("skill_count") or 0
+        return ("skill_discovery", "Pruning skills", f"Pruning {count} candidate skills")
+    if event_type == "prune_complete":
+        count = data.get("skill_count") or 0
+        return ("skill_discovery", "Pruning complete", f"Kept {count} skills after pruning")
+    if event_type == "search_complete":
+        skills = list(data.get("skills") or [])
+        return ("skill_discovery", "Skill search complete", f"Skill search complete with {len(skills)} skills")
+    return ("skill_discovery", "Searching skills", event_type)
+
+
+def emit_search_event(event_type, data=None):
+    phase, step, message = search_event_context(event_type, data)
+    initial["current_phase"] = phase
+    initial["current_step"] = step
+    write_record(initial)
+    append_event(event_type, phase=phase, step=step, message=message, **(data or {}))
+
+
 def normalize_plan_candidate(plan, index):
     if not isinstance(plan, dict):
         return {
@@ -374,7 +414,7 @@ async def execute_with_selected_native_plan():
         message=f"Resolved {len(required_skills)} anchor skills",
         required_skills=required_skills,
     )
-    discovered_skills = discover_skills(task_prompt, skill_group=skill_group)
+    discovered_skills = discover_skills(task_prompt, skill_group=skill_group, event_callback=emit_search_event)
     skills = merge_skills(required_skills=required_skills, discovered_skills=discovered_skills)
     append_event(
         "skills_discovered",
