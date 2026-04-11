@@ -19,6 +19,22 @@ from ..execution.observability import list_log_files, read_events_after_seq, res
 from .agentskillos_bridge import AgentSkillOSBridge
 
 _STALL_AFTER_SECONDS = 60
+_IGNORED_ARTIFACT_PARTS = frozenset(
+    {
+        "node_modules",
+        "__pycache__",
+        ".git",
+        ".venv",
+        "venv",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".npm",
+        ".yarn",
+        ".pnpm-store",
+        ".turbo",
+    }
+)
 
 _EXECUTION_SCRIPT = """
 import asyncio
@@ -458,6 +474,21 @@ async def main():
     if workspace_dir.exists():
         for path in sorted(p for p in workspace_dir.rglob("*") if p.is_file()):
             rel = path.relative_to(run_dir).as_posix()
+            if any(part in {
+                "node_modules",
+                "__pycache__",
+                ".git",
+                ".venv",
+                "venv",
+                ".pytest_cache",
+                ".mypy_cache",
+                ".ruff_cache",
+                ".npm",
+                ".yarn",
+                ".pnpm-store",
+                ".turbo",
+            } for part in Path(rel).parts):
+                continue
             artifacts.append(
                 {
                     "path": rel,
@@ -555,6 +586,86 @@ async def main():
 
 asyncio.run(main())
 """.strip()
+
+
+
+def classify_artifact(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+        return "image"
+    if suffix in {".mp4", ".mov", ".webm"}:
+        return "video"
+    if suffix in {".pptx"}:
+        return "presentation"
+    if suffix in {".docx", ".pdf", ".md"}:
+        return "document"
+    if suffix in {".xlsx", ".csv"}:
+        return "spreadsheet"
+    if suffix in {".html"}:
+        return "html"
+    if suffix in {".json"}:
+        return "json"
+    if suffix in {".pkl"}:
+        return "model"
+    return "file"
+
+
+
+def is_visible_artifact_path(path_value: str | Path) -> bool:
+    parts = Path(path_value).parts
+    return all(part not in _IGNORED_ARTIFACT_PARTS for part in parts)
+
+
+
+def choose_preview(artifacts: list[dict]) -> list[dict]:
+    preferred = {"image", "video", "html", "presentation", "document"}
+    return [artifact for artifact in artifacts if artifact.get("type") in preferred][:5]
+
+
+
+def collect_visible_artifacts(*, run_dir: Path, workspace_dir: Path) -> list[dict]:
+    artifacts: list[dict] = []
+    if not workspace_dir.exists():
+        return artifacts
+    for path in sorted(p for p in workspace_dir.rglob("*") if p.is_file()):
+        rel = path.relative_to(run_dir).as_posix()
+        if not is_visible_artifact_path(rel):
+            continue
+        artifacts.append(
+            {
+                "path": rel,
+                "type": classify_artifact(path),
+                "role": "final",
+            }
+        )
+    return artifacts
+
+
+
+def sanitize_visible_manifests(payload: dict) -> dict:
+    original_artifacts = list(payload.get("artifact_manifest") or [])
+    original_previews = list(payload.get("preview_manifest") or [])
+    artifact_manifest = [
+        dict(item)
+        for item in original_artifacts
+        if is_visible_artifact_path(str(item.get("path") or ""))
+    ]
+    visible_artifact_paths = {str(item.get("path") or "") for item in artifact_manifest}
+    preview_manifest = [
+        dict(item)
+        for item in original_previews
+        if str(item.get("path") or "") in visible_artifact_paths and is_visible_artifact_path(str(item.get("path") or ""))
+    ]
+    if not preview_manifest or len(preview_manifest) != len(original_previews):
+        preview_manifest = choose_preview(artifact_manifest)
+
+    if artifact_manifest == original_artifacts and preview_manifest == original_previews:
+        return payload
+
+    sanitized = dict(payload)
+    sanitized["artifact_manifest"] = artifact_manifest
+    sanitized["preview_manifest"] = preview_manifest
+    return sanitized
 
 
 @dataclass(frozen=True)
@@ -725,6 +836,10 @@ class AgentSkillOSExecutionService:
             raise FileNotFoundError(run_id)
         payload = json.loads(record_path.read_text(encoding="utf-8"))
         payload = self._reconcile_stale_process(payload, record_path=record_path)
+        sanitized_payload = sanitize_visible_manifests(payload)
+        if sanitized_payload is not payload:
+            payload = sanitized_payload
+            record_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         pid = payload.get("pid")
         pid_alive = self._process_exists(int(pid)) if pid else None
         last_heartbeat_at = _parse_datetime(payload.get("last_heartbeat_at"))

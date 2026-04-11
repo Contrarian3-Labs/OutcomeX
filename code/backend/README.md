@@ -109,9 +109,16 @@ pip install -e ".[dev]"
 uvicorn app.main:app --reload
 ```
 
+AgentSkillOS runtime defaults:
+
+- backend prefers vendored `code/agentskillos` automatically when `OUTCOMEX_AGENTSKILLOS_ROOT` is unset
+- optionally set `OUTCOMEX_AGENTSKILLOS_PYTHON_EXECUTABLE=/absolute/path/to/python` when the AgentSkillOS runtime should use a dedicated interpreter instead of the backend venv
+
 Local browser demo entrypoint:
 
 - from repo root, use `scripts/start_local_browser_demo.sh`
+- the script now forces backend startup to use vendored `code/agentskillos` even if a local `.env` still points at the legacy external checkout
+- if vendored `code/agentskillos/.venv` exists, the script also exports `OUTCOMEX_AGENTSKILLOS_PYTHON_EXECUTABLE` automatically
 - detailed current status / non-fully-live notes: `LOCAL_BROWSER_DEMO_CN.md`
 - local backend template env: `code/backend/.env.local-demo.example`
 - local browser demo backend port: `127.0.0.1:8787`

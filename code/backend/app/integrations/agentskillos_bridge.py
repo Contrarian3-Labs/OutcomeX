@@ -157,6 +157,36 @@ class CompletedProcessLike:
     stderr: str = ""
 
 
+def resolve_agentskillos_repo_root(settings: Settings | None = None) -> Path | None:
+    settings = settings or get_settings()
+    configured = settings.agentskillos_root.strip()
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add_candidate(path: Path) -> None:
+        resolved = str(path)
+        if resolved not in seen:
+            seen.add(resolved)
+            candidates.append(path)
+
+    if configured:
+        add_candidate(Path(configured))
+
+    current_file = Path(__file__).resolve()
+    for parent in current_file.parents:
+        add_candidate(parent / "code" / "agentskillos")
+        if parent.name == "code":
+            add_candidate(parent / "agentskillos")
+
+    for parent in current_file.parents:
+        add_candidate(parent.parent / "Hashkey" / "reference-code" / "AgentSkillOS")
+
+    for candidate in candidates:
+        if (candidate / "run.py").exists() and (candidate / "src" / "workflow" / "service.py").exists():
+            return candidate
+    return None
+
+
 class AgentSkillOSBridge:
     """Calls the local AgentSkillOS checkout with OutcomeX-controlled LLM env."""
 
@@ -324,32 +354,7 @@ class AgentSkillOSBridge:
         )
 
     def resolve_repo_root(self) -> Path | None:
-        configured = self._settings.agentskillos_root.strip()
-        candidates: list[Path] = []
-        seen: set[str] = set()
-
-        def add_candidate(path: Path) -> None:
-            resolved = str(path)
-            if resolved not in seen:
-                seen.add(resolved)
-                candidates.append(path)
-
-        if configured:
-            add_candidate(Path(configured))
-
-        current_file = Path(__file__).resolve()
-        for parent in current_file.parents:
-            add_candidate(parent / "code" / "agentskillos")
-            if parent.name == "code":
-                add_candidate(parent / "agentskillos")
-
-        for parent in current_file.parents:
-            add_candidate(parent.parent / "Hashkey" / "reference-code" / "AgentSkillOS")
-
-        for candidate in candidates:
-            if (candidate / "run.py").exists() and (candidate / "src" / "workflow" / "service.py").exists():
-                return candidate
-        return None
+        return resolve_agentskillos_repo_root(self._settings)
 
     def resolve_python_executable(self, repo_root: Path) -> Path | None:
         configured = self._settings.agentskillos_python_executable.strip()

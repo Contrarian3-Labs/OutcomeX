@@ -6,7 +6,10 @@ from app.core.config import Settings
 from app.execution.contracts import ExecutionStrategy
 from app.execution.observability import read_events_after_seq
 import app.integrations.agentskillos_execution_service as execution_module
-from app.integrations.agentskillos_execution_service import AgentSkillOSExecutionService
+from app.integrations.agentskillos_execution_service import (
+    AgentSkillOSExecutionService,
+    collect_visible_artifacts,
+)
 
 
 class _BridgeStub:
@@ -318,6 +321,94 @@ def test_embedded_execution_script_compiles() -> None:
     assert "initial.update(final)" in execution_module._EXECUTION_SCRIPT
     compile(execution_module._EXECUTION_SCRIPT, "<agentskillos_execution_script>", "exec")
 
+
+
+def test_collect_visible_artifacts_skips_node_modules_and_cache_dirs(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / "deliverables").mkdir(parents=True)
+    (workspace / "node_modules" / "pkg").mkdir(parents=True)
+    (workspace / ".venv" / "bin").mkdir(parents=True)
+    (workspace / "__pycache__").mkdir(parents=True)
+    (workspace / "deliverables" / "final.docx").write_text("ok", encoding="utf-8")
+    (workspace / "deliverables" / "preview.png").write_text("png", encoding="utf-8")
+    (workspace / "node_modules" / "pkg" / "README.md").write_text("ignore", encoding="utf-8")
+    (workspace / ".venv" / "bin" / "python").write_text("ignore", encoding="utf-8")
+    (workspace / "__pycache__" / "cache.pyc").write_bytes(b"ignore")
+
+    artifacts = collect_visible_artifacts(run_dir=tmp_path, workspace_dir=workspace)
+
+    assert [artifact["path"] for artifact in artifacts] == [
+        "workspace/deliverables/final.docx",
+        "workspace/deliverables/preview.png",
+    ]
+
+
+def test_get_run_sanitizes_persisted_artifacts_and_preview_manifest(tmp_path: Path) -> None:
+    output_root = tmp_path / "runs"
+    run_dir = output_root / "aso-run-filtered"
+    run_dir.mkdir(parents=True)
+    record_path = run_dir / "run.json"
+    record_path.write_text(
+        json.dumps(
+            {
+                "run_id": "aso-run-filtered",
+                "external_order_id": "order-filtered",
+                "status": "succeeded",
+                "record_path": str(record_path),
+                "submission_payload": {"intent": "demo", "files": [], "execution_strategy": "quality"},
+                "workspace_path": str(run_dir / "workspace"),
+                "run_dir": str(run_dir),
+                "preview_manifest": [
+                    {"path": "workspace/node_modules/pkg/README.md", "type": "document", "role": "final"},
+                    {"path": "workspace/final.png", "type": "image", "role": "final"},
+                ],
+                "artifact_manifest": [
+                    {"path": "workspace/node_modules/pkg/README.md", "type": "document", "role": "final"},
+                    {"path": "workspace/final.png", "type": "image", "role": "final"},
+                    {"path": "workspace/final.docx", "type": "document", "role": "final"},
+                ],
+                "skills_manifest": [],
+                "model_usage_manifest": [],
+                "summary_metrics": {},
+                "error": None,
+                "started_at": "2026-04-06T07:00:00+00:00",
+                "finished_at": "2026-04-06T07:01:00+00:00",
+                "created_at": "2026-04-06T07:00:00+00:00",
+                "pid": None,
+                "stdout_log_path": str(run_dir / "stdout.log"),
+                "stderr_log_path": str(run_dir / "stderr.log"),
+                "events_log_path": str(run_dir / "events.ndjson"),
+                "last_heartbeat_at": "2026-04-06T07:01:00+00:00",
+                "current_phase": "finished",
+                "current_step": None,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    service = AgentSkillOSExecutionService(
+        settings=Settings(agentskillos_execution_output_root=str(output_root)),
+        bridge=_BridgeStub(tmp_path / "agentskillos"),
+        launcher=lambda *args, **kwargs: 0,
+    )
+
+    snapshot = service.get_run("aso-run-filtered")
+
+    assert [artifact["path"] for artifact in snapshot.artifact_manifest] == [
+        "workspace/final.png",
+        "workspace/final.docx",
+    ]
+    assert [preview["path"] for preview in snapshot.preview_manifest] == [
+        "workspace/final.png",
+        "workspace/final.docx",
+    ]
+
+    persisted = json.loads(record_path.read_text(encoding="utf-8"))
+    assert [artifact["path"] for artifact in persisted["artifact_manifest"]] == [
+        "workspace/final.png",
+        "workspace/final.docx",
+    ]
 
 
 def test_process_exists_treats_zombie_as_dead(monkeypatch) -> None:

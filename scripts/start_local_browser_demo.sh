@@ -7,6 +7,7 @@ OUTCOMEX_REPO_ROOT="$(dirname "$GIT_COMMON_DIR")"
 WORKSPACE_ROOT="$(dirname "$OUTCOMEX_REPO_ROOT")"
 BACKEND_DIR="$ROOT_DIR/code/backend"
 CONTRACTS_DIR="$ROOT_DIR/code/contracts"
+AGENTSKILLOS_DIR="$ROOT_DIR/code/agentskillos"
 FRONTEND_DIR="${OUTCOMEX_FRONTEND_DIR:-$WORKSPACE_ROOT/hashkey/forge-yield-ai}"
 STATE_DIR="$ROOT_DIR/.local/browser-demo"
 LOG_DIR="$STATE_DIR/logs"
@@ -110,6 +111,10 @@ if [[ ! -d "$FRONTEND_DIR" ]]; then
   echo "Frontend repo not found: $FRONTEND_DIR" >&2
   exit 1
 fi
+if [[ ! -f "$AGENTSKILLOS_DIR/run.py" ]]; then
+  echo "Vendored AgentSkillOS repo not found: $AGENTSKILLOS_DIR" >&2
+  exit 1
+fi
 if [[ ! -x "$BACKEND_DIR/.venv/bin/python" ]]; then
   echo "Backend venv missing: $BACKEND_DIR/.venv/bin/python" >&2
   exit 1
@@ -121,6 +126,18 @@ fi
 if [[ ! -f "$FRONTEND_DIR/.env.local" ]]; then
   cp "$FRONTEND_DIR/.env.example" "$FRONTEND_DIR/.env.local"
 fi
+
+resolve_agentskillos_python() {
+  if [[ -x "$AGENTSKILLOS_DIR/.venv/bin/python" ]]; then
+    printf '%s' "$AGENTSKILLOS_DIR/.venv/bin/python"
+    return 0
+  fi
+  if [[ -x "$AGENTSKILLOS_DIR/.venv/Scripts/python.exe" ]]; then
+    printf '%s' "$AGENTSKILLOS_DIR/.venv/Scripts/python.exe"
+    return 0
+  fi
+  return 1
+}
 
 resolve_backend_sqlite_path() {
   (
@@ -188,7 +205,15 @@ if [[ "$PREPARE_ONLY" -eq 1 ]]; then
   exit 0
 fi
 
-nohup setsid "$BACKEND_DIR/.venv/bin/python" -m uvicorn app.main:app --host 127.0.0.1 --port 8787 >"$BACKEND_LOG" 2>&1 < /dev/null &
+AGENTSKILLOS_PYTHON=""
+if AGENTSKILLOS_PYTHON="$(resolve_agentskillos_python)"; then
+  echo "Using vendored AgentSkillOS python: $AGENTSKILLOS_PYTHON" >>"$BACKEND_LOG"
+fi
+
+nohup setsid env \
+  OUTCOMEX_AGENTSKILLOS_ROOT="$AGENTSKILLOS_DIR" \
+  OUTCOMEX_AGENTSKILLOS_PYTHON_EXECUTABLE="$AGENTSKILLOS_PYTHON" \
+  "$BACKEND_DIR/.venv/bin/python" -m uvicorn app.main:app --host 127.0.0.1 --port 8787 >"$BACKEND_LOG" 2>&1 < /dev/null &
 echo $! >"$BACKEND_PID_FILE"
 wait_for_http "http://127.0.0.1:8787/api/v1/health" "Backend"
 

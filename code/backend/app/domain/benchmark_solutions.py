@@ -6,6 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from app.core.config import Settings, get_settings
+from app.integrations.agentskillos_bridge import resolve_agentskillos_repo_root
 
 
 @dataclass(frozen=True)
@@ -142,13 +143,17 @@ CURATED_SOLUTION_SPECS: tuple[CuratedBenchmarkSolutionSpec, ...] = (
 
 
 def _agentskillos_root(settings: Settings) -> Path:
-    root = (settings.agentskillos_root or "").strip()
-    if not root:
+    configured_root = (settings.agentskillos_root or "").strip()
+    if configured_root:
+        path = Path(configured_root).expanduser().resolve()
+        if not path.exists():
+            raise RuntimeError(f"agentskillos_root_missing:{path}")
+        return path
+
+    resolved_root = resolve_agentskillos_repo_root(settings)
+    if resolved_root is None:
         raise RuntimeError("agentskillos_root_not_configured")
-    path = Path(root).expanduser().resolve()
-    if not path.exists():
-        raise RuntimeError(f"agentskillos_root_missing:{path}")
-    return path
+    return resolved_root.resolve()
 
 
 def _task_config_path(task_id: str, *, settings: Settings) -> Path:
@@ -161,7 +166,11 @@ def _task_data_dir(task_id: str, *, settings: Settings) -> Path:
 
 @lru_cache(maxsize=1)
 def _catalog_cache_key() -> str:
-    return (get_settings().agentskillos_root or "").strip()
+    settings = get_settings()
+    resolved_root = resolve_agentskillos_repo_root(settings)
+    if resolved_root is not None:
+        return str(resolved_root.resolve())
+    return (settings.agentskillos_root or "").strip()
 
 
 def reset_benchmark_solution_cache() -> None:
