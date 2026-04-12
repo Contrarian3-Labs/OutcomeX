@@ -12,6 +12,10 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("OUTCOMEX_DATABASE_URL", f"sqlite+pysqlite:///{db_path.as_posix()}")
     monkeypatch.setenv("OUTCOMEX_AUTO_CREATE_TABLES", "true")
     monkeypatch.setenv("OUTCOMEX_ENV", "dev")
+    monkeypatch.setenv("OUTCOMEX_DASHSCOPE_API_KEY", "")
+    monkeypatch.setenv("OUTCOMEX_AGENTSKILLOS_ROOT", "")
+    monkeypatch.setenv("OUTCOMEX_ONCHAIN_INDEXER_ENABLED", "false")
+    monkeypatch.setenv("OUTCOMEX_ONCHAIN_RPC_URL", "")
     reset_settings_cache()
     reset_container_cache()
     with TestClient(create_app()) as test_client:

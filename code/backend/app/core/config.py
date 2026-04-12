@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     agentskillos_python_executable: str = ""
     agentskillos_skill_group: str = "skill_seeds"
     agentskillos_llm_model: str = ""
-    agentskillos_discovery_timeout_seconds: float = 120.0
+    agentskillos_discovery_timeout_seconds: float = 8.0
     agentskillos_execution_mode: str = "dag"
     agentskillos_execution_timeout_seconds: float = 1800.0
     agentskillos_execution_output_root: str = "data/agentskillos-execution"

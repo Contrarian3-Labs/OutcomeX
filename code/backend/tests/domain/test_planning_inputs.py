@@ -85,3 +85,47 @@ def test_build_recommended_plans_reorders_native_plans_to_match_requested_mode()
         ExecutionStrategy.EFFICIENCY,
     ]
     assert plans[0].native_plan_index == 2
+
+
+class FailedPlanningBridgeStub:
+    def __init__(self) -> None:
+        self.generate_calls: list[dict[str, object]] = []
+        self.discover_calls: list[str] = []
+
+    def generate_plans(self, task: str, *, files: tuple[str, ...] = ()):
+        self.generate_calls.append({"task": task, "files": files})
+        return AgentSkillOSPlanningResult(
+            plans=(),
+            skill_ids=(),
+            source="agentskillos_failed",
+            error="agentskillos_discovery_timeout",
+        )
+
+    def discover_skills(self, task: str):
+        self.discover_calls.append(task)
+        raise AssertionError("discover_skills should not be called after planning already failed")
+
+
+def test_build_recommended_plans_falls_back_immediately_after_planning_failure() -> None:
+    bridge = FailedPlanningBridgeStub()
+
+    plans = build_recommended_plans(
+        user_id="user-1",
+        chat_session_id="chat-1",
+        user_message="Create a launch-ready teaser campaign",
+        planning_context_key="ctx",
+        bridge=bridge,
+    )
+
+    assert bridge.generate_calls == [
+        {
+            "task": "Create a launch-ready teaser campaign",
+            "files": (),
+        }
+    ]
+    assert bridge.discover_calls == []
+    assert [plan.strategy for plan in plans] == [
+        ExecutionStrategy.QUALITY,
+        ExecutionStrategy.EFFICIENCY,
+        ExecutionStrategy.SIMPLICITY,
+    ]

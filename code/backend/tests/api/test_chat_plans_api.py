@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 import pytest
@@ -14,10 +13,14 @@ from app.main import create_app
 
 
 @pytest.fixture
-def client(tmp_path) -> TestClient:
+def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     db_path = tmp_path / "chat-plans.db"
-    os.environ["OUTCOMEX_DATABASE_URL"] = f"sqlite+pysqlite:///{db_path.as_posix()}"
-    os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
+    monkeypatch.setenv("OUTCOMEX_DATABASE_URL", f"sqlite+pysqlite:///{db_path.as_posix()}")
+    monkeypatch.setenv("OUTCOMEX_AUTO_CREATE_TABLES", "true")
+    monkeypatch.setenv("OUTCOMEX_DASHSCOPE_API_KEY", "")
+    monkeypatch.setenv("OUTCOMEX_AGENTSKILLOS_ROOT", "")
+    monkeypatch.setenv("OUTCOMEX_ONCHAIN_INDEXER_ENABLED", "false")
+    monkeypatch.setenv("OUTCOMEX_ONCHAIN_RPC_URL", "")
     reset_settings_cache()
     reset_container_cache()
 

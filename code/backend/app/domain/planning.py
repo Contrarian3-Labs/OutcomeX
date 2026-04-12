@@ -217,6 +217,18 @@ def build_recommended_plans(
             preferred_strategy=preferred_strategy,
         )
 
+    if planning_result.source != "agentskillos_planning":
+        return _apply_preferred_strategy(
+            _fallback_plans(
+                user_id=user_id,
+                chat_session_id=chat_session_id,
+                normalized_message=normalized,
+                has_skill_signal=bool(planning_result.skill_ids),
+                planning_context_key=planning_context_key,
+            ),
+            preferred_strategy=preferred_strategy,
+        )
+
     discovery = bridge.discover_skills(normalized or user_message)
     return _apply_preferred_strategy(
         _fallback_plans(
