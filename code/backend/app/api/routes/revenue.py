@@ -10,7 +10,7 @@ from app.api.deps import get_db
 from app.core.config import get_settings
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.claim_projection import project_machine_entry_claims, project_platform_revenue_overview
-from app.domain.enums import PaymentState, SettlementState
+from app.domain.enums import PaymentState
 from app.domain.models import (
     Machine,
     MachineListing,
@@ -21,6 +21,12 @@ from app.domain.models import (
     RevenueEntry,
     SettlementClaimRecord,
     SettlementRecord,
+)
+from app.domain.pwr_amounts import pwr_wei_to_float
+from app.domain.revenue_amounts import (
+    machine_revenue_claim_amount_wei,
+    revenue_entry_machine_share_wei,
+    settlement_claim_amount_wei,
 )
 from app.domain.rules import has_sufficient_payment
 from app.runtime.cost_service import get_runtime_cost_service
@@ -61,6 +67,13 @@ def _sum_projected_cents_for_beneficiary(*, beneficiary_user_id: str, db: Sessio
     )
 
 
+def _sum_projected_pwr_wei_for_beneficiary(*, beneficiary_user_id: str, db: Session) -> int:
+    entries = db.scalars(
+        select(RevenueEntry).where(RevenueEntry.beneficiary_user_id == beneficiary_user_id)
+    ).all()
+    return sum(revenue_entry_machine_share_wei(entry=entry, db=db) for entry in entries)
+
+
 def _sum_machine_claims_cents_for_claimant(*, claimant_user_id: str, db: Session) -> int:
     return (
         db.scalar(
@@ -71,6 +84,16 @@ def _sum_machine_claims_cents_for_claimant(*, claimant_user_id: str, db: Session
         )
         or 0
     )
+
+
+def _sum_machine_claims_wei_for_claimant(*, claimant_user_id: str, db: Session) -> int:
+    records = db.scalars(
+        select(SettlementClaimRecord).where(
+            SettlementClaimRecord.claimant_user_id == claimant_user_id,
+            SettlementClaimRecord.claim_kind == "machine_revenue",
+        )
+    ).all()
+    return sum(settlement_claim_amount_wei(record) for record in records)
 
 
 def _user_paid_cents(*, user_id: str, db: Session) -> int:
@@ -111,6 +134,18 @@ def _machine_claimable_cents(*, machine_id: str, db: Session) -> int:
             )
         )
         or 0
+    )
+    return max(0, projected - claimed)
+
+
+def _machine_claimable_pwr_wei(*, machine_id: str, db: Session) -> int:
+    projected = sum(
+        revenue_entry_machine_share_wei(entry=entry, db=db)
+        for entry in db.scalars(select(RevenueEntry).where(RevenueEntry.machine_id == machine_id)).all()
+    )
+    claimed = sum(
+        machine_revenue_claim_amount_wei(claim)
+        for claim in db.scalars(select(MachineRevenueClaim).where(MachineRevenueClaim.machine_id == machine_id)).all()
     )
     return max(0, projected - claimed)
 
@@ -207,6 +242,7 @@ def _build_revenue_series(*, owner_user_id: str, days: int, db: Session) -> list
     today = _day_start_utc(now)
     start = today - timedelta(days=days - 1)
     totals_by_day = {(_day_start_utc(start + timedelta(days=offset))).date().isoformat(): 0 for offset in range(days)}
+    totals_pwr_wei_by_day = {date_key: 0 for date_key in totals_by_day}
 
     rows = db.scalars(
         select(RevenueEntry)
@@ -221,8 +257,16 @@ def _build_revenue_series(*, owner_user_id: str, days: int, db: Session) -> list
         date_key = _day_key(entry.created_at)
         if date_key in totals_by_day:
             totals_by_day[date_key] += entry.machine_share_cents
+            totals_pwr_wei_by_day[date_key] += revenue_entry_machine_share_wei(entry=entry, db=db)
 
-    return [RevenueAnalyticsPoint(date_key=date_key, amount_cents=amount_cents) for date_key, amount_cents in totals_by_day.items()]
+    return [
+        RevenueAnalyticsPoint(
+            date_key=date_key,
+            amount_cents=amount_cents,
+            amount_pwr=pwr_wei_to_float(totals_pwr_wei_by_day[date_key]),
+        )
+        for date_key, amount_cents in totals_by_day.items()
+    ]
 
 
 def _machine_breakdown(*, owner_user_id: str, db: Session) -> tuple[list[RevenueMachineBreakdownItem], int]:
@@ -235,8 +279,10 @@ def _machine_breakdown(*, owner_user_id: str, db: Session) -> tuple[list[Revenue
         return [], 0
 
     totals_by_machine: dict[str, int] = defaultdict(int)
+    totals_pwr_wei_by_machine: dict[str, int] = defaultdict(int)
     for entry in entries:
         totals_by_machine[entry.machine_id] += entry.machine_share_cents
+        totals_pwr_wei_by_machine[entry.machine_id] += revenue_entry_machine_share_wei(entry=entry, db=db)
 
     claimed_by_machine_rows = db.execute(
         select(
@@ -252,6 +298,18 @@ def _machine_breakdown(*, owner_user_id: str, db: Session) -> tuple[list[Revenue
         .group_by(SettlementClaimRecord.machine_id)
     ).all()
     claimed_by_machine = {machine_id: int(amount_cents or 0) for machine_id, amount_cents in claimed_by_machine_rows}
+    claimed_by_machine_pwr_wei: dict[str, int] = defaultdict(int)
+    claim_rows = db.scalars(
+        select(SettlementClaimRecord).where(
+            SettlementClaimRecord.claimant_user_id == owner_user_id,
+            SettlementClaimRecord.claim_kind == "machine_revenue",
+            SettlementClaimRecord.machine_id.is_not(None),
+            SettlementClaimRecord.machine_id.in_(list(totals_by_machine.keys())),
+        )
+    ).all()
+    for record in claim_rows:
+        if record.machine_id is not None:
+            claimed_by_machine_pwr_wei[record.machine_id] += settlement_claim_amount_wei(record)
 
     machine_rows = db.scalars(select(Machine).where(Machine.id.in_(list(totals_by_machine.keys())))).all()
     machines_by_id = {machine.id: machine for machine in machine_rows}
@@ -269,10 +327,18 @@ def _machine_breakdown(*, owner_user_id: str, db: Session) -> tuple[list[Revenue
                 display_name=machine.display_name if machine is not None else machine_id,
                 total_earned_cents=total_earned_cents,
                 claimable_cents=claimable_cents,
+                total_earned_pwr=pwr_wei_to_float(totals_pwr_wei_by_machine[machine_id]),
+                claimable_pwr=pwr_wei_to_float(
+                    max(0, totals_pwr_wei_by_machine[machine_id] - claimed_by_machine_pwr_wei.get(machine_id, 0))
+                ),
                 acquisition_price_cents=acquisition_price_cents,
             )
         )
     return breakdown, acquisition_total_cents
+
+
+def _sum_series_pwr(points: list[RevenueAnalyticsPoint]) -> float:
+    return round(sum(point.amount_pwr or 0 for point in points), 4)
 
 
 @router.post("/orders/{order_id}/distribute", response_model=RevenueDistributionResponse)
@@ -322,6 +388,7 @@ def distribute_revenue(order_id: str, db: Session = Depends(get_db)) -> RevenueD
         gross_amount_cents=entry.gross_amount_cents,
         platform_fee_cents=entry.platform_fee_cents,
         machine_share_cents=entry.machine_share_cents,
+        machine_share_pwr=pwr_wei_to_float(revenue_entry_machine_share_wei(entry=entry, db=db)),
         is_self_use=self_use,
         is_dividend_eligible=dividend_eligible,
         distributed_at=settlement.distributed_at,
@@ -343,6 +410,13 @@ def list_machine_revenue(machine_id: str, db: Session = Depends(get_db)) -> list
             update={
                 "claimed_cents": projection.get(entry.id).claimed_cents if projection.get(entry.id) else 0,
                 "claimable_cents": projection.get(entry.id).claimable_cents if projection.get(entry.id) else entry.machine_share_cents,
+                "machine_share_pwr": pwr_wei_to_float(revenue_entry_machine_share_wei(entry=entry, db=db)),
+                "claimed_pwr": pwr_wei_to_float(projection.get(entry.id).claimed_amount_wei if projection.get(entry.id) else "0"),
+                "claimable_pwr": pwr_wei_to_float(
+                    projection.get(entry.id).claimable_amount_wei
+                    if projection.get(entry.id)
+                    else revenue_entry_machine_share_wei(entry=entry, db=db)
+                ),
             }
         )
         for entry in entries
@@ -354,6 +428,9 @@ def revenue_account_overview(owner_user_id: str, db: Session = Depends(get_db)) 
     projected_cents = _sum_projected_cents_for_beneficiary(beneficiary_user_id=owner_user_id, db=db)
     claimed_cents = _sum_machine_claims_cents_for_claimant(claimant_user_id=owner_user_id, db=db)
     claimable_cents = max(0, projected_cents - claimed_cents)
+    projected_pwr_wei = _sum_projected_pwr_wei_for_beneficiary(beneficiary_user_id=owner_user_id, db=db)
+    claimed_pwr_wei = _sum_machine_claims_wei_for_claimant(claimant_user_id=owner_user_id, db=db)
+    claimable_pwr_wei = max(0, projected_pwr_wei - claimed_pwr_wei)
     withdraw_history = list(
         db.scalars(
             select(SettlementClaimRecord)
@@ -366,7 +443,7 @@ def revenue_account_overview(owner_user_id: str, db: Session = Depends(get_db)) 
     )
     currency = (
         "PWR"
-        if (projected_cents > 0 or claimed_cents > 0 or claimable_cents > 0)
+        if (projected_pwr_wei > 0 or claimed_pwr_wei > 0 or claimable_pwr_wei > 0 or projected_cents > 0 or claimed_cents > 0 or claimable_cents > 0)
         else _user_primary_currency(user_id=owner_user_id, db=db)
     )
     return RevenueAccountOverviewResponse(
@@ -375,6 +452,9 @@ def revenue_account_overview(owner_user_id: str, db: Session = Depends(get_db)) 
         projected_cents=projected_cents,
         claimable_cents=claimable_cents,
         claimed_cents=claimed_cents,
+        projected_pwr=pwr_wei_to_float(projected_pwr_wei) if currency == "PWR" else None,
+        claimable_pwr=pwr_wei_to_float(claimable_pwr_wei) if currency == "PWR" else None,
+        claimed_pwr=pwr_wei_to_float(claimed_pwr_wei) if currency == "PWR" else None,
         currency=currency,
         pwr_anchor_price_cents=(get_runtime_cost_service().pwr_anchor_price_cents if currency == "PWR" else None),
         withdraw_history=[
@@ -382,6 +462,9 @@ def revenue_account_overview(owner_user_id: str, db: Session = Depends(get_db)) 
                 "id": record.id,
                 "machine_id": record.machine_id,
                 "amount_cents": record.amount_cents,
+                "amount_pwr": pwr_wei_to_float(settlement_claim_amount_wei(record))
+                if _claim_record_currency(claim_kind=record.claim_kind, token_address=record.token_address) == "PWR"
+                else None,
                 "tx_hash": record.tx_hash,
                 "claimed_at": record.claimed_at,
             }
@@ -395,9 +478,12 @@ def revenue_account_analytics(owner_user_id: str, db: Session = Depends(get_db))
     projected_cents = _sum_projected_cents_for_beneficiary(beneficiary_user_id=owner_user_id, db=db)
     claimed_cents = _sum_machine_claims_cents_for_claimant(claimant_user_id=owner_user_id, db=db)
     claimable_cents = max(0, projected_cents - claimed_cents)
+    projected_pwr_wei = _sum_projected_pwr_wei_for_beneficiary(beneficiary_user_id=owner_user_id, db=db)
+    claimed_pwr_wei = _sum_machine_claims_wei_for_claimant(claimant_user_id=owner_user_id, db=db)
+    claimable_pwr_wei = max(0, projected_pwr_wei - claimed_pwr_wei)
     currency = (
         "PWR"
-        if (projected_cents > 0 or claimed_cents > 0 or claimable_cents > 0)
+        if (projected_pwr_wei > 0 or claimed_pwr_wei > 0 or claimable_pwr_wei > 0 or projected_cents > 0 or claimed_cents > 0 or claimable_cents > 0)
         else _user_primary_currency(user_id=owner_user_id, db=db)
     )
     pwr_anchor_price_cents = get_runtime_cost_service().pwr_anchor_price_cents if currency == "PWR" else None
@@ -417,6 +503,11 @@ def revenue_account_analytics(owner_user_id: str, db: Session = Depends(get_db))
         claimed_cents=claimed_cents,
         last_7d_cents=last_7d_cents,
         trailing_30d_cents=trailing_30d_cents,
+        total_earned_pwr=pwr_wei_to_float(projected_pwr_wei) if currency == "PWR" else None,
+        claimable_pwr=pwr_wei_to_float(claimable_pwr_wei) if currency == "PWR" else None,
+        claimed_pwr=pwr_wei_to_float(claimed_pwr_wei) if currency == "PWR" else None,
+        last_7d_pwr=_sum_series_pwr(series_7d) if currency == "PWR" else None,
+        trailing_30d_pwr=_sum_series_pwr(series_30d) if currency == "PWR" else None,
         indicative_apr=indicative_apr,
         acquisition_total_cents=acquisition_total_cents,
         pwr_anchor_price_cents=pwr_anchor_price_cents,
@@ -445,6 +536,11 @@ def list_revenue_claims(user_id: str, db: Session = Depends(get_db)) -> list[Rev
             token_address=record.token_address,
             currency=_claim_record_currency(claim_kind=record.claim_kind, token_address=record.token_address),
             amount_cents=record.amount_cents,
+            amount_pwr=(
+                pwr_wei_to_float(settlement_claim_amount_wei(record))
+                if _claim_record_currency(claim_kind=record.claim_kind, token_address=record.token_address) == "PWR"
+                else None
+            ),
             tx_hash=record.tx_hash,
             machine_id=record.machine_id,
             claimed_at=record.claimed_at,
@@ -494,6 +590,11 @@ def platform_revenue_overview(
             token_address=record.token_address,
             currency=_claim_record_currency(claim_kind=record.claim_kind, token_address=record.token_address),
             amount_cents=record.amount_cents,
+            amount_pwr=(
+                pwr_wei_to_float(settlement_claim_amount_wei(record))
+                if _claim_record_currency(claim_kind=record.claim_kind, token_address=record.token_address) == "PWR"
+                else None
+            ),
             tx_hash=record.tx_hash,
             machine_id=record.machine_id,
             claimed_at=record.claimed_at,

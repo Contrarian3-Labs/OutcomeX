@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, func, or_, select
@@ -17,6 +17,7 @@ from app.domain.claim_projection import project_order_refund_claim
 from app.domain.enums import ExecutionRunStatus, ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
 from app.domain.models import ExecutionRun, Machine, Order, Payment
 from app.domain.planning import build_recommended_plans, select_recommended_plan
+from app.domain.pwr_amounts import pwr_wei_to_float
 from app.domain.rules import has_sufficient_payment
 from app.execution import ExecutionStrategy, IntentRequest
 from app.execution.service import ExecutionEngineService
@@ -461,7 +462,16 @@ def get_order_available_actions(
     refund_projection = project_order_refund_claim(order=order, db=db)
     refund_claim_currency = refund_projection.currency
     refund_claim_amount_cents = refund_projection.claimable_cents if refund_claim_currency is not None else None
-    can_claim_refund = refund_claim_amount_cents is not None and refund_claim_amount_cents > 0
+    refund_claim_amount_pwr = (
+        pwr_wei_to_float(refund_projection.claimable_amount_wei)
+        if refund_claim_currency == "PWR"
+        else None
+    )
+    can_claim_refund = (
+        refund_claim_amount_pwr is not None and refund_claim_amount_pwr > 0
+        if refund_claim_currency == "PWR"
+        else refund_claim_amount_cents is not None and refund_claim_amount_cents > 0
+    )
     return OrderAvailableActionsResponse(
         order_id=order.id,
         preview_valid=_preview_valid(order),
@@ -471,6 +481,7 @@ def get_order_available_actions(
         can_claim_refund=can_claim_refund,
         refund_claim_currency=refund_claim_currency,
         refund_claim_amount_cents=refund_claim_amount_cents,
+        refund_claim_amount_pwr=refund_claim_amount_pwr,
         refund_claim_pwr_anchor_price_cents=refund_projection.pwr_anchor_price_cents,
     )
 

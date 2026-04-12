@@ -218,6 +218,9 @@ def test_list_machines_includes_revenue_summary_and_projection_metadata(client: 
     assert payload["projected_cents"] == 900
     assert payload["claimed_cents"] == 250
     assert payload["claimable_cents"] == 650
+    assert payload["projected_pwr"] == 36.0
+    assert payload["claimed_pwr"] == 10.0
+    assert payload["claimable_pwr"] == 26.0
     assert payload["locked_unsettled_revenue_cents"] == 650
     assert payload["locked_unsettled_revenue_pwr"] == 26.0
     assert payload["locked_beneficiary_user_ids"] == ["owner-1"]

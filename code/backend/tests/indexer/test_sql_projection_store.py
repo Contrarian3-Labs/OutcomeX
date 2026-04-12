@@ -224,8 +224,28 @@ def test_sql_projection_marks_unsettled_revenue_from_settlement_split() -> None:
             recommended_plan_summary="plan",
             quoted_amount_cents=100,
         )
+        settlement = SettlementRecord(
+            id="s-1",
+            order_id="o-1",
+            gross_amount_cents=100,
+            platform_fee_cents=10,
+            machine_share_cents=90,
+        )
+        entry = RevenueEntry(
+            order_id="o-1",
+            settlement_id="s-1",
+            machine_id="m-1",
+            beneficiary_user_id="owner-1",
+            gross_amount_cents=100,
+            platform_fee_cents=10,
+            machine_share_cents=90,
+            is_self_use=False,
+            is_dividend_eligible=True,
+        )
         db.add(machine)
         db.add(order)
+        db.add(settlement)
+        db.add(entry)
         db.commit()
 
     store = SqlProjectionStore(session_factory=session_factory)
@@ -245,7 +265,10 @@ def test_sql_projection_marks_unsettled_revenue_from_settlement_split() -> None:
 
     with session_factory() as db:
         machine = db.get(Machine, "m-1")
+        entry = db.query(RevenueEntry).filter(RevenueEntry.order_id == "o-1").first()
         assert machine.has_unsettled_revenue is True
+        assert entry is not None
+        assert entry.machine_share_pwr_wei == "1"
 
 
 def test_sql_projection_advances_direct_payment_from_created_and_paid_events() -> None:
@@ -537,6 +560,7 @@ def test_sql_projection_records_machine_claim_from_revenue_claimed_event() -> No
         assert machine.has_unsettled_revenue is False
         assert len(claims) == 1
         assert claims[0].amount_cents == 900
+        assert claims[0].amount_wei == str(_pwr_wei_for_cents(900))
         assert claims[0].tx_hash == "0xclaimtx"
 
 
@@ -580,6 +604,7 @@ def test_sql_projection_keeps_machine_locked_when_claim_event_reports_remaining_
         assert machine.has_unsettled_revenue is True
         assert len(claims) == 1
         assert claims[0].amount_cents == 400
+        assert claims[0].amount_wei == str(_pwr_wei_for_cents(400))
 
 
 def test_sql_projection_creates_rejected_valid_preview_settlement_projection() -> None:
@@ -646,7 +671,7 @@ def test_sql_projection_creates_rejected_valid_preview_settlement_projection() -
         assert entry.beneficiary_user_id == "owner-1"
 
 
-def test_sql_projection_creates_refunded_settlement_projection_and_marks_payment_refunded() -> None:
+def test_sql_projection_creates_refunded_settlement_projection_without_marking_payment_refunded_until_claim() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     Base.metadata.create_all(bind=engine)
     session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
@@ -702,7 +727,7 @@ def test_sql_projection_creates_refunded_settlement_projection_and_marks_payment
         assert machine.has_unsettled_revenue is False
         assert order.state == OrderState.CANCELLED
         assert order.settlement_state == SettlementState.DISTRIBUTED
-        assert payment.state == PaymentState.REFUNDED
+        assert payment.state == PaymentState.SUCCEEDED
         assert settlement is not None
         assert settlement.gross_amount_cents == 1000
         assert settlement.platform_fee_cents == 0
@@ -761,6 +786,8 @@ def test_sql_projection_records_refund_and_platform_claims_in_unified_claim_ledg
         assert claims[0].claim_kind == "refund"
         assert claims[0].claimant_user_id == "buyer-1"
         assert claims[0].amount_cents == 700
+        assert claims[0].amount_wei == "700"
         assert claims[1].claim_kind == "platform_revenue"
         assert claims[1].claimant_user_id == "platform"
         assert claims[1].amount_cents == 30
+        assert claims[1].amount_wei == "30"

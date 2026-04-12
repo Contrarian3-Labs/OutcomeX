@@ -225,4 +225,5 @@ def test_available_actions_uses_frozen_pwr_quote_for_pwr_refund_projection(clien
     assert payload["can_claim_refund"] is True
     assert payload["refund_claim_currency"] == "PWR"
     assert payload["refund_claim_amount_cents"] == 700
+    assert payload["refund_claim_amount_pwr"] == 25.2
     assert payload["refund_claim_pwr_anchor_price_cents"] == 25

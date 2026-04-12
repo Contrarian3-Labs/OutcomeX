@@ -16,6 +16,7 @@ def ensure_settlement_projection(
     gross_amount_cents: int,
     platform_fee_cents: int,
     machine_share_cents: int,
+    machine_share_pwr_wei: str | None = None,
     distributed_at: datetime | None = None,
 ) -> tuple[SettlementRecord, RevenueEntry]:
     if order.settlement_beneficiary_user_id is None:
@@ -55,6 +56,7 @@ def ensure_settlement_projection(
             gross_amount_cents=gross_amount_cents,
             platform_fee_cents=platform_fee_cents,
             machine_share_cents=machine_share_cents,
+            machine_share_pwr_wei=machine_share_pwr_wei,
             is_self_use=order.settlement_is_self_use,
             is_dividend_eligible=order.settlement_is_dividend_eligible,
         )
@@ -65,12 +67,15 @@ def ensure_settlement_projection(
         entry.gross_amount_cents = gross_amount_cents
         entry.platform_fee_cents = platform_fee_cents
         entry.machine_share_cents = machine_share_cents
+        entry.machine_share_pwr_wei = machine_share_pwr_wei
         entry.is_self_use = order.settlement_is_self_use
         entry.is_dividend_eligible = order.settlement_is_dividend_eligible
     db.add(entry)
 
     machine.has_active_tasks = False
-    machine.has_unsettled_revenue = bool(order.settlement_is_dividend_eligible and machine_share_cents > 0)
+    machine.has_unsettled_revenue = bool(
+        order.settlement_is_dividend_eligible and ((machine_share_pwr_wei is not None and machine_share_pwr_wei != "0") or machine_share_cents > 0)
+    )
     db.add(machine)
     return settlement, entry
 

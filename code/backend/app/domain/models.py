@@ -306,6 +306,7 @@ class RevenueEntry(Base):
     gross_amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     platform_fee_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     machine_share_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    machine_share_pwr_wei: Mapped[str | None] = mapped_column(String(80), nullable=True)
     is_self_use: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_dividend_eligible: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
@@ -321,6 +322,7 @@ class MachineRevenueClaim(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     machine_id: Mapped[str] = mapped_column(ForeignKey("machines.id"), index=True, nullable=False)
     amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount_wei: Mapped[str | None] = mapped_column(String(80), nullable=True)
     tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
@@ -337,6 +339,7 @@ class SettlementClaimRecord(Base):
     account_address: Mapped[str] = mapped_column(String(42), nullable=False, index=True)
     token_address: Mapped[str | None] = mapped_column(String(42), nullable=True)
     amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount_wei: Mapped[str | None] = mapped_column(String(80), nullable=True)
     tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     machine_id: Mapped[str | None] = mapped_column(ForeignKey("machines.id"), index=True, nullable=True)
     claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)

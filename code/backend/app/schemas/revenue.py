@@ -11,6 +11,7 @@ class RevenueDistributionResponse(BaseModel):
     gross_amount_cents: int
     platform_fee_cents: int
     machine_share_cents: int
+    machine_share_pwr: float | None = None
     is_self_use: bool
     is_dividend_eligible: bool
     distributed_at: datetime
@@ -27,6 +28,9 @@ class RevenueEntryResponse(BaseModel):
     machine_share_cents: int
     claimed_cents: int = 0
     claimable_cents: int = 0
+    machine_share_pwr: float | None = None
+    claimed_pwr: float | None = None
+    claimable_pwr: float | None = None
     is_self_use: bool
     is_dividend_eligible: bool
     created_at: datetime
@@ -37,6 +41,7 @@ class RevenueEntryResponse(BaseModel):
 class RevenueAnalyticsPoint(BaseModel):
     date_key: str
     amount_cents: int
+    amount_pwr: float | None = None
 
 
 class RevenueMachineBreakdownItem(BaseModel):
@@ -44,6 +49,8 @@ class RevenueMachineBreakdownItem(BaseModel):
     display_name: str
     total_earned_cents: int
     claimable_cents: int
+    total_earned_pwr: float | None = None
+    claimable_pwr: float | None = None
     acquisition_price_cents: int
 
 
@@ -55,6 +62,11 @@ class RevenueAccountAnalyticsResponse(BaseModel):
     claimed_cents: int
     last_7d_cents: int
     trailing_30d_cents: int
+    total_earned_pwr: float | None = None
+    claimable_pwr: float | None = None
+    claimed_pwr: float | None = None
+    last_7d_pwr: float | None = None
+    trailing_30d_pwr: float | None = None
     indicative_apr: float
     acquisition_total_cents: int
     pwr_anchor_price_cents: int | None = None
@@ -82,6 +94,7 @@ class WithdrawHistoryItem(BaseModel):
     id: str
     machine_id: str
     amount_cents: int
+    amount_pwr: float | None = None
     tx_hash: str | None
     claimed_at: datetime
 
@@ -96,6 +109,7 @@ class RevenueClaimHistoryItem(BaseModel):
     token_address: str | None
     currency: str | None
     amount_cents: int
+    amount_pwr: float | None = None
     tx_hash: str | None
     machine_id: str | None
     claimed_at: datetime
@@ -123,6 +137,9 @@ class RevenueAccountOverviewResponse(BaseModel):
     projected_cents: int
     claimable_cents: int
     claimed_cents: int
+    projected_pwr: float | None = None
+    claimable_pwr: float | None = None
+    claimed_pwr: float | None = None
     pwr_anchor_price_cents: int | None = None
     withdraw_history: list[WithdrawHistoryItem]
 

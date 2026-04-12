@@ -100,6 +100,7 @@ class OrderAvailableActionsResponse(BaseModel):
     can_claim_refund: bool
     refund_claim_currency: str | None = None
     refund_claim_amount_cents: int | None = None
+    refund_claim_amount_pwr: float | None = None
     refund_claim_pwr_anchor_price_cents: int | None = None
 
 

@@ -136,8 +136,6 @@ def resolve_logs_root_path(run_dir: str | Path | None) -> str | None:
     if run_dir_path is None:
         return None
     logs_dir = run_dir_path / "logs"
-    if not logs_dir.exists() or not logs_dir.is_dir():
-        return None
     return str(logs_dir)
 
 

@@ -1050,6 +1050,7 @@ class AgentSkillOSExecutionService:
         pid_alive = self._process_exists(int(pid)) if pid else None
         last_heartbeat_at = _parse_datetime(payload.get("last_heartbeat_at"))
         last_progress_at = _parse_datetime(payload.get("last_progress_at")) or last_heartbeat_at
+        logs_root_path = payload.get("logs_root_path") or resolve_logs_root_path(payload.get("run_dir"))
         log_files = tuple(
             payload.get("log_files")
             or list_log_files(
@@ -1058,7 +1059,17 @@ class AgentSkillOSExecutionService:
                 stderr_path=payload.get("stderr_log_path"),
             )
         )
-        logs_root_path = payload.get("logs_root_path") or resolve_logs_root_path(payload.get("run_dir"))
+        if not log_files and logs_root_path:
+            planner_path = Path(logs_root_path) / "planner.log"
+            log_files = (
+                {
+                    "kind": "raw_file",
+                    "name": planner_path.name,
+                    "path": str(planner_path),
+                    "size": 0,
+                    "updated_at": None,
+                },
+            )
         event_cursor = _coerce_int(payload.get("event_cursor"), default=0)
         if event_cursor <= 0:
             event_cursor = read_events_after_seq(payload.get("events_log_path"), after_seq=0).next_cursor

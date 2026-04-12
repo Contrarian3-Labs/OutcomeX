@@ -1,6 +1,4 @@
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -8,8 +6,9 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.core.container import get_container
 from app.domain.models import Machine, MachineListing, MachineRevenueClaim, RevenueEntry
+from app.domain.pwr_amounts import pwr_wei_to_float
+from app.domain.revenue_amounts import machine_revenue_claim_amount_wei, revenue_entry_machine_share_wei
 from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
-from app.runtime.cost_service import get_runtime_cost_service
 from app.runtime.hardware_simulator import get_shared_hardware_simulator
 from app.schemas.machine import (
     MachineCreateRequest,
@@ -19,8 +18,6 @@ from app.schemas.machine import (
 )
 
 router = APIRouter()
-
-PWR_QUANTIZE = Decimal("0.0001")
 MACHINE_ASSET_COST_CENTS = 399_900
 MOCK_MACHINE_SPEC = {
     "profile_label": "Qwen Family",
@@ -66,13 +63,33 @@ def _machine_revenue_summary(*, machine_ids: list[str], db: Session) -> dict[str
         .group_by(MachineRevenueClaim.machine_id)
     ).all()
 
-    summary = {machine_id: {"projected_cents": 0, "claimed_cents": 0, "claimable_cents": 0} for machine_id in machine_ids}
+    summary = {
+        machine_id: {
+            "projected_cents": 0,
+            "claimed_cents": 0,
+            "claimable_cents": 0,
+            "projected_pwr_wei": 0,
+            "claimed_pwr_wei": 0,
+            "claimable_pwr_wei": 0,
+        }
+        for machine_id in machine_ids
+    }
     for machine_id, projected_cents in projected_rows:
         summary[machine_id]["projected_cents"] = int(projected_cents or 0)
     for machine_id, claimed_cents in claimed_rows:
         summary[machine_id]["claimed_cents"] = int(claimed_cents or 0)
+
+    projected_entries = db.scalars(select(RevenueEntry).where(RevenueEntry.machine_id.in_(machine_ids))).all()
+    for entry in projected_entries:
+        summary[entry.machine_id]["projected_pwr_wei"] += revenue_entry_machine_share_wei(entry=entry, db=db)
+
+    claim_entries = db.scalars(select(MachineRevenueClaim).where(MachineRevenueClaim.machine_id.in_(machine_ids))).all()
+    for claim in claim_entries:
+        summary[claim.machine_id]["claimed_pwr_wei"] += machine_revenue_claim_amount_wei(claim)
+
     for machine_id, values in summary.items():
         values["claimable_cents"] = max(0, values["projected_cents"] - values["claimed_cents"])
+        values["claimable_pwr_wei"] = max(0, values["projected_pwr_wei"] - values["claimed_pwr_wei"])
     return summary
 
 
@@ -145,14 +162,6 @@ def _runtime_snapshot_response(machine_id: str | None = None) -> MachineRuntimeS
     )
 
 
-def _cents_to_pwr(amount_cents: int) -> float:
-    anchor_price_cents = get_runtime_cost_service().pwr_anchor_price_cents
-    if anchor_price_cents <= 0:
-        return 0.0
-    pwr_amount = (Decimal(amount_cents) / Decimal(anchor_price_cents)).quantize(PWR_QUANTIZE, rounding=ROUND_HALF_UP)
-    return float(pwr_amount)
-
-
 def _indicative_apr(projected_cents: int) -> float:
     if MACHINE_ASSET_COST_CENTS <= 0:
         return 0.0
@@ -189,10 +198,20 @@ def _to_machine_response(
     locked_beneficiary_user_ids: list[str] | None = None,
     active_listing: MachineListing | None = None,
 ) -> MachineResponse:
-    summary = revenue_summary or {"projected_cents": 0, "claimed_cents": 0, "claimable_cents": 0}
+    summary = revenue_summary or {
+        "projected_cents": 0,
+        "claimed_cents": 0,
+        "claimable_cents": 0,
+        "projected_pwr_wei": 0,
+        "claimed_pwr_wei": 0,
+        "claimable_pwr_wei": 0,
+    }
     blocking_reasons = _transfer_blocking_reasons(machine)
     runtime_snapshot = _runtime_snapshot_response(machine.id)
     locked_cents = summary["claimable_cents"] if machine.has_unsettled_revenue else 0
+    projected_pwr = pwr_wei_to_float(summary["projected_pwr_wei"])
+    claimed_pwr = pwr_wei_to_float(summary["claimed_pwr_wei"])
+    claimable_pwr = pwr_wei_to_float(summary["claimable_pwr_wei"])
     return MachineResponse(
         id=machine.id,
         onchain_machine_id=machine.onchain_machine_id,
@@ -210,16 +229,18 @@ def _to_machine_response(
         projected_cents=summary["projected_cents"],
         claimed_cents=summary["claimed_cents"],
         claimable_cents=summary["claimable_cents"],
+        projected_pwr=projected_pwr,
+        claimed_pwr=claimed_pwr,
+        claimable_pwr=claimable_pwr,
         locked_unsettled_revenue_cents=locked_cents,
-        locked_unsettled_revenue_pwr=_cents_to_pwr(locked_cents),
+        locked_unsettled_revenue_pwr=claimable_pwr if machine.has_unsettled_revenue else 0.0,
         locked_beneficiary_user_ids=(locked_beneficiary_user_ids or []) if locked_cents > 0 else [],
         profile_label=MOCK_MACHINE_SPEC["profile_label"],
         gpu_spec=MOCK_MACHINE_SPEC["gpu_spec"],
         supported_categories=list(MOCK_MACHINE_SPEC["supported_categories"]),
         hosted_by=MOCK_MACHINE_SPEC["hosted_by"],
         availability=_availability_from_runtime(runtime_snapshot),
-        confirmed_revenue_30d_pwr=_cents_to_pwr(summary["projected_cents"]),
-        claimable_pwr=_cents_to_pwr(summary["claimable_cents"]),
+        confirmed_revenue_30d_pwr=projected_pwr,
         indicative_apr=_indicative_apr(summary["projected_cents"]),
         active_listing=_to_listing_response(active_listing) if active_listing is not None else None,
         runtime_snapshot=runtime_snapshot,

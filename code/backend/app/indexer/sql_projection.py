@@ -21,8 +21,8 @@ from app.domain.models import (
     SettlementClaimRecord,
     SettlementRecord,
 )
+from app.domain.pwr_amounts import parse_pwr_wei, pwr_wei_to_cents
 from app.domain.order_truth import set_authoritative_order_truth
-from app.runtime.cost_service import get_runtime_cost_service
 from app.domain.rules import (
     calculate_failed_or_no_valid_preview_breakdown,
     calculate_rejected_valid_preview_breakdown,
@@ -69,19 +69,11 @@ def _payment_token_decimals(address: str | None) -> int | None:
     return None
 
 
-def _pwr_wei_to_cents(amount_wei: int) -> int:
-    anchor_price_cents = get_runtime_cost_service().pwr_anchor_price_cents
-    if anchor_price_cents <= 0:
-        return 0
-    cents = (Decimal(amount_wei) * Decimal(anchor_price_cents) / Decimal(10**18)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-    return int(cents)
-
-
 def _claim_amount_to_cents(payload: RevenueClaimedEvent) -> int:
     if payload.claim_kind == "machine_revenue":
-        return _pwr_wei_to_cents(payload.amount_wei)
+        return pwr_wei_to_cents(payload.amount_wei)
     if _payment_token_symbol(payload.token_address) == "PWR":
-        return _pwr_wei_to_cents(payload.amount_wei)
+        return pwr_wei_to_cents(payload.amount_wei)
     return payload.amount_wei
 
 
@@ -303,7 +295,6 @@ class SqlProjectionStore:
                         db.add(entry)
                 elif order_status == "REFUNDED":
                     order.state = OrderState.CANCELLED
-                    self._mark_direct_payment_refunded(db=db, order=order)
                     paid_cents = db.scalar(
                         select(func.coalesce(func.sum(Payment.amount_cents), 0)).where(
                             Payment.order_id == order.id,
@@ -449,6 +440,10 @@ class SqlProjectionStore:
             machine = db.get(Machine, order.machine_id)
             if machine is None:
                 return
+            entry = db.scalar(select(RevenueEntry).where(RevenueEntry.order_id == order.id))
+            if entry is not None and payload.role == "MACHINE_OWNER_DIVIDEND":
+                entry.machine_share_pwr_wei = str(payload.amount_wei)
+                db.add(entry)
             machine.has_unsettled_revenue = payload.amount_wei > 0
             db.add(machine)
             db.commit()
@@ -476,6 +471,7 @@ class SqlProjectionStore:
                         account_address=payload.account,
                         token_address=payload.token_address,
                         amount_cents=amount_cents,
+                        amount_wei=str(payload.amount_wei),
                         tx_hash=event.transaction_hash,
                         machine_id=machine.id if machine is not None else None,
                     )
@@ -496,6 +492,7 @@ class SqlProjectionStore:
                     MachineRevenueClaim(
                         machine_id=machine.id,
                         amount_cents=_claim_amount_to_cents(payload),
+                        amount_wei=str(payload.amount_wei),
                         tx_hash=event.transaction_hash,
                     )
                 )

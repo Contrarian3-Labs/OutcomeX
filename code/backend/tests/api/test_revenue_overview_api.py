@@ -171,6 +171,11 @@ def test_revenue_overview_reports_projected_and_claimed_history(client: TestClie
     assert payload["projected_cents"] == 900
     assert payload["claimed_cents"] == 350
     assert payload["claimable_cents"] == 550
+    assert payload["projected_pwr"] == 36.0
+    assert payload["claimed_pwr"] == 14.0
+    assert payload["claimable_pwr"] == 22.0
+    assert payload["withdraw_history"][0]["amount_pwr"] == 8.0
+    assert payload["withdraw_history"][1]["amount_pwr"] == 6.0
     assert payload["withdraw_history"][0]["tx_hash"] == "0xnew"
     assert payload["withdraw_history"][1]["tx_hash"] == "0xold"
 
@@ -234,6 +239,9 @@ def test_revenue_analytics_reports_windows_breakdown_and_apr(client: TestClient)
     assert payload["total_earned_cents"] == 1440
     assert payload["last_7d_cents"] == 1440
     assert payload["trailing_30d_cents"] == 1440
+    assert payload["total_earned_pwr"] == 57.6
+    assert payload["last_7d_pwr"] == 57.6
+    assert payload["trailing_30d_pwr"] == 57.6
     assert payload["acquisition_total_cents"] == 399900
     assert payload["indicative_apr"] > 0
     assert len(payload["series_7d"]) == 7
@@ -242,6 +250,8 @@ def test_revenue_analytics_reports_windows_breakdown_and_apr(client: TestClient)
     assert len(payload["machine_breakdown"]) == 1
     assert payload["machine_breakdown"][0]["machine_id"] == machine.id
     assert payload["machine_breakdown"][0]["total_earned_cents"] == 1440
+    assert payload["machine_breakdown"][0]["total_earned_pwr"] == 57.6
+    assert payload["machine_breakdown"][0]["claimable_pwr"] == 57.6
     assert payload["machine_breakdown"][0]["acquisition_price_cents"] == 399900
 
 
@@ -449,6 +459,5 @@ def test_platform_overview_reports_projected_claimed_and_claimable_by_currency(c
     assert payload["claimable_cents"] == 60
     assert payload["claim_history"][0]["claim_kind"] == "platform_revenue"
     assert payload["claim_history"][0]["amount_cents"] == 40
-
 
 

@@ -55,6 +55,9 @@ class MachineResponse(BaseModel):
     projected_cents: int
     claimed_cents: int
     claimable_cents: int
+    projected_pwr: float | None = None
+    claimed_pwr: float | None = None
+    claimable_pwr: float | None = None
     locked_unsettled_revenue_cents: int
     locked_unsettled_revenue_pwr: float
     locked_beneficiary_user_ids: list[str]
@@ -64,7 +67,6 @@ class MachineResponse(BaseModel):
     hosted_by: str
     availability: int
     confirmed_revenue_30d_pwr: float
-    claimable_pwr: float
     indicative_apr: float
     active_listing: MachineListingSummaryResponse | None = None
     runtime_snapshot: MachineRuntimeSnapshotResponse
