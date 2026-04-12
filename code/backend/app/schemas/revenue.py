@@ -34,6 +34,36 @@ class RevenueEntryResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class RevenueAnalyticsPoint(BaseModel):
+    date_key: str
+    amount_cents: int
+
+
+class RevenueMachineBreakdownItem(BaseModel):
+    machine_id: str
+    display_name: str
+    total_earned_cents: int
+    claimable_cents: int
+    acquisition_price_cents: int
+
+
+class RevenueAccountAnalyticsResponse(BaseModel):
+    owner_user_id: str
+    currency: str
+    total_earned_cents: int
+    claimable_cents: int
+    claimed_cents: int
+    last_7d_cents: int
+    trailing_30d_cents: int
+    indicative_apr: float
+    acquisition_total_cents: int
+    pwr_anchor_price_cents: int | None = None
+    series_7d: list[RevenueAnalyticsPoint]
+    series_30d: list[RevenueAnalyticsPoint]
+    series_90d: list[RevenueAnalyticsPoint]
+    machine_breakdown: list[RevenueMachineBreakdownItem]
+
+
 class MachineRevenueClaimResponse(BaseModel):
     machine_id: str
     onchain_machine_id: str

@@ -35,6 +35,9 @@ class OrderResponse(BaseModel):
     user_prompt: str
     recommended_plan_summary: str
     quoted_amount_cents: int
+    quoted_pwr_amount: str | None = None
+    quoted_pwr_anchor_price_cents: int | None = None
+    quoted_pricing_version: str | None = None
     payment_state: PaymentState
     unpaid_expiry_at: datetime | None
     cancelled_at: datetime | None

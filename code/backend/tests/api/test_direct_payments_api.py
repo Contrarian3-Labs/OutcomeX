@@ -296,6 +296,9 @@ def test_create_direct_payment_intent_supports_pwr_when_anchor_exists(
     anchored_order = test_client.get(f"/api/v1/orders/{order['id']}").json()
     assert anchored_order["onchain_order_id"] is not None
     assert anchored_order["create_order_tx_hash"] == "0xcreateorder"
+    assert anchored_order["quoted_pwr_amount"] == "40.0000"
+    assert anchored_order["quoted_pwr_anchor_price_cents"] == 25
+    assert anchored_order["quoted_pricing_version"] == "phase1_v3"
 
 
 def test_finalize_usdc_direct_payment_intent_returns_wallet_envelope(

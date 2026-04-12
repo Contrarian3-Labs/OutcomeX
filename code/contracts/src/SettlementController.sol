@@ -112,6 +112,10 @@ contract SettlementController is Ownable {
         }
 
         if (breakdown.machineShare > 0) {
+            if (input.paymentToken == pwrToken && breakdown.dividendEligible) {
+                bool funded = IERC20Like(pwrToken).transfer(address(revenueVault), breakdown.machineShare);
+                require(funded, "PWR_REVENUE_FUNDING_FAILED");
+            }
             revenueVault.accrueRevenue(
                 input.machineId,
                 input.settlementBeneficiary,

@@ -78,6 +78,16 @@ def test_quote_for_prompt_is_deterministic() -> None:
     assert quote_a.model_dump(mode="json") == quote_b.model_dump(mode="json")
 
 
+def test_quote_for_prompt_scales_down_by_20x_and_rounds_down_to_cents() -> None:
+    service = RuntimeCostService()
+
+    quote = service.quote_for_prompt("x" * 43)
+
+    assert quote.official_quote_cents == 26
+    assert quote.pwr_quote == "1.0400"
+    assert quote.pwr_anchor_price_cents == 25
+
+
 def test_chat_plan_and_payment_intent_expose_quote_outputs(client: TestClient) -> None:
     plan_response = client.post(
         "/api/v1/chat/plans",

@@ -175,6 +175,76 @@ def test_revenue_overview_reports_projected_and_claimed_history(client: TestClie
     assert payload["withdraw_history"][1]["tx_hash"] == "0xold"
 
 
+def test_revenue_analytics_reports_windows_breakdown_and_apr(client: TestClient) -> None:
+    owner_user_id = "owner-analytics"
+    machine = _seed_machine_with_revenue(owner_user_id=owner_user_id, machine_share_cents=900)
+
+    container = get_container()
+    now = datetime.now(timezone.utc)
+    with container.session_factory() as db:
+        first_entry = db.scalar(select(RevenueEntry).where(RevenueEntry.machine_id == machine.id))
+        assert first_entry is not None
+        first_entry.created_at = now - timedelta(days=2)
+        db.add(first_entry)
+
+        second_order = Order(
+            user_id=owner_user_id,
+            machine_id=machine.id,
+            chat_session_id="chat-yield-analytics-2",
+            user_prompt="Second delivery",
+            recommended_plan_summary="Yield analytics",
+            quoted_amount_cents=600,
+            state=OrderState.RESULT_CONFIRMED,
+            settlement_state=SettlementState.DISTRIBUTED,
+        )
+        db.add(second_order)
+        db.flush()
+        second_settlement = SettlementRecord(
+            order_id=second_order.id,
+            gross_amount_cents=600,
+            platform_fee_cents=60,
+            machine_share_cents=540,
+            state=SettlementState.DISTRIBUTED,
+            distributed_at=now - timedelta(days=1),
+        )
+        db.add(second_settlement)
+        db.flush()
+        db.add(
+            RevenueEntry(
+                order_id=second_order.id,
+                settlement_id=second_settlement.id,
+                machine_id=machine.id,
+                beneficiary_user_id=owner_user_id,
+                gross_amount_cents=600,
+                platform_fee_cents=60,
+                machine_share_cents=540,
+                is_self_use=False,
+                is_dividend_eligible=True,
+                created_at=now - timedelta(days=1),
+            )
+        )
+        db.commit()
+
+    response = client.get(f"/api/v1/revenue/accounts/{owner_user_id}/analytics")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["owner_user_id"] == owner_user_id
+    assert payload["currency"] == "PWR"
+    assert payload["total_earned_cents"] == 1440
+    assert payload["last_7d_cents"] == 1440
+    assert payload["trailing_30d_cents"] == 1440
+    assert payload["acquisition_total_cents"] == 399900
+    assert payload["indicative_apr"] > 0
+    assert len(payload["series_7d"]) == 7
+    assert len(payload["series_30d"]) == 30
+    assert len(payload["series_90d"]) == 90
+    assert len(payload["machine_breakdown"]) == 1
+    assert payload["machine_breakdown"][0]["machine_id"] == machine.id
+    assert payload["machine_breakdown"][0]["total_earned_cents"] == 1440
+    assert payload["machine_breakdown"][0]["acquisition_price_cents"] == 399900
+
+
 def test_revenue_overview_stays_with_beneficiary_after_machine_owner_changes(client: TestClient) -> None:
     owner_user_id = "owner-before-transfer"
     machine = _seed_machine_with_revenue(owner_user_id=owner_user_id, machine_share_cents=900)
@@ -379,7 +449,6 @@ def test_platform_overview_reports_projected_claimed_and_claimable_by_currency(c
     assert payload["claimable_cents"] == 60
     assert payload["claim_history"][0]["claim_kind"] == "platform_revenue"
     assert payload["claim_history"][0]["amount_cents"] == 40
-
 
 
 

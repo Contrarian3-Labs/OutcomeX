@@ -1,3 +1,7 @@
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -7,19 +11,35 @@ from app.core.config import get_settings
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.claim_projection import project_machine_entry_claims, project_platform_revenue_overview
 from app.domain.enums import PaymentState, SettlementState
-from app.domain.models import Machine, MachineRevenueClaim, Order, Payment, RevenueEntry, SettlementClaimRecord, SettlementRecord
+from app.domain.models import (
+    Machine,
+    MachineListing,
+    MachineRevenueClaim,
+    Order,
+    Payment,
+    PrimaryIssuancePurchase,
+    RevenueEntry,
+    SettlementClaimRecord,
+    SettlementRecord,
+)
 from app.domain.rules import has_sufficient_payment
 from app.runtime.cost_service import get_runtime_cost_service
 from app.schemas.revenue import (
     PaymentLedgerItem,
     PlatformRevenueOverviewResponse,
+    RevenueAccountAnalyticsResponse,
     RevenueClaimHistoryItem,
     RevenueAccountOverviewResponse,
+    RevenueAnalyticsPoint,
     RevenueDistributionResponse,
     RevenueEntryResponse,
+    RevenueMachineBreakdownItem,
 )
 
 router = APIRouter()
+
+DEFAULT_MACHINE_ASSET_COST_CENTS = 399_900
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 def _succeeded_payment_total_cents(order_id: str, db: Session) -> int:
     return db.scalar(
@@ -114,6 +134,145 @@ def _claim_record_currency(*, claim_kind: str, token_address: str | None) -> str
     if claim_kind == "machine_revenue":
         return _currency_from_token_address(token_address) or "PWR"
     return _currency_from_token_address(token_address)
+
+
+def _day_start_utc(value: datetime) -> datetime:
+    normalized = value.astimezone(timezone.utc) if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return datetime(normalized.year, normalized.month, normalized.day, tzinfo=timezone.utc)
+
+
+def _day_key(value: datetime) -> str:
+    return _day_start_utc(value).date().isoformat()
+
+
+def _price_units_to_cents(*, price_units: int, decimals: int | None, token_symbol: str | None, token_address: str | None) -> int | None:
+    normalized_currency = (token_symbol or _currency_from_token_address(token_address) or "").upper()
+    resolved_decimals = decimals if decimals is not None else (18 if normalized_currency == "PWR" else 6)
+    if resolved_decimals < 0:
+        return None
+
+    if normalized_currency in {"USDC", "USDT"}:
+        amount_cents = (Decimal(price_units) * Decimal(100)) / (Decimal(10) ** resolved_decimals)
+        return int(amount_cents.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+    if normalized_currency == "PWR":
+        anchor = get_runtime_cost_service().pwr_anchor_price_cents
+        amount_cents = (Decimal(price_units) * Decimal(anchor)) / (Decimal(10) ** resolved_decimals)
+        return int(amount_cents.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+    if token_address and token_address.lower() == ZERO_ADDRESS:
+        amount_cents = (Decimal(price_units) * Decimal(100)) / (Decimal(10) ** resolved_decimals)
+        return int(amount_cents.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+    return None
+
+
+def _machine_acquisition_price_cents(*, machine: Machine, db: Session) -> int:
+    primary_purchase = db.scalar(
+        select(PrimaryIssuancePurchase)
+        .where(
+            PrimaryIssuancePurchase.minted_machine_id == machine.id,
+            PrimaryIssuancePurchase.state == PaymentState.SUCCEEDED,
+        )
+        .order_by(PrimaryIssuancePurchase.created_at.desc())
+        .limit(1)
+    )
+    if primary_purchase is not None and primary_purchase.amount_cents > 0:
+        return primary_purchase.amount_cents
+
+    listing = db.scalar(
+        select(MachineListing)
+        .where(
+            MachineListing.machine_id == machine.id,
+            MachineListing.filled_at.is_not(None),
+        )
+        .order_by(MachineListing.filled_at.desc(), MachineListing.updated_at.desc())
+        .limit(1)
+    )
+    if listing is not None:
+        listing_price_cents = _price_units_to_cents(
+            price_units=int(listing.price_units),
+            decimals=listing.payment_token_decimals,
+            token_symbol=listing.payment_token_symbol,
+            token_address=listing.payment_token_address,
+        )
+        if listing_price_cents is not None and listing_price_cents > 0:
+            return listing_price_cents
+
+    return DEFAULT_MACHINE_ASSET_COST_CENTS
+
+
+def _build_revenue_series(*, owner_user_id: str, days: int, db: Session) -> list[RevenueAnalyticsPoint]:
+    now = datetime.now(timezone.utc)
+    today = _day_start_utc(now)
+    start = today - timedelta(days=days - 1)
+    totals_by_day = {(_day_start_utc(start + timedelta(days=offset))).date().isoformat(): 0 for offset in range(days)}
+
+    rows = db.scalars(
+        select(RevenueEntry)
+        .where(
+            RevenueEntry.beneficiary_user_id == owner_user_id,
+            RevenueEntry.created_at >= start,
+        )
+        .order_by(RevenueEntry.created_at.asc(), RevenueEntry.id.asc())
+    ).all()
+
+    for entry in rows:
+        date_key = _day_key(entry.created_at)
+        if date_key in totals_by_day:
+            totals_by_day[date_key] += entry.machine_share_cents
+
+    return [RevenueAnalyticsPoint(date_key=date_key, amount_cents=amount_cents) for date_key, amount_cents in totals_by_day.items()]
+
+
+def _machine_breakdown(*, owner_user_id: str, db: Session) -> tuple[list[RevenueMachineBreakdownItem], int]:
+    entries = db.scalars(
+        select(RevenueEntry)
+        .where(RevenueEntry.beneficiary_user_id == owner_user_id)
+        .order_by(RevenueEntry.created_at.desc(), RevenueEntry.id.desc())
+    ).all()
+    if not entries:
+        return [], 0
+
+    totals_by_machine: dict[str, int] = defaultdict(int)
+    for entry in entries:
+        totals_by_machine[entry.machine_id] += entry.machine_share_cents
+
+    claimed_by_machine_rows = db.execute(
+        select(
+            SettlementClaimRecord.machine_id,
+            func.coalesce(func.sum(SettlementClaimRecord.amount_cents), 0),
+        )
+        .where(
+            SettlementClaimRecord.claimant_user_id == owner_user_id,
+            SettlementClaimRecord.claim_kind == "machine_revenue",
+            SettlementClaimRecord.machine_id.is_not(None),
+            SettlementClaimRecord.machine_id.in_(list(totals_by_machine.keys())),
+        )
+        .group_by(SettlementClaimRecord.machine_id)
+    ).all()
+    claimed_by_machine = {machine_id: int(amount_cents or 0) for machine_id, amount_cents in claimed_by_machine_rows}
+
+    machine_rows = db.scalars(select(Machine).where(Machine.id.in_(list(totals_by_machine.keys())))).all()
+    machines_by_id = {machine.id: machine for machine in machine_rows}
+
+    breakdown: list[RevenueMachineBreakdownItem] = []
+    acquisition_total_cents = 0
+    for machine_id, total_earned_cents in sorted(totals_by_machine.items(), key=lambda item: (-item[1], item[0])):
+        machine = machines_by_id.get(machine_id)
+        claimable_cents = max(0, total_earned_cents - claimed_by_machine.get(machine_id, 0))
+        acquisition_price_cents = _machine_acquisition_price_cents(machine=machine, db=db) if machine is not None else DEFAULT_MACHINE_ASSET_COST_CENTS
+        acquisition_total_cents += acquisition_price_cents
+        breakdown.append(
+            RevenueMachineBreakdownItem(
+                machine_id=machine_id,
+                display_name=machine.display_name if machine is not None else machine_id,
+                total_earned_cents=total_earned_cents,
+                claimable_cents=claimable_cents,
+                acquisition_price_cents=acquisition_price_cents,
+            )
+        )
+    return breakdown, acquisition_total_cents
 
 
 @router.post("/orders/{order_id}/distribute", response_model=RevenueDistributionResponse)
@@ -231,6 +390,43 @@ def revenue_account_overview(owner_user_id: str, db: Session = Depends(get_db)) 
     )
 
 
+@router.get("/accounts/{owner_user_id}/analytics", response_model=RevenueAccountAnalyticsResponse)
+def revenue_account_analytics(owner_user_id: str, db: Session = Depends(get_db)) -> RevenueAccountAnalyticsResponse:
+    projected_cents = _sum_projected_cents_for_beneficiary(beneficiary_user_id=owner_user_id, db=db)
+    claimed_cents = _sum_machine_claims_cents_for_claimant(claimant_user_id=owner_user_id, db=db)
+    claimable_cents = max(0, projected_cents - claimed_cents)
+    currency = (
+        "PWR"
+        if (projected_cents > 0 or claimed_cents > 0 or claimable_cents > 0)
+        else _user_primary_currency(user_id=owner_user_id, db=db)
+    )
+    pwr_anchor_price_cents = get_runtime_cost_service().pwr_anchor_price_cents if currency == "PWR" else None
+    series_7d = _build_revenue_series(owner_user_id=owner_user_id, days=7, db=db)
+    series_30d = _build_revenue_series(owner_user_id=owner_user_id, days=30, db=db)
+    series_90d = _build_revenue_series(owner_user_id=owner_user_id, days=90, db=db)
+    last_7d_cents = sum(item.amount_cents for item in series_7d)
+    trailing_30d_cents = sum(item.amount_cents for item in series_30d)
+    machine_breakdown, acquisition_total_cents = _machine_breakdown(owner_user_id=owner_user_id, db=db)
+    indicative_apr = round((trailing_30d_cents * 12 * 100) / acquisition_total_cents, 2) if acquisition_total_cents > 0 else 0.0
+
+    return RevenueAccountAnalyticsResponse(
+        owner_user_id=owner_user_id,
+        currency=currency,
+        total_earned_cents=projected_cents,
+        claimable_cents=claimable_cents,
+        claimed_cents=claimed_cents,
+        last_7d_cents=last_7d_cents,
+        trailing_30d_cents=trailing_30d_cents,
+        indicative_apr=indicative_apr,
+        acquisition_total_cents=acquisition_total_cents,
+        pwr_anchor_price_cents=pwr_anchor_price_cents,
+        series_7d=series_7d,
+        series_30d=series_30d,
+        series_90d=series_90d,
+        machine_breakdown=machine_breakdown,
+    )
+
+
 @router.get("/accounts/{user_id}/claims", response_model=list[RevenueClaimHistoryItem])
 def list_revenue_claims(user_id: str, db: Session = Depends(get_db)) -> list[RevenueClaimHistoryItem]:
     records = list(
@@ -316,4 +512,3 @@ def platform_revenue_overview(
         claimable_cents=max(0, projected_cents - claimed_cents),
         claim_history=claim_history,
     )
-

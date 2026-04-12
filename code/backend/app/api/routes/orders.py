@@ -23,6 +23,7 @@ from app.execution.service import ExecutionEngineService
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
 from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
 from app.onchain.order_writer import OrderWriter, get_order_writer
+from app.runtime.cost_service import get_runtime_cost_service
 from app.runtime.hardware_simulator import get_shared_hardware_simulator
 from app.schemas.execution_run import ExecutionRunResponse
 from app.schemas.order import (
@@ -153,6 +154,7 @@ def _machine_is_runtime_available(order: Order, machine_id: str) -> bool:
 def _serialize_order(order: Order, *, db: Session) -> OrderResponse:
     machine = db.get(Machine, order.machine_id) if order.machine_id else None
     machine_is_available = _machine_is_runtime_available(order, machine.id) if machine is not None else None
+    quote_snapshot = _resolve_order_quote_snapshot(order)
     return OrderResponse.model_validate(
         {
             "id": order.id,
@@ -167,6 +169,9 @@ def _serialize_order(order: Order, *, db: Session) -> OrderResponse:
             "user_prompt": order.user_prompt,
             "recommended_plan_summary": order.recommended_plan_summary,
             "quoted_amount_cents": order.quoted_amount_cents,
+            "quoted_pwr_amount": quote_snapshot["pwr_quote"],
+            "quoted_pwr_anchor_price_cents": quote_snapshot["pwr_anchor_price_cents"],
+            "quoted_pricing_version": quote_snapshot["pricing_version"],
             "payment_state": order.payment_state,
             "unpaid_expiry_at": order.unpaid_expiry_at,
             "cancelled_at": order.cancelled_at,
@@ -187,6 +192,33 @@ def _serialize_order(order: Order, *, db: Session) -> OrderResponse:
             "created_at": order.created_at,
         }
     )
+
+
+def _resolve_order_quote_snapshot(order: Order) -> dict[str, int | str | None]:
+    metadata = dict(order.execution_metadata or {})
+    raw_pwr_quote = metadata.get("quoted_pwr_amount")
+    raw_anchor_price = metadata.get("quoted_pwr_anchor_price_cents")
+    raw_pricing_version = metadata.get("quoted_pricing_version")
+    if (
+        isinstance(raw_pwr_quote, str)
+        and raw_pwr_quote.strip()
+        and isinstance(raw_anchor_price, int)
+        and raw_anchor_price > 0
+        and isinstance(raw_pricing_version, str)
+        and raw_pricing_version.strip()
+    ):
+        return {
+            "pwr_quote": raw_pwr_quote,
+            "pwr_anchor_price_cents": raw_anchor_price,
+            "pricing_version": raw_pricing_version,
+        }
+
+    quote = get_runtime_cost_service().quote_for_order_amount(order.quoted_amount_cents)
+    return {
+        "pwr_quote": quote.pwr_quote,
+        "pwr_anchor_price_cents": quote.pwr_anchor_price_cents,
+        "pricing_version": quote.pricing_version,
+    }
 
 
 def _has_active_execution_run(order_id: str, db: Session) -> bool:
@@ -337,6 +369,10 @@ def create_order(
     execution_metadata["planning_context_id"] = planning_context_id
     execution_metadata["attachment_session_id"] = payload.attachment_session_id
     execution_metadata["attachment_ids"] = list(payload.attachment_ids)
+    quote_snapshot = get_runtime_cost_service().quote_for_order_amount(payload.quoted_amount_cents)
+    execution_metadata["quoted_pwr_amount"] = quote_snapshot.pwr_quote
+    execution_metadata["quoted_pwr_anchor_price_cents"] = quote_snapshot.pwr_anchor_price_cents
+    execution_metadata["quoted_pricing_version"] = quote_snapshot.pricing_version
     if selected_plan.native_plan_name:
         execution_metadata["selected_native_plan_name"] = selected_plan.native_plan_name
     if selected_plan.native_plan_description:

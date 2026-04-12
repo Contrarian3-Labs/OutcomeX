@@ -8,6 +8,7 @@ from app.domain.rules import calculate_revenue_split
 from app.schemas.quote import QuoteResponse
 
 PWR_QUANTIZE = Decimal("0.0001")
+PROMPT_QUOTE_SCALE_DIVISOR = 20
 
 
 class RuntimeCostService:
@@ -19,7 +20,8 @@ class RuntimeCostService:
 
     def quote_for_prompt(self, prompt: str) -> QuoteResponse:
         prompt_units = max(1, ceil(len(prompt.strip() or "plan") / 24))
-        official_quote_cents = 420 + (prompt_units * 55)
+        raw_quote_cents = 420 + (prompt_units * 55)
+        official_quote_cents = max(1, raw_quote_cents // PROMPT_QUOTE_SCALE_DIVISOR)
         return self.quote_for_order_amount(official_quote_cents)
 
     def quote_for_order_amount(self, official_quote_cents: int) -> QuoteResponse:

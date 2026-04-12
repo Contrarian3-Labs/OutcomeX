@@ -74,7 +74,9 @@ contract RevenueVault is Ownable, IRevenueVault {
             uint256 pwrAmount = amountIsPwrWei ? amount : _centsToPwrWei(amount);
             unsettledRevenueByMachine[machineId] += pwrAmount;
             claimableByMachineOwner[machineId][machineOwner] += pwrAmount;
-            pwrToken.mint(address(this), pwrAmount);
+            if (!amountIsPwrWei) {
+                pwrToken.mint(address(this), pwrAmount);
+            }
             amount = pwrAmount;
         } else {
             nonDividendRevenueByMachine[machineId] += amount;

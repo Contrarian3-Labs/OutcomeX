@@ -273,6 +273,66 @@ contract OrderPaymentRouterTest is TestBase {
 
         assertEq(settlement.platformAccruedByToken(address(pwr)), _pwrWeiForCents(100), "platform pwr claim mismatch");
         assertEq(revenueVault.unsettledRevenueByMachine(machineId), _pwrWeiForCents(900), "machine pwr accrual mismatch");
+        assertEq(pwr.balanceOf(address(settlement)), _pwrWeiForCents(100), "settlement should retain only platform share");
+        assertEq(pwr.balanceOf(address(revenueVault)), _pwrWeiForCents(900), "revenue vault should hold funded machine share");
+
+        vm.prank(MACHINE_OWNER);
+        uint256 machineClaimed = revenueVault.claim(machineId);
+        assertEq(machineClaimed, _pwrWeiForCents(900), "machine claim amount mismatch");
+        assertEq(pwr.balanceOf(MACHINE_OWNER), _pwrWeiForCents(900), "machine owner should receive funded pwr");
+        assertEq(pwr.balanceOf(address(revenueVault)), 0, "revenue vault should be empty after machine claim");
+
+        vm.prank(PLATFORM_TREASURY);
+        uint256 platformClaimed = settlement.claimPlatformRevenue(address(pwr));
+        assertEq(platformClaimed, _pwrWeiForCents(100), "platform claim amount mismatch");
+        assertEq(pwr.balanceOf(PLATFORM_TREASURY), _pwrWeiForCents(100), "treasury should receive funded pwr");
+        assertEq(pwr.balanceOf(address(settlement)), 0, "settlement should fully drain after claims");
+    }
+
+    function testPWRRejectedValidPreviewFullyDistributesEscrowedFunds() public {
+        vm.prank(BUYER);
+        uint256 orderId = orderBook.createOrder(machineId, _pwrWeiForCents(1000));
+
+        vm.startPrank(ADMIN);
+        pwr.setMinter(ADMIN, true);
+        pwr.mint(BUYER, _pwrWeiForCents(1000));
+        vm.stopPrank();
+
+        vm.prank(BUYER);
+        pwr.approve(address(router), _pwrWeiForCents(1000));
+
+        vm.prank(BUYER);
+        router.payWithPWR(orderId, _pwrWeiForCents(1000));
+
+        vm.prank(MACHINE_OWNER);
+        orderBook.markPreviewReady(orderId, true);
+
+        vm.prank(BUYER);
+        orderBook.rejectValidPreview(orderId);
+
+        assertEq(settlement.refundableByToken(BUYER, address(pwr)), _pwrWeiForCents(700), "buyer refund ledger mismatch");
+        assertEq(settlement.platformAccruedByToken(address(pwr)), _pwrWeiForCents(30), "platform pwr claim mismatch");
+        assertEq(revenueVault.unsettledRevenueByMachine(machineId), _pwrWeiForCents(270), "machine pwr accrual mismatch");
+        assertEq(pwr.balanceOf(address(settlement)), _pwrWeiForCents(730), "settlement should retain refund plus platform share");
+        assertEq(pwr.balanceOf(address(revenueVault)), _pwrWeiForCents(270), "revenue vault should hold machine share");
+
+        vm.prank(BUYER);
+        uint256 refunded = settlement.claimRefund(address(pwr));
+        assertEq(refunded, _pwrWeiForCents(700), "refund amount mismatch");
+        assertEq(pwr.balanceOf(BUYER), _pwrWeiForCents(700), "buyer should receive funded pwr refund");
+        assertEq(pwr.balanceOf(address(settlement)), _pwrWeiForCents(30), "settlement should retain only platform share after refund");
+
+        vm.prank(MACHINE_OWNER);
+        uint256 machineClaimed = revenueVault.claim(machineId);
+        assertEq(machineClaimed, _pwrWeiForCents(270), "machine claim mismatch");
+        assertEq(pwr.balanceOf(MACHINE_OWNER), _pwrWeiForCents(270), "machine owner should receive funded pwr");
+        assertEq(pwr.balanceOf(address(revenueVault)), 0, "revenue vault should be empty after machine claim");
+
+        vm.prank(PLATFORM_TREASURY);
+        uint256 platformClaimed = settlement.claimPlatformRevenue(address(pwr));
+        assertEq(platformClaimed, _pwrWeiForCents(30), "platform claim mismatch");
+        assertEq(pwr.balanceOf(PLATFORM_TREASURY), _pwrWeiForCents(30), "treasury should receive funded pwr");
+        assertEq(pwr.balanceOf(address(settlement)), 0, "settlement should fully drain after all pwr claims");
     }
 
     function testPWRFailedBeforePreviewCanRefundPaidPWR() public {
