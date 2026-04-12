@@ -327,6 +327,7 @@ def get_self_use_run(
 def read_self_use_artifact_file(
     run_id: str,
     path: str = Query(min_length=1),
+    inline_preview: bool = Query(default=False),
     viewer_wallet_address: str = Query(min_length=42, max_length=42, pattern=r"^0x[a-fA-F0-9]{40}$"),
     db: Session = Depends(get_db),
     execution_service=Depends(get_agentskillos_execution_service),
@@ -335,6 +336,13 @@ def read_self_use_artifact_file(
     snapshot = execution_service.get_run(run_id)
     candidate = _resolve_artifact_source_path(snapshot, run.run_dir, path)
     media_type, _ = guess_type(candidate.name)
+    if inline_preview:
+        return FileResponse(
+            candidate,
+            media_type=media_type or "application/octet-stream",
+            filename=candidate.name,
+            content_disposition_type="inline",
+        )
     return FileResponse(candidate, media_type=media_type or "application/octet-stream", filename=candidate.name)
 
 

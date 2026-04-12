@@ -200,6 +200,15 @@ def _resolve_preview_manifest_paths(snapshot) -> set[str]:
     return paths
 
 
+def _inline_preview_allowed(media_type: str | None) -> bool:
+    normalized = (media_type or "").lower()
+    return (
+        normalized.startswith("image/")
+        or normalized.startswith("video/")
+        or normalized == "text/html"
+    )
+
+
 def _outputs_unlocked(order: Order | None) -> bool:
     if order is None:
         return True
@@ -534,12 +543,17 @@ def read_execution_run_artifact_file(
     _assert_order_output_access(order=order, snapshot=snapshot, relative_path=path, inline_preview=inline_preview)
     candidate = _resolve_artifact_source_path(snapshot, run.run_dir, path)
     media_type, _ = guess_type(candidate.name)
-    if inline_preview and (media_type or "").startswith("image/"):
-        return FileResponse(candidate, media_type=media_type or "application/octet-stream", filename=candidate.name)
+    if inline_preview and _inline_preview_allowed(media_type):
+        return FileResponse(
+            candidate,
+            media_type=media_type or "application/octet-stream",
+            filename=candidate.name,
+            content_disposition_type="inline",
+        )
     if inline_preview:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only image preview is available before confirmation",
+            detail="Only image, video, and html preview are available before confirmation",
         )
     return FileResponse(candidate, media_type=media_type or "application/octet-stream", filename=candidate.name)
 

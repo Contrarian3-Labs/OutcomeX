@@ -7,6 +7,7 @@ import os
 import shutil
 import signal
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +42,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -92,7 +94,9 @@ def utc_now():
 
 def write_record(payload):
     record_path.parent.mkdir(parents=True, exist_ok=True)
-    record_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp_path = record_path.with_name(f"{record_path.name}.{time.time_ns()}.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp_path.replace(record_path)
 
 
 def append_event(event_type, **fields):
@@ -663,6 +667,159 @@ def choose_preview(artifacts: list[dict]) -> list[dict]:
 
 
 
+def _preview_cache_root(run_dir: Path) -> Path:
+    return run_dir / ".outcomex-preview"
+
+
+
+def _preview_image_path(*, run_dir: Path, relative_path: str, flavor: str) -> Path:
+    relative = Path(relative_path)
+    parent = _preview_cache_root(run_dir) / relative.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    return parent / f"{relative.stem}.{flavor}.png"
+
+
+
+def _find_playwright_chromium() -> Path | None:
+    cache_root = Path.home() / ".cache" / "ms-playwright"
+    candidates = sorted(cache_root.glob("chromium-*/chrome-linux64/chrome"), reverse=True)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+
+def _run_preview_command(command: list[str], *, timeout_seconds: int = 45) -> bool:
+    try:
+        subprocess.run(
+            command,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout_seconds,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return False
+    return True
+
+
+
+def _ensure_html_preview_image(*, run_dir: Path, relative_path: str) -> str | None:
+    source = (run_dir / relative_path).resolve()
+    if not source.is_file():
+        return None
+    chrome = _find_playwright_chromium()
+    if chrome is None:
+        return None
+    target = _preview_image_path(run_dir=run_dir, relative_path=relative_path, flavor="html-preview")
+    if target.is_file() and target.stat().st_mtime >= source.stat().st_mtime:
+        return target.relative_to(run_dir).as_posix()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        str(chrome),
+        "--headless",
+        "--disable-gpu",
+        "--hide-scrollbars",
+        "--allow-file-access-from-files",
+        "--window-size=1440,1024",
+        f"--screenshot={target}",
+        source.as_uri(),
+    ]
+    if not _run_preview_command(command):
+        return None
+    return target.relative_to(run_dir).as_posix() if target.is_file() else None
+
+
+
+def _ensure_presentation_preview_image(*, run_dir: Path, relative_path: str) -> str | None:
+    source = (run_dir / relative_path).resolve()
+    if not source.is_file():
+        return None
+    target = _preview_image_path(run_dir=run_dir, relative_path=relative_path, flavor="presentation-preview")
+    if target.is_file() and target.stat().st_mtime >= source.stat().st_mtime:
+        return target.relative_to(run_dir).as_posix()
+
+    preview_root = _preview_cache_root(run_dir)
+    conversion_dir = preview_root / "__presentation_pdf__" / Path(relative_path).parent
+    conversion_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = conversion_dir / f"{Path(relative_path).stem}.pdf"
+    if not pdf_path.is_file() or pdf_path.stat().st_mtime < source.stat().st_mtime:
+        command = [
+            "soffice",
+            "--headless",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            str(conversion_dir),
+            str(source),
+        ]
+        if not _run_preview_command(command, timeout_seconds=90):
+            return None
+    if not pdf_path.is_file():
+        return None
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        "pdftoppm",
+        "-png",
+        "-singlefile",
+        "-f",
+        "1",
+        "-scale-to",
+        "1440",
+        str(pdf_path),
+        str(target.with_suffix("")),
+    ]
+    if not _run_preview_command(command, timeout_seconds=45):
+        return None
+    return target.relative_to(run_dir).as_posix() if target.is_file() else None
+
+
+
+def _build_preview_entry(*, run_dir: Path, artifact: dict) -> dict:
+    path = str(artifact.get("path") or "")
+    artifact_type = str(artifact.get("type") or "").lower()
+    if not path:
+        return dict(artifact)
+
+    if artifact_type == "html":
+        preview_path = _ensure_html_preview_image(run_dir=run_dir, relative_path=path)
+        if preview_path:
+            return {
+                "path": preview_path,
+                "type": "image",
+                "kind": "html",
+                "name": path,
+                "source_path": path,
+                "role": "preview",
+            }
+    if artifact_type == "presentation":
+        preview_path = _ensure_presentation_preview_image(run_dir=run_dir, relative_path=path)
+        if preview_path:
+            return {
+                "path": preview_path,
+                "type": "image",
+                "kind": "presentation",
+                "name": path,
+                "source_path": path,
+                "role": "preview",
+            }
+
+    preview_entry = dict(artifact)
+    preview_entry["role"] = "preview"
+    return preview_entry
+
+
+
+def build_preview_manifest(*, run_dir: Path | None, artifacts: list[dict]) -> list[dict]:
+    preferred = [artifact for artifact in artifacts if artifact.get("type") in {"image", "video", "html", "presentation", "document"}]
+    if run_dir is None:
+        return [dict(item, role="preview") for item in preferred[:5]]
+    return [_build_preview_entry(run_dir=run_dir, artifact=artifact) for artifact in preferred[:5]]
+
+
+
 def collect_visible_artifacts(*, run_dir: Path, workspace_dir: Path) -> list[dict]:
     artifacts: list[dict] = []
     if not workspace_dir.exists():
@@ -685,6 +842,8 @@ def collect_visible_artifacts(*, run_dir: Path, workspace_dir: Path) -> list[dic
 def sanitize_visible_manifests(payload: dict) -> dict:
     original_artifacts = list(payload.get("artifact_manifest") or [])
     original_previews = list(payload.get("preview_manifest") or [])
+    run_dir_raw = payload.get("run_dir")
+    run_dir = Path(run_dir_raw).resolve() if isinstance(run_dir_raw, str) and run_dir_raw else None
     artifact_manifest = [
         dict(item)
         for item in original_artifacts
@@ -696,7 +855,9 @@ def sanitize_visible_manifests(payload: dict) -> dict:
         for item in original_previews
         if str(item.get("path") or "") in visible_artifact_paths and is_visible_artifact_path(str(item.get("path") or ""))
     ]
-    if not preview_manifest or len(preview_manifest) != len(original_previews):
+    if run_dir is not None:
+        preview_manifest = build_preview_manifest(run_dir=run_dir, artifacts=artifact_manifest)
+    elif not preview_manifest or len(preview_manifest) != len(original_previews):
         preview_manifest = choose_preview(artifact_manifest)
 
     if artifact_manifest == original_artifacts and preview_manifest == original_previews:
@@ -825,7 +986,7 @@ class AgentSkillOSExecutionService:
             "stalled": False,
             "stalled_reason": None,
         }
-        record_path.write_text(json.dumps(initial_payload, indent=2), encoding="utf-8")
+        _atomic_write_json(record_path, initial_payload)
 
         command = [
             str(python_executable),
@@ -850,9 +1011,9 @@ class AgentSkillOSExecutionService:
                 "OUTCOMEX_EXECUTION_STRATEGY": execution_strategy.value,
             },
         )
-        latest_payload = json.loads(record_path.read_text(encoding="utf-8"))
+        latest_payload = _read_json_with_retries(record_path)
         latest_payload["pid"] = process_id
-        record_path.write_text(json.dumps(latest_payload, indent=2), encoding="utf-8")
+        _atomic_write_json(record_path, latest_payload)
         return self.get_run(run_id)
 
     @staticmethod
@@ -875,7 +1036,7 @@ class AgentSkillOSExecutionService:
         record_path = self._output_root() / run_id / "run.json"
         if not record_path.exists():
             raise FileNotFoundError(run_id)
-        payload = json.loads(record_path.read_text(encoding="utf-8"))
+        payload = _read_json_with_retries(record_path)
         payload = self._reconcile_stale_process(payload, record_path=record_path)
         inferred_run_dir = self._infer_live_run_dir(payload, record_path=record_path)
         if inferred_run_dir is not None and not payload.get("run_dir"):
@@ -884,7 +1045,7 @@ class AgentSkillOSExecutionService:
         sanitized_payload = sanitize_visible_manifests(payload)
         if sanitized_payload is not payload:
             payload = sanitized_payload
-            record_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            _atomic_write_json(record_path, payload)
         pid = payload.get("pid")
         pid_alive = self._process_exists(int(pid)) if pid else None
         last_heartbeat_at = _parse_datetime(payload.get("last_heartbeat_at"))
@@ -988,7 +1149,7 @@ class AgentSkillOSExecutionService:
         payload["current_step"] = None
         payload["stalled"] = False
         payload["stalled_reason"] = None
-        record_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        _atomic_write_json(record_path, payload)
         return payload
 
     @staticmethod
@@ -1018,13 +1179,13 @@ class AgentSkillOSExecutionService:
             except OSError:
                 pass
         record_path = Path(snapshot.record_path)
-        payload = json.loads(record_path.read_text(encoding="utf-8"))
+        payload = _read_json_with_retries(record_path)
         payload["status"] = ExecutionRunStatus.CANCELLED.value
         payload["finished_at"] = _utc_now().isoformat()
         payload["last_progress_at"] = payload["finished_at"]
         payload["stalled"] = False
         payload["stalled_reason"] = None
-        record_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        _atomic_write_json(record_path, payload)
         return self.get_run(run_id)
 
     def collect_artifacts(self, run_id: str) -> ExecutionRunSnapshot:
@@ -1058,6 +1219,27 @@ class AgentSkillOSExecutionService:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.{time.time_ns()}.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def _read_json_with_retries(path: Path, *, attempts: int = 5, delay_seconds: float = 0.05) -> dict:
+    last_error: json.JSONDecodeError | None = None
+    for _ in range(attempts):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            if delay_seconds > 0:
+                time.sleep(delay_seconds)
+    if last_error is not None:
+        raise last_error
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _coerce_int(value, default: int = 0) -> int:

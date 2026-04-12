@@ -54,6 +54,11 @@ def extract_json(text: str) -> Optional[dict]:
     return None
 
 
+_EXPECTED_OUTPUT_PATH_RE = re.compile(
+    r"(?<![\w/.-])((?:[\w.-]+/)*[\w.-]+\.[A-Za-z0-9]{1,10})(?![\w/.-])"
+)
+
+
 UI_CONTRIBUTION = {
     "id": "dag",
     "partials": {
@@ -632,16 +637,36 @@ class SkillOrchestrator:
                 log_callback=node_log_callback,
                 model=self._runtime.model,
             ) as client:
-                response = await asyncio.wait_for(
-                    client.execute(prompt),
-                    timeout=self.node_timeout,
+                response = await asyncio.wait_for(client.execute(prompt), timeout=self.node_timeout)
+                summary, is_success = self._extract_execution_summary(response)
+                missing_outputs = self._find_missing_expected_outputs(
+                    output_dir=output_dir,
+                    outputs_summary=node.outputs_summary,
                 )
+
+                if is_success and missing_outputs:
+                    node_log_callback(
+                        "Expected outputs missing after first pass: "
+                        + ", ".join(missing_outputs)
+                        + ". Requesting one repair pass.",
+                        "warning",
+                    )
+                    repair_prompt = self._build_missing_output_followup(
+                        output_dir=output_dir,
+                        outputs_summary=node.outputs_summary,
+                        missing_outputs=missing_outputs,
+                    )
+                    response = await asyncio.wait_for(client.execute(repair_prompt), timeout=self.node_timeout)
+                    summary, is_success = self._extract_execution_summary(response)
+                    missing_outputs = self._find_missing_expected_outputs(
+                        output_dir=output_dir,
+                        outputs_summary=node.outputs_summary,
+                    )
+
                 node_metrics = client.last_result_metrics
                 metrics_dict = node_metrics.to_dict() if node_metrics else None
 
-                summary, is_success = self._extract_execution_summary(response)
-
-                if is_success:
+                if is_success and not missing_outputs:
                     return NodeExecutionResult(
                         node_id=node_id,
                         status=NodeStatus.COMPLETED,
@@ -651,17 +676,23 @@ class SkillOrchestrator:
                         execution_time_seconds=time.time() - start_time,
                         sdk_metrics=metrics_dict,
                     )
-                else:
-                    return NodeExecutionResult(
-                        node_id=node_id,
-                        status=NodeStatus.FAILED,
-                        output_path=str(output_dir),
-                        summary=summary,
-                        error="Agent reported task failure in execution summary",
-                        failure_reason=NodeFailureReason.SKILL_ERROR,
-                        execution_time_seconds=time.time() - start_time,
-                        sdk_metrics=metrics_dict,
-                    )
+
+                error = "Agent reported task failure in execution summary"
+                failure_reason = NodeFailureReason.SKILL_ERROR
+                if missing_outputs:
+                    error = "Expected outputs were not created: " + ", ".join(missing_outputs)
+                    failure_reason = NodeFailureReason.EXECUTION_ERROR
+
+                return NodeExecutionResult(
+                    node_id=node_id,
+                    status=NodeStatus.FAILED,
+                    output_path=str(output_dir),
+                    summary=summary,
+                    error=error,
+                    failure_reason=failure_reason,
+                    execution_time_seconds=time.time() - start_time,
+                    sdk_metrics=metrics_dict,
+                )
 
         except asyncio.TimeoutError:
             return NodeExecutionResult(
@@ -744,6 +775,71 @@ class SkillOrchestrator:
             return summary, True
         # No summary found, assume success
         return "", True
+
+    @staticmethod
+    def _extract_expected_output_paths(outputs_summary: str) -> list[str]:
+        seen: set[str] = set()
+        paths: list[str] = []
+        for match in _EXPECTED_OUTPUT_PATH_RE.finditer(outputs_summary or ""):
+            candidate = match.group(1).strip()
+            if not candidate:
+                continue
+            normalized = candidate.strip("()[]{}<>\"'`")
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            paths.append(normalized)
+        return paths
+
+    @staticmethod
+    def _resolve_expected_output_path(output_dir: Path, relative_path: str) -> Path:
+        candidate = Path(relative_path)
+        if candidate.is_absolute():
+            return candidate
+        if candidate.parts and candidate.parts[0] == output_dir.name:
+            return output_dir.parent / candidate
+        return output_dir / candidate
+
+    def _find_missing_expected_outputs(self, *, output_dir: Path, outputs_summary: str) -> list[str]:
+        missing: list[str] = []
+        for relative_path in self._extract_expected_output_paths(outputs_summary):
+            resolved = self._resolve_expected_output_path(output_dir, relative_path)
+            if not resolved.exists():
+                missing.append(relative_path)
+        return missing
+
+    @staticmethod
+    def _build_missing_output_followup(
+        *,
+        output_dir: Path,
+        outputs_summary: str,
+        missing_outputs: list[str],
+    ) -> str:
+        missing_list = "\n".join(f"- {path}" for path in missing_outputs)
+        return f"""
+Your previous attempt did not satisfy the output contract.
+
+Output directory:
+{output_dir}
+
+Expected outputs:
+{outputs_summary or "Not specified"}
+
+Missing files:
+{missing_list}
+
+You must now use tools to create the missing files in the output directory.
+If you already wrote source code for the final deliverable, run it and verify the missing files exist on disk before you reply.
+Do not just describe what should happen.
+
+After fixing the missing outputs, respond again with:
+<execution_summary>
+STATUS: SUCCESS or FAILURE
+1. What was accomplished (or what went wrong if failed)
+2. Key output files created
+3. Important notes for downstream nodes
+</execution_summary>
+""".strip()
 
     async def _execute_claude_direct(self, node_id: str, node) -> NodeExecutionResult:
         """Execute task directly with Claude without any skill."""

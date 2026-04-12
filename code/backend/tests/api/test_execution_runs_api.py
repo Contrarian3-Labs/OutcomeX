@@ -952,6 +952,84 @@ def test_execution_run_preview_image_can_render_before_result_confirmation(
     assert preview_response.headers["content-type"].startswith("image/png")
 
 
+def test_execution_run_preview_video_can_render_before_result_confirmation(
+    client: tuple[TestClient, _ExecutionServiceStub],
+    tmp_path,
+) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order(test_client, machine["id"])
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert start.status_code == 200
+
+    run_dir = tmp_path / "run-preview-video"
+    workspace = run_dir / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "preview.mp4").write_bytes(b"fake-mp4")
+
+    snapshot = stub.get_run("aso-run-test")
+    snapshot.run_dir = str(run_dir)
+    snapshot.preview_manifest = ({"path": "workspace/preview.mp4", "type": "video", "role": "preview"},)
+    snapshot.artifact_manifest = ({"path": "workspace/preview.mp4", "type": "video", "role": "final"},)
+    stub.get_run = lambda _run_id: snapshot  # type: ignore[assignment]
+
+    engine = create_engine(os.environ["OUTCOMEX_DATABASE_URL"])
+    with Session(engine) as session:
+        db_order = session.get(Order, order["id"])
+        assert db_order is not None
+        db_order.state = OrderState.RESULT_PENDING_CONFIRMATION
+        db_order.result_confirmed_at = None
+        session.add(db_order)
+        session.commit()
+    engine.dispose()
+
+    preview_response = test_client.get(
+        "/api/v1/execution-runs/aso-run-test/artifacts/file",
+        params={"path": "workspace/preview.mp4", "inline_preview": "true"},
+    )
+    assert preview_response.status_code == 200
+    assert preview_response.headers["content-type"].startswith("video/mp4")
+
+
+def test_execution_run_preview_html_can_render_before_result_confirmation(
+    client: tuple[TestClient, _ExecutionServiceStub],
+    tmp_path,
+) -> None:
+    test_client, stub = client
+    machine = _create_machine(test_client)
+    order = _create_paid_order(test_client, machine["id"])
+    start = test_client.post(f"/api/v1/orders/{order['id']}/start-execution")
+    assert start.status_code == 200
+
+    run_dir = tmp_path / "run-preview-html"
+    workspace = run_dir / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "index.html").write_text("<html><body>Hello</body></html>", encoding="utf-8")
+
+    snapshot = stub.get_run("aso-run-test")
+    snapshot.run_dir = str(run_dir)
+    snapshot.preview_manifest = ({"path": "workspace/index.html", "type": "html", "role": "preview"},)
+    snapshot.artifact_manifest = ({"path": "workspace/index.html", "type": "html", "role": "final"},)
+    stub.get_run = lambda _run_id: snapshot  # type: ignore[assignment]
+
+    engine = create_engine(os.environ["OUTCOMEX_DATABASE_URL"])
+    with Session(engine) as session:
+        db_order = session.get(Order, order["id"])
+        assert db_order is not None
+        db_order.state = OrderState.RESULT_PENDING_CONFIRMATION
+        db_order.result_confirmed_at = None
+        session.add(db_order)
+        session.commit()
+    engine.dispose()
+
+    preview_response = test_client.get(
+        "/api/v1/execution-runs/aso-run-test/artifacts/file",
+        params={"path": "workspace/index.html", "inline_preview": "true"},
+    )
+    assert preview_response.status_code == 200
+    assert preview_response.headers["content-type"].startswith("text/html")
+
+
 def test_execution_run_artifact_download_unlocks_after_result_confirmation(
     client: tuple[TestClient, _ExecutionServiceStub],
     tmp_path,

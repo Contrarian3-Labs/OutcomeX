@@ -26,12 +26,23 @@ def _resolve_planning_prompt(payload: ChatPlanRequest) -> tuple[str, tuple[str, 
     return solution.benchmark_prompt, solution.input_files
 
 
+def _prefer_native_plan_index(recommended_plans, *, native_plan_index: int | None):
+    if native_plan_index is None:
+        return recommended_plans
+    preferred = [plan for plan in recommended_plans if plan.native_plan_index == native_plan_index]
+    if not preferred:
+        return recommended_plans
+    remaining = [plan for plan in recommended_plans if plan.native_plan_index != native_plan_index]
+    return tuple(preferred + remaining)
+
+
 @router.post("/plans", response_model=ChatPlanResponse)
 def create_chat_plan(
     payload: ChatPlanRequest,
     db: Session = Depends(get_db),
     cost_service: RuntimeCostService = Depends(get_runtime_cost_service),
 ) -> ChatPlanResponse:
+    solution = get_benchmark_solution(payload.benchmark_task_id) if payload.benchmark_task_id else None
     planning_prompt, planning_files = _resolve_planning_prompt(payload)
     planning_context_id = build_planning_context_id(
         input_files=planning_files,
@@ -50,12 +61,16 @@ def create_chat_plan(
                 user_id=payload.user_id,
                 chat_session_id=payload.chat_session_id,
                 user_message=planning_prompt,
-                preferred_strategy=payload.mode,
+                preferred_strategy=solution.preferred_execution_strategy if solution else payload.mode,
                 input_files=planning_input_files,
                 planning_context_key=planning_context_id,
             )
     except AttachmentResolutionError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    recommended_plans = _prefer_native_plan_index(
+        recommended_plans,
+        native_plan_index=solution.preferred_native_plan_index if solution else None,
+    )
     top_plan = recommended_plans[0]
     plan = ChatPlan(
         user_id=payload.user_id,

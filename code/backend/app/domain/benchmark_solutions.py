@@ -6,6 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from app.core.config import Settings, get_settings
+from app.execution.contracts import ExecutionStrategy
 from app.integrations.agentskillos_bridge import resolve_agentskillos_repo_root
 
 
@@ -18,6 +19,7 @@ class CuratedBenchmarkSolutionSpec:
     estimated_minutes: int
     price_range: str
     featured: bool = False
+    preferred_native_plan_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,17 @@ class BenchmarkSolution:
     skills: tuple[str, ...]
     input_files: tuple[str, ...]
     featured: bool = False
+    preferred_native_plan_index: int | None = None
+
+    @property
+    def preferred_execution_strategy(self) -> ExecutionStrategy | None:
+        if self.preferred_native_plan_index == 0:
+            return ExecutionStrategy.QUALITY
+        if self.preferred_native_plan_index == 1:
+            return ExecutionStrategy.EFFICIENCY
+        if self.preferred_native_plan_index == 2:
+            return ExecutionStrategy.SIMPLICITY
+        return None
 
 
 CURATED_SOLUTION_SPECS: tuple[CuratedBenchmarkSolutionSpec, ...] = (
@@ -130,6 +143,7 @@ CURATED_SOLUTION_SPECS: tuple[CuratedBenchmarkSolutionSpec, ...] = (
         best_fit="Product strategy, market research, positioning review",
         estimated_minutes=18,
         price_range="20-40 PWR",
+        preferred_native_plan_index=2,
     ),
     CuratedBenchmarkSolutionSpec(
         task_id="web_interaction_task2",
@@ -138,6 +152,7 @@ CURATED_SOLUTION_SPECS: tuple[CuratedBenchmarkSolutionSpec, ...] = (
         best_fit="Founder updates, research recaps, content operations",
         estimated_minutes=17,
         price_range="18-38 PWR",
+        preferred_native_plan_index=2,
     ),
 )
 
@@ -208,6 +223,7 @@ def _load_catalog_cached(_root_key: str) -> tuple[BenchmarkSolution, ...]:
                 skills=tuple(str(item) for item in payload.get("skills", [])),
                 input_files=input_files,
                 featured=spec.featured,
+                preferred_native_plan_index=spec.preferred_native_plan_index,
             )
         )
     return tuple(items)

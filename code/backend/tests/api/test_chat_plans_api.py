@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.routes import chat_plans as chat_plans_route
+from app.api.routes import orders as orders_route
 from app.core.config import reset_settings_cache
 from app.core.container import reset_container_cache
 from app.domain.planning import RecommendedPlan
@@ -184,6 +185,63 @@ def test_order_creation_rejects_unknown_selected_plan_id(client: TestClient) -> 
 
     assert order_response.status_code == 409
     assert order_response.json()["detail"] == "Selected plan is invalid for this request"
+
+
+def test_benchmark_web_solutions_prefer_simplicity_native_plan_by_default(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    machine = _create_machine(client)
+
+    def _stub_build_recommended_plans(  # noqa: PLR0913
+        *,
+        user_id: str,
+        chat_session_id: str,
+        user_message: str,
+        preferred_strategy: ExecutionStrategy | None,
+        input_files: tuple[str, ...],
+        planning_context_key: str = "",
+    ) -> tuple[RecommendedPlan, ...]:
+        assert preferred_strategy == ExecutionStrategy.SIMPLICITY
+        return _recommended_plans_for_test(ExecutionStrategy.QUALITY)
+
+    monkeypatch.setattr(chat_plans_route, "build_recommended_plans", _stub_build_recommended_plans)
+    monkeypatch.setattr(orders_route, "build_recommended_plans", _stub_build_recommended_plans)
+
+    plan_response = client.post(
+        "/api/v1/chat/plans",
+        json={
+            "user_id": "user-benchmark",
+            "chat_session_id": "chat-benchmark",
+            "user_message": "ignored by benchmark task prompt",
+            "benchmark_task_id": "web_interaction_task1",
+            "mode": "quality",
+        },
+    )
+
+    assert plan_response.status_code == 200
+    plan_payload = plan_response.json()
+    assert plan_payload["recommended_plans"][0]["strategy"] == "simplicity"
+    assert plan_payload["recommended_plans"][0]["native_plan_index"] == 2
+
+    order_response = client.post(
+        "/api/v1/orders",
+        json={
+            "user_id": "user-benchmark",
+            "machine_id": machine["id"],
+            "chat_session_id": "chat-benchmark",
+            "user_prompt": "ignored by benchmark task prompt",
+            "benchmark_task_id": "web_interaction_task1",
+            "quoted_amount_cents": 1000,
+            "planning_context_id": plan_payload["planning_context_id"],
+        },
+    )
+
+    assert order_response.status_code == 201
+    order_payload = order_response.json()
+    assert order_payload["execution_request"]["execution_strategy"] == "simplicity"
+    assert order_payload["execution_metadata"]["selected_native_plan_index"] == 2
+    assert order_payload["execution_metadata"]["benchmark_solution_title"] == "Competitor Website Analysis Report"
 
 
 def test_chat_plans_resolve_uploaded_attachments_to_real_paths_for_planning(

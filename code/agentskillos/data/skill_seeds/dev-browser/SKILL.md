@@ -12,6 +12,7 @@ Browser automation that maintains page state across script executions. Write sma
 - **Local/source-available sites**: Read the source code first to write selectors directly
 - **Unknown page layouts**: Use `getAISnapshot()` to discover elements and `selectSnapshotRef()` to interact with them
 - **Visual feedback**: Take screenshots to see what the user sees
+- **Fast one-off capture/scrape tasks**: If Python Playwright is already available, you may skip the relay server entirely and use a direct `python3` script for a simpler, faster path
 
 ## Setup
 
@@ -22,10 +23,12 @@ Two modes available. Ask the user if unclear which to use.
 Launches a new Chromium browser for fresh automation sessions.
 
 ```bash
-./skills/dev-browser/server.sh &
+cd skills/dev-browser
+nohup ./server.sh >/tmp/dev-browser-launch.log 2>&1 </dev/null &
 ```
 
 Add `--headless` flag if user requests it. **Wait for the `Ready` message before running scripts.**
+Do not rely on plain `./server.sh &` because some shells/tool runners will keep the command attached and hang; prefer the `nohup ... </dev/null &` pattern above.
 
 ### Extension Mode
 

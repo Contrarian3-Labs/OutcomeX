@@ -85,6 +85,9 @@ EXECUTOR_PROMPT = """You are executing a skill as part of a larger workflow.
 - The Skill tool will load and execute the skill's instructions automatically
 - **Always use absolute paths** when referencing or passing file paths
 - **You MUST operate within your designated working directory**
+- **You are executing one scoped DAG node, not the whole workflow**
+- Only create files that are required for this node's expected outputs unless the prompt explicitly asks for a shared helper artifact
+- Do not redo other nodes' work, and do not create the final deliverable early unless this node is responsible for it
 """
 
 VALIDATOR_PROMPT = """You are a dependency validator. Analyze the skill and check if all its dependencies are available.
@@ -112,6 +115,29 @@ VALIDATOR_PROMPT = """You are a dependency validator. Analyze the skill and chec
 ```
 """
 
+
+
+
+def _skill_specific_hints(skill_name: str) -> str:
+    """Return execution hints for skills that are sensitive to runtime choices."""
+    if skill_name in {"browser-automation", "dev-browser"}:
+        return """
+## Browser Workflow Hints
+- Prefer `python3` over `python`; `python` may be unavailable in the runtime.
+- Prefer Python Playwright when possible; it is already installed in the environment, and `dev-browser` can also reuse the local server helper.
+- Avoid `wait_until=\"networkidle\"` on modern marketing sites because long-lived requests can prevent completion; prefer `domcontentloaded` or `load`, then use short explicit waits.
+- Capture the required screenshots first, then extract text/content from the rendered page.
+- If a site is slow, reduce risk by using one browser session, smaller scripts, and explicit timeouts plus retries instead of installing new tooling unless absolutely necessary.
+"""
+    if skill_name == "docx":
+        return """
+## DOCX Workflow Hints
+- The global Node environment already has the `docx` package installed; prefer generating one focused JavaScript file and producing the `.docx` directly.
+- Reuse the research notes, JSON summaries, and screenshots already present in the output directory; do not redo upstream research.
+- Create the report in one pass with a clear structure, embed the required PNG screenshots, and verify `competitor_report.docx` exists before reporting success.
+- After writing the document, run a quick filesystem check such as `ls -lh` on the final `.docx` path.
+"""
+    return """"""
 
 def build_planner_prompt(task: str, skills_info: str, context_str: str = "") -> str:
     """Build full planner prompt with task and skills."""
@@ -156,6 +182,8 @@ Your working directory is: {working_dir}
 Do NOT create or modify files outside of this directory.
 """
 
+    browser_hints = _skill_specific_hints(skill_name)
+
     # Collaboration context section
     collab_section = ""
     if outputs_summary or downstream_hint:
@@ -182,7 +210,12 @@ Save all generated files to: {output_dir}
 
 **Important**: Actively leverage the available artifacts above to enhance your output quality.
 Reuse existing content, reference previous outputs, and build upon completed work whenever possible.
+{browser_hints}
 {collab_section}
+When expected outputs name concrete files, you must actually create those files in the output directory before you report success.
+If you generate source code intended to produce a final artifact, you must run it and verify the final artifact exists on disk.
+Stay tightly scoped to this node. Do not create files that belong to other nodes unless they are explicitly listed in Expected Outputs.
+
 Now use the Skill tool to invoke '{skill_name}'.
 """
 
@@ -212,6 +245,8 @@ Your working directory is: {working_dir}
 Do NOT create or modify files outside of this directory.
 """
 
+    browser_hints = _skill_specific_hints(skill_name)
+
     return f"""{EXECUTOR_PROMPT}
 
 ## Overall Task
@@ -228,12 +263,17 @@ Save all generated files to: {output_dir}
 
 **Important**: Actively leverage the available artifacts above to enhance your output quality.
 Reuse existing content, reference previous outputs, and build upon completed work whenever possible.
+{browser_hints}
 
 ## Expected Outputs
 {outputs_summary if outputs_summary else "Not specified"}
 
 ## Downstream Usage
 {downstream_hint if downstream_hint else "Final deliverable - no downstream consumers"}
+
+Before reporting SUCCESS, verify every concrete output file named above exists inside the output directory.
+If you wrote source code to produce the final deliverable, do not stop at writing code: run it and confirm the deliverable file exists on disk.
+This node is only responsible for the outputs listed above. Do not branch out into unrelated workflow steps or generate other nodes' outputs early.
 
 Now use the Skill tool to invoke '{skill_name}'.
 

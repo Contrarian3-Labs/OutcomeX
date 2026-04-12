@@ -53,12 +53,16 @@ You need raw XML access for: comments, complex formatting, document structure, e
 
 ## Creating a new Word document
 
-When creating a new Word document from scratch, use **docx-js**, which allows you to create Word documents using JavaScript/TypeScript.
+When creating a new Word document from scratch, prefer the fastest path that can reliably produce the required `.docx`.
+
+- **Straightforward reports, newsletters, summaries, tables, or image-embedded docs**: you may use **python-docx** directly if it is already installed.
+- **More complex layout/styling requirements**: use **docx-js**, which allows you to create Word documents using JavaScript/TypeScript.
 
 ### Workflow
-1. **MANDATORY - READ ENTIRE FILE**: Read [`docx-js.md`](docx-js.md) (~500 lines) completely from start to finish. **NEVER set any range limits when reading this file.** Read the full file content for detailed syntax, critical formatting rules, and best practices before proceeding with document creation.
-2. Create a JavaScript/TypeScript file using Document, Paragraph, TextRun components (You can assume all dependencies are installed, but if not, refer to the dependencies section below)
-3. Export as .docx using Packer.toBuffer()
+1. Decide whether the document is simple enough for `python-docx`.
+2. If using **python-docx**, create the document directly, save it, and verify the final `.docx` exists on disk.
+3. If using **docx-js**, read [`docx-js.md`](docx-js.md) and create a JavaScript/TypeScript file using Document, Paragraph, TextRun, and related components.
+4. Export the final document and run a filesystem check confirming the `.docx` was actually written.
 
 ## Editing an existing Word document
 

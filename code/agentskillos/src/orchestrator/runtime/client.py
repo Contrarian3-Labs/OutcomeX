@@ -35,6 +35,7 @@ except ImportError:  # pragma: no cover - optional runtime dependency
 _MAX_TOOL_OUTPUT_CHARS = 12000
 _DEFAULT_RUNTIME_MODEL = "qwen3.6-plus"
 _DEFAULT_COMPATIBLE_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+_DEFAULT_OPENAI_TOOL_MAX_TURNS = 48
 
 
 def _truncate_output(value: str, *, limit: int = _MAX_TOOL_OUTPUT_CHARS) -> str:
@@ -90,6 +91,18 @@ def _resolve_openai_base_url() -> str:
 
 def _resolve_openai_api_key() -> str:
     return os.getenv("LLM_API_KEY", "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
+
+
+def _resolve_openai_tool_max_turns() -> int:
+    raw_value = os.getenv("AGENTSKILLOS_OPENAI_TOOL_MAX_TURNS", "").strip()
+    if raw_value:
+        try:
+            parsed = int(raw_value)
+            if parsed > 0:
+                return parsed
+        except ValueError:
+            pass
+    return _DEFAULT_OPENAI_TOOL_MAX_TURNS
 
 
 @dataclass
@@ -413,7 +426,7 @@ class _OpenAISessionClient:
                         }
                     )
                     self._log(f"Tool Result ({tool_call.id}): {tool_result}", "info")
-                if total_turns >= 24:
+                if total_turns >= _resolve_openai_tool_max_turns():
                     raise RuntimeError("openai_tool_loop_exceeded_max_turns")
                 continue
 

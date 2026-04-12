@@ -12,7 +12,7 @@ from app.api.execution_contract import (
 )
 from app.core.config import get_settings
 from app.domain.accounting import effective_paid_amount_cents
-from app.domain.benchmark_solutions import get_benchmark_solution
+from app.domain.benchmark_solutions import BenchmarkSolution, get_benchmark_solution
 from app.domain.claim_projection import project_order_refund_claim
 from app.domain.enums import ExecutionRunStatus, ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
 from app.domain.models import ExecutionRun, Machine, Order, Payment
@@ -44,13 +44,23 @@ from app.services.attachments import (
 router = APIRouter()
 
 
-def _resolve_order_execution_inputs(payload: OrderCreateRequest) -> tuple[str, list[str], str | None]:
+def _resolve_order_execution_inputs(payload: OrderCreateRequest) -> tuple[str, list[str], BenchmarkSolution | None]:
     if not payload.benchmark_task_id:
         return payload.user_prompt, payload.input_files, None
     solution = get_benchmark_solution(payload.benchmark_task_id)
     if solution is None:
         return payload.user_prompt, payload.input_files, None
-    return solution.benchmark_prompt, list(solution.input_files), solution.title
+    return solution.benchmark_prompt, list(solution.input_files), solution
+
+
+def _prefer_native_plan_index(plans: tuple, *, native_plan_index: int | None):
+    if native_plan_index is None:
+        return plans
+    preferred = [plan for plan in plans if plan.native_plan_index == native_plan_index]
+    if not preferred:
+        return plans
+    remaining = [plan for plan in plans if plan.native_plan_index != native_plan_index]
+    return tuple(preferred + remaining)
 
 
 def _preview_valid(order: Order) -> bool | None:
@@ -286,7 +296,7 @@ def create_order(
     if machine is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
 
-    execution_prompt, execution_input_files, benchmark_solution_title = _resolve_order_execution_inputs(payload)
+    execution_prompt, execution_input_files, benchmark_solution = _resolve_order_execution_inputs(payload)
 
     derived_planning_context_id = build_planning_context_id(
         input_files=tuple(execution_input_files),
@@ -315,17 +325,36 @@ def create_order(
                 user_id=payload.user_id,
                 chat_session_id=payload.chat_session_id,
                 user_message=execution_prompt,
-                preferred_strategy=payload.execution_strategy,
+                preferred_strategy=(
+                    benchmark_solution.preferred_execution_strategy
+                    if benchmark_solution and payload.selected_plan_id is None
+                    else payload.execution_strategy
+                ),
                 input_files=planning_input_files,
                 planning_context_key=planning_context_id,
             )
     except AttachmentResolutionError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-    selected_plan = select_recommended_plan(
+    recommended_plans = _prefer_native_plan_index(
         recommended_plans,
-        selected_plan_id=payload.selected_plan_id,
-        execution_strategy=payload.execution_strategy,
+        native_plan_index=(
+            benchmark_solution.preferred_native_plan_index
+            if benchmark_solution and payload.selected_plan_id is None
+            else None
+        ),
     )
+    selected_plan = None
+    if benchmark_solution and payload.selected_plan_id is None and benchmark_solution.preferred_native_plan_index is not None:
+        for plan in recommended_plans:
+            if plan.native_plan_index == benchmark_solution.preferred_native_plan_index:
+                selected_plan = plan
+                break
+    if selected_plan is None:
+        selected_plan = select_recommended_plan(
+            recommended_plans,
+            selected_plan_id=payload.selected_plan_id,
+            execution_strategy=payload.execution_strategy,
+        )
     if selected_plan is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -364,8 +393,8 @@ def create_order(
     execution_metadata["selected_native_plan_index"] = selected_plan.native_plan_index
     if payload.benchmark_task_id:
         execution_metadata["benchmark_task_id"] = payload.benchmark_task_id
-    if benchmark_solution_title:
-        execution_metadata["benchmark_solution_title"] = benchmark_solution_title
+    if benchmark_solution:
+        execution_metadata["benchmark_solution_title"] = benchmark_solution.title
     execution_metadata["planning_context_id"] = planning_context_id
     execution_metadata["attachment_session_id"] = payload.attachment_session_id
     execution_metadata["attachment_ids"] = list(payload.attachment_ids)
