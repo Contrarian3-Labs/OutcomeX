@@ -242,16 +242,36 @@ def build_recommended_plans(
     )
 
 
+def build_fast_recommended_plans(
+    *,
+    user_id: str,
+    chat_session_id: str,
+    user_message: str,
+    preferred_strategy: ExecutionStrategy | None = None,
+    planning_context_key: str = "",
+) -> tuple[RecommendedPlan, ...]:
+    normalized = _normalize_message(user_message)
+    return _apply_preferred_strategy(
+        _fallback_plans(
+            user_id=user_id,
+            chat_session_id=chat_session_id,
+            normalized_message=normalized,
+            has_skill_signal=False,
+            planning_context_key=planning_context_key,
+        ),
+        preferred_strategy=preferred_strategy,
+    )
+
+
 def summarize_plan_from_chat(user_message: str) -> str:
     normalized = _normalize_message(user_message)
     if not normalized:
         return "Clarify your goal and constraints to receive a recommended plan."
 
-    return build_recommended_plans(
+    return build_fast_recommended_plans(
         user_id="summary",
         chat_session_id="summary",
         user_message=normalized,
-        bridge=None,
     )[0].summary
 
 

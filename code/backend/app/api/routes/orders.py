@@ -16,7 +16,7 @@ from app.domain.benchmark_solutions import BenchmarkSolution, get_benchmark_solu
 from app.domain.claim_projection import project_order_refund_claim
 from app.domain.enums import ExecutionRunStatus, ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
 from app.domain.models import ExecutionRun, Machine, Order, Payment
-from app.domain.planning import build_recommended_plans, select_recommended_plan
+from app.domain.planning import build_fast_recommended_plans, select_recommended_plan
 from app.domain.pwr_amounts import pwr_wei_to_float
 from app.domain.rules import has_sufficient_payment
 from app.execution import ExecutionStrategy, IntentRequest
@@ -321,8 +321,8 @@ def create_order(
             attachment_session_id=payload.attachment_session_id,
             attachment_session_token=payload.attachment_session_token,
             attachment_ids=tuple(payload.attachment_ids),
-        ) as planning_input_files:
-            recommended_plans = build_recommended_plans(
+        ):
+            recommended_plans = build_fast_recommended_plans(
                 user_id=payload.user_id,
                 chat_session_id=payload.chat_session_id,
                 user_message=execution_prompt,
@@ -331,7 +331,6 @@ def create_order(
                     if benchmark_solution and payload.selected_plan_id is None
                     else payload.execution_strategy
                 ),
-                input_files=planning_input_files,
                 planning_context_key=planning_context_id,
             )
     except AttachmentResolutionError as exc:

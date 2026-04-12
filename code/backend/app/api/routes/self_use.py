@@ -20,7 +20,7 @@ from app.api.routes.execution_runs import (
 )
 from app.domain.enums import ExecutionRunStatus
 from app.domain.models import ExecutionRun, Machine
-from app.domain.planning import build_recommended_plans, select_recommended_plan
+from app.domain.planning import build_fast_recommended_plans, select_recommended_plan
 from app.execution import ExecutionStrategy, IntentRequest
 from app.execution.service import ExecutionEngineService
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
@@ -105,8 +105,8 @@ def create_self_use_plans(
             attachment_session_id=payload.attachment_session_id,
             attachment_session_token=payload.attachment_session_token,
             attachment_ids=tuple(payload.attachment_ids),
-        ) as planning_input_files:
-            recommended_plans = build_recommended_plans(
+        ):
+            recommended_plans = build_fast_recommended_plans(
                 user_id=normalized_viewer_wallet,
                 chat_session_id=_self_use_external_order_id(
                     machine_id=machine.id,
@@ -114,7 +114,6 @@ def create_self_use_plans(
                 ),
                 user_message=payload.prompt,
                 preferred_strategy=payload.execution_strategy,
-                input_files=planning_input_files,
                 planning_context_key=planning_context_id,
             )
     except AttachmentResolutionError as exc:
@@ -186,8 +185,8 @@ def create_self_use_run(
             attachment_session_id=payload.attachment_session_id,
             attachment_session_token=payload.attachment_session_token,
             attachment_ids=tuple(payload.attachment_ids),
-        ) as planning_input_files:
-            recommended_plans = build_recommended_plans(
+        ):
+            recommended_plans = build_fast_recommended_plans(
                 user_id=normalized_viewer_wallet,
                 chat_session_id=_self_use_external_order_id(
                     machine_id=machine.id,
@@ -195,7 +194,6 @@ def create_self_use_run(
                 ),
                 user_message=payload.prompt,
                 preferred_strategy=payload.execution_strategy,
-                input_files=planning_input_files,
                 planning_context_key=planning_context_id,
             )
             selected_plan = select_recommended_plan(

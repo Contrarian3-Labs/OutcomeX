@@ -1,4 +1,4 @@
-from app.domain.planning import build_recommended_plans
+from app.domain.planning import build_fast_recommended_plans, build_recommended_plans
 from app.execution.contracts import ExecutionStrategy
 from app.integrations.agentskillos_bridge import (
     AgentSkillOSNativePlan,
@@ -129,3 +129,21 @@ def test_build_recommended_plans_falls_back_immediately_after_planning_failure()
         ExecutionStrategy.EFFICIENCY,
         ExecutionStrategy.SIMPLICITY,
     ]
+
+
+def test_build_fast_recommended_plans_is_deterministic_without_bridge() -> None:
+    plans = build_fast_recommended_plans(
+        user_id="user-1",
+        chat_session_id="chat-1",
+        user_message="Create a launch-ready teaser campaign",
+        preferred_strategy=ExecutionStrategy.EFFICIENCY,
+        planning_context_key="ctx_fast",
+    )
+
+    assert [plan.strategy for plan in plans] == [
+        ExecutionStrategy.EFFICIENCY,
+        ExecutionStrategy.QUALITY,
+        ExecutionStrategy.SIMPLICITY,
+    ]
+    assert [plan.native_plan_index for plan in plans] == [1, 0, 2]
+    assert all(plan.plan_id for plan in plans)

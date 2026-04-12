@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.domain.benchmark_solutions import get_benchmark_solution
 from app.domain.models import ChatPlan
-from app.domain.planning import build_recommended_plans
+from app.domain.planning import build_fast_recommended_plans
 from app.runtime.cost_service import RuntimeCostService, get_runtime_cost_service
 from app.schemas.chat_plan import ChatPlanRequest, ChatPlanResponse, RecommendedPlanResponse
 from app.services.attachments import (
@@ -56,13 +56,12 @@ def create_chat_plan(
             attachment_session_id=payload.attachment_session_id,
             attachment_session_token=payload.attachment_session_token,
             attachment_ids=tuple(payload.attachment_ids),
-        ) as planning_input_files:
-            recommended_plans = build_recommended_plans(
+        ):
+            recommended_plans = build_fast_recommended_plans(
                 user_id=payload.user_id,
                 chat_session_id=payload.chat_session_id,
                 user_message=planning_prompt,
                 preferred_strategy=solution.preferred_execution_strategy if solution else payload.mode,
-                input_files=planning_input_files,
                 planning_context_key=planning_context_id,
             )
     except AttachmentResolutionError as exc:
