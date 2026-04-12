@@ -19,6 +19,7 @@ from ..core.config import Settings, get_settings
 
 _DISCOVERY_SCRIPT = """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -57,6 +58,7 @@ print(json.dumps({"skills": skills}))
 _PLANNING_SCRIPT = """
 import asyncio
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path

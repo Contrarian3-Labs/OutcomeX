@@ -102,6 +102,7 @@ CURATED_SOLUTION_SPECS: tuple[CuratedBenchmarkSolutionSpec, ...] = (
         estimated_minutes=22,
         price_range="28-56 PWR",
         featured=True,
+        preferred_native_plan_index=2,
     ),
     CuratedBenchmarkSolutionSpec(
         task_id="document_creation_task1",

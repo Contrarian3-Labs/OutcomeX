@@ -155,6 +155,35 @@ def test_reference_to_video_script_smoke(tmp_path, monkeypatch) -> None:
     assert payload["input"]["media"][0]["url"].startswith("data:image/png;base64,")
 
 
+def test_text_to_video_script_smoke(tmp_path, monkeypatch) -> None:
+    module = _load_module(
+        "data/skill_seeds/wan-t2v-dashscope/scripts/text_to_video.py",
+        "t2v_smoke",
+    )
+    output_path = tmp_path / "clip.mp4"
+    fake_requests = _FakeRequests(result_url="https://example.com/generated.mp4", output_bytes=b"t2v-video")
+
+    monkeypatch.setattr(module, "_require_requests", lambda: fake_requests)
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "text_to_video.py",
+            "Create a cinematic portrait video",
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert module.main() == 0
+    assert output_path.read_bytes() == b"t2v-video"
+    payload = fake_requests.posts[0]["json"]
+    assert payload["model"] == "wan2.2-t2v-plus"
+    assert payload["input"]["prompt"] == "Create a cinematic portrait video"
+    assert "media" not in payload["input"]
+
+
 def test_video_edit_script_smoke(tmp_path, monkeypatch) -> None:
     module = _load_module(
         "data/skill_seeds/wan-videoedit-dashscope/scripts/video_edit.py",

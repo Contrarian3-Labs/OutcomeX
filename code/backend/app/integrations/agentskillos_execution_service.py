@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 import shutil
 import signal
@@ -35,6 +36,12 @@ _IGNORED_ARTIFACT_PARTS = frozenset(
         ".pnpm-store",
         ".turbo",
     }
+)
+
+_DELIVERABLE_ARTIFACT_TYPES = frozenset({"image", "video", "html", "presentation", "document", "spreadsheet"})
+_IGNORED_DELIVERABLE_SUFFIXES = frozenset({".md", ".txt", ".json", ".py", ".js", ".ts", ".tsx", ".jsx", ".css", ".scss", ".map", ".lock", ".yml", ".yaml"})
+_EXPECTED_OUTPUT_PATH_RE = re.compile(
+    r"(?<![\w/.-])((?:[\w.-]+/)*[\w.-]+\.[A-Za-z0-9]{1,10})(?![\w/.-])"
 )
 
 _EXECUTION_SCRIPT = """
@@ -839,6 +846,109 @@ def collect_visible_artifacts(*, run_dir: Path, workspace_dir: Path) -> list[dic
 
 
 
+def _extract_expected_output_paths(outputs_summary: str) -> list[str]:
+    seen: set[str] = set()
+    paths: list[str] = []
+    for match in _EXPECTED_OUTPUT_PATH_RE.finditer(outputs_summary or ""):
+        candidate = match.group(1).strip()
+        if not candidate:
+            continue
+        normalized = candidate.strip("()[]{}<>\"'`")
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        paths.append(normalized)
+    return paths
+
+
+def _resolve_expected_output_path(*, run_dir: Path, relative_path: str) -> str:
+    candidate = Path(relative_path)
+    workspace_dir = run_dir / "workspace"
+    if candidate.is_absolute():
+        try:
+            return candidate.relative_to(run_dir).as_posix()
+        except ValueError:
+            return candidate.as_posix()
+    if candidate.parts and candidate.parts[0] == workspace_dir.name:
+        return (run_dir / candidate).relative_to(run_dir).as_posix()
+    return (workspace_dir / candidate).relative_to(run_dir).as_posix()
+
+
+def _sink_node_output_summaries(selected_plan: dict | None) -> list[str]:
+    if not isinstance(selected_plan, dict):
+        return []
+    nodes = list(selected_plan.get("nodes") or [])
+    if not nodes:
+        return []
+    depended_on = {str(dependency) for node in nodes for dependency in (node.get("depends_on") or [])}
+    sinks = [node for node in nodes if str(node.get("id") or "") not in depended_on]
+    return [str(node.get("outputs_summary") or "") for node in sinks if str(node.get("outputs_summary") or "").strip()]
+
+
+def _has_deliverable_artifacts(*, run_dir: Path, selected_plan: dict | None, artifacts: list[dict]) -> bool:
+    artifact_paths = {str(item.get("path") or "") for item in artifacts if str(item.get("path") or "")}
+    expected_paths: list[str] = []
+    for summary in _sink_node_output_summaries(selected_plan):
+        expected_paths.extend(_extract_expected_output_paths(summary))
+    normalized_expected = [
+        _resolve_expected_output_path(run_dir=run_dir, relative_path=relative_path)
+        for relative_path in expected_paths
+    ]
+    if normalized_expected:
+        return all(path in artifact_paths for path in normalized_expected)
+
+    for artifact in artifacts:
+        artifact_type = str(artifact.get("type") or "").lower()
+        artifact_path = str(artifact.get("path") or "")
+        if artifact_type not in _DELIVERABLE_ARTIFACT_TYPES:
+            continue
+        suffix = Path(artifact_path).suffix.lower()
+        if suffix in _IGNORED_DELIVERABLE_SUFFIXES:
+            continue
+        if artifact_path.startswith("workspace/src/"):
+            continue
+        return True
+    return False
+
+
+def _normalize_terminal_payload(payload: dict, *, record_path: Path) -> dict:
+    status_raw = str(payload.get("status") or "")
+    if status_raw not in {ExecutionRunStatus.FAILED.value, ExecutionRunStatus.SUCCEEDED.value}:
+        return payload
+
+    run_dir_raw = payload.get("run_dir")
+    if not run_dir_raw:
+        return payload
+    run_dir = Path(str(run_dir_raw))
+    result_path = run_dir / "result.json"
+    if not result_path.is_file():
+        return payload
+
+    try:
+        result_payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return payload
+
+    result_status = str(result_payload.get("status") or "").lower()
+    if result_status != "partial":
+        return payload
+
+    artifacts = [dict(item) for item in (payload.get("artifact_manifest") or [])]
+    if not _has_deliverable_artifacts(run_dir=run_dir, selected_plan=payload.get("selected_plan"), artifacts=artifacts):
+        return payload
+
+    normalized = dict(payload)
+    normalized["status"] = ExecutionRunStatus.SUCCEEDED.value
+    normalized["current_phase"] = "finished"
+    normalized["error"] = None
+    summary_metrics = dict(normalized.get("summary_metrics") or {})
+    summary_metrics["agentskillos_result_status"] = result_status
+    summary_metrics["completion_semantics"] = "partial_with_deliverable"
+    normalized["summary_metrics"] = summary_metrics
+    _atomic_write_json(record_path, normalized)
+    return normalized
+
+
 def sanitize_visible_manifests(payload: dict) -> dict:
     original_artifacts = list(payload.get("artifact_manifest") or [])
     original_previews = list(payload.get("preview_manifest") or [])
@@ -1042,6 +1152,7 @@ class AgentSkillOSExecutionService:
         if inferred_run_dir is not None and not payload.get("run_dir"):
             payload = dict(payload)
             payload["run_dir"] = str(inferred_run_dir)
+        payload = _normalize_terminal_payload(payload, record_path=record_path)
         sanitized_payload = sanitize_visible_manifests(payload)
         if sanitized_payload is not payload:
             payload = sanitized_payload

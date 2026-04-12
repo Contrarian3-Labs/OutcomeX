@@ -22,6 +22,11 @@ _IMAGE_GENERATION_VERBS = {
     "draw",
     "illustrate",
     "render",
+    "生成",
+    "制作",
+    "做",
+    "画",
+    "绘制",
 }
 _IMAGE_GENERATION_NOUNS = {
     "image",
@@ -35,6 +40,14 @@ _IMAGE_GENERATION_NOUNS = {
     "photo",
     "text-to-image",
     "text to image",
+    "图片",
+    "海报",
+    "插画",
+    "配图",
+    "照片",
+    "封面图",
+    "概念图",
+    "文生图",
 }
 _EDIT_WORDS = {
     "edit",
@@ -46,9 +59,48 @@ _EDIT_WORDS = {
     "clean up",
     "rework",
     "cut",
+    "编辑",
+    "修改",
+    "调整",
+    "重剪",
+    "剪辑",
+    "修剪",
 }
-_VIDEO_WORDS = {"video", "teaser", "trailer", "animate", "animation", "motion"}
-_REFERENCE_WORDS = {"reference", "consistent", "consistency", "identity", "character"}
+_VIDEO_WORDS = {
+    "video",
+    "teaser",
+    "trailer",
+    "animate",
+    "animation",
+    "motion",
+    "视频",
+    "短视频",
+    "短片",
+    "动画",
+    "动效",
+    "生成视频",
+    "做视频",
+    "文生视频",
+    "图生视频",
+    "ai视频",
+}
+_REFERENCE_WORDS = {
+    "reference",
+    "consistent",
+    "consistency",
+    "identity",
+    "character",
+    "参考",
+    "参考图",
+    "一致",
+    "一致性",
+    "角色一致",
+    "人物一致",
+    "形象一致",
+    "人脸一致",
+}
+_VIDEO_EDIT_WORDS = _EDIT_WORDS | {"cinematic", "cinema", "teaser", "电影感", "镜头", "运镜", "视频编辑", "改视频"}
+_TEXT_TO_VIDEO_WORDS = _VIDEO_WORDS | {"text-to-video", "text to video", "create video", "generate video", "video generation"}
 
 
 @dataclass(frozen=True)
@@ -75,13 +127,16 @@ def infer_required_skills(intent: TaskAnchorIntent) -> list[str]:
     has_image = "image" in file_kinds
     has_video = "video" in file_kinds
 
-    if has_video and _contains_any(task, _EDIT_WORDS | {"teaser", "cinematic"}):
+    if has_video and _contains_any(task, _VIDEO_EDIT_WORDS):
         return ["wan-videoedit-dashscope"]
 
     if has_image and _contains_any(task, _VIDEO_WORDS):
         if _contains_any(task, _REFERENCE_WORDS):
             return ["wan-r2v-dashscope"]
         return ["wan-i2v-dashscope"]
+
+    if not intent.files and _contains_any(task, _TEXT_TO_VIDEO_WORDS):
+        return ["wan-t2v-dashscope"]
 
     if has_image and _contains_any(task, _EDIT_WORDS):
         return ["image-edit-dashscope"]

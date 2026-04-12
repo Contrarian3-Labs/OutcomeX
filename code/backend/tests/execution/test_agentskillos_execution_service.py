@@ -419,3 +419,78 @@ def test_process_exists_treats_zombie_as_dead(monkeypatch) -> None:
     monkeypatch.setattr(AgentSkillOSExecutionService, "_read_process_state", staticmethod(lambda pid: "Z"))
 
     assert AgentSkillOSExecutionService._process_exists(4242) is False
+
+
+def test_get_run_promotes_partial_with_deliverable_to_succeeded(tmp_path: Path) -> None:
+    output_root = tmp_path / "runs"
+    service_run_dir = output_root / "aso-run-partial"
+    run_dir = service_run_dir / "agentskillos-runs" / "run-1"
+    workspace_dir = run_dir / "workspace"
+    workspace_dir.mkdir(parents=True)
+    (workspace_dir / "transformer_attention.mp4").write_bytes(b"video")
+    (run_dir / "result.json").write_text(json.dumps({"status": "partial"}, indent=2), encoding="utf-8")
+
+    record_path = service_run_dir / "run.json"
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text(
+        json.dumps(
+            {
+                "run_id": "aso-run-partial",
+                "external_order_id": "order-partial",
+                "status": "failed",
+                "record_path": str(record_path),
+                "submission_payload": {"intent": "demo", "files": [], "execution_strategy": "quality"},
+                "workspace_path": str(workspace_dir),
+                "run_dir": str(run_dir),
+                "preview_manifest": [{"path": "workspace/transformer_attention.mp4", "type": "video", "role": "final"}],
+                "artifact_manifest": [
+                    {"path": "workspace/transformer_attention.mp4", "type": "video", "role": "final"},
+                    {"path": "workspace/src/assemble_video.py", "type": "file", "role": "final"},
+                ],
+                "skills_manifest": [],
+                "model_usage_manifest": [],
+                "summary_metrics": {},
+                "error": None,
+                "started_at": "2026-04-06T07:00:00+00:00",
+                "finished_at": "2026-04-06T07:01:00+00:00",
+                "created_at": "2026-04-06T07:00:00+00:00",
+                "pid": None,
+                "stdout_log_path": str(service_run_dir / "stdout.log"),
+                "stderr_log_path": str(service_run_dir / "stderr.log"),
+                "events_log_path": str(service_run_dir / "events.ndjson"),
+                "last_heartbeat_at": "2026-04-06T07:01:00+00:00",
+                "current_phase": "failed",
+                "current_step": None,
+                "selected_plan": {
+                    "nodes": [
+                        {
+                            "id": "video-assembly",
+                            "name": "algorithmic-art",
+                            "depends_on": ["title-card-gen"],
+                            "outputs_summary": "transformer_attention.mp4 (1080p) and src/ directory with all source code used for generation and assembly",
+                        }
+                    ]
+                },
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    service = AgentSkillOSExecutionService(
+        settings=Settings(agentskillos_execution_output_root=str(output_root)),
+        bridge=_BridgeStub(tmp_path / "agentskillos"),
+        launcher=lambda *args, **kwargs: 0,
+    )
+
+    snapshot = service.get_run("aso-run-partial")
+
+    assert snapshot.status.value == "succeeded"
+    assert snapshot.current_phase == "finished"
+    assert snapshot.error is None
+    assert snapshot.summary_metrics["agentskillos_result_status"] == "partial"
+    assert snapshot.summary_metrics["completion_semantics"] == "partial_with_deliverable"
+
+    persisted = json.loads(record_path.read_text(encoding="utf-8"))
+    assert persisted["status"] == "succeeded"
+    assert persisted["summary_metrics"]["completion_semantics"] == "partial_with_deliverable"

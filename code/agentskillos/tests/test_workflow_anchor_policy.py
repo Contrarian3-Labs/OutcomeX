@@ -25,6 +25,12 @@ def test_infer_required_skills_for_image_generation_without_inputs() -> None:
     assert required == ["generate-image"]
 
 
+def test_infer_required_skills_for_chinese_text_to_video_without_inputs() -> None:
+    intent = TaskAnchorIntent(task="生成一个美女视频")
+
+    assert infer_required_skills(intent) == ["wan-t2v-dashscope"]
+
+
 def test_infer_required_skills_for_image_edit_with_image_input() -> None:
     intent = TaskAnchorIntent(
         task="Edit this product image and keep the composition realistic",
@@ -43,6 +49,15 @@ def test_infer_required_skills_for_reference_to_video() -> None:
     required = infer_required_skills(intent)
 
     assert required == ["wan-r2v-dashscope"]
+
+
+def test_infer_required_skills_for_chinese_reference_to_video() -> None:
+    intent = TaskAnchorIntent(
+        task="基于这张参考图生成一个人物一致的视频",
+        files=["/tmp/reference.jpg"],
+    )
+
+    assert infer_required_skills(intent) == ["wan-r2v-dashscope"]
 
 
 def test_infer_required_skills_for_video_edit() -> None:
@@ -109,6 +124,7 @@ def test_anchor_skills_exist_in_skill_seeds() -> None:
         "image-edit-dashscope",
         "wan-i2v-dashscope",
         "wan-r2v-dashscope",
+        "wan-t2v-dashscope",
         "wan-videoedit-dashscope",
     ]
 
