@@ -8,6 +8,7 @@ from app.api.routes.health import router as health_router
 from app.api.routes.hsp_webhooks import router as hsp_webhooks_router
 from app.api.routes.marketplace import router as marketplace_router
 from app.api.routes.machines import router as machines_router
+from app.api.routes.network import router as network_router
 from app.api.routes.orders import router as orders_router
 from app.api.routes.payments import router as payments_router
 from app.api.routes.primary_issuance import router as primary_issuance_router
@@ -24,6 +25,7 @@ def create_api_router() -> APIRouter:
     api_router.include_router(attachments_router, prefix="/attachments", tags=["attachments"])
     api_router.include_router(chat_plans_router, prefix="/chat", tags=["chat"])
     api_router.include_router(solutions_router, prefix="/solutions", tags=["solutions"])
+    api_router.include_router(network_router, prefix="/network", tags=["network"])
     api_router.include_router(self_use_router, prefix="/self-use", tags=["self-use"])
     api_router.include_router(execution_runs_router, prefix="/execution-runs", tags=["execution-runs"])
     api_router.include_router(orders_router, prefix="/orders", tags=["orders"])
