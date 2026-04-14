@@ -24,13 +24,21 @@ PRIMARY_ISSUANCE_PROFILE_LABEL = "Qwen Family"
 PRIMARY_ISSUANCE_GPU_SPEC = "Apple Silicon 96GB Unified Memory"
 PRIMARY_ISSUANCE_MODEL_FAMILY = "Qwen Family"
 PRIMARY_ISSUANCE_PRICE_CENTS = 390
-PRIMARY_ISSUANCE_CURRENCY = "USDC"
+PRIMARY_ISSUANCE_CURRENCY = "USDT"
 PRIMARY_ISSUANCE_DEFAULT_STOCK = 10
 
 
 def _ensure_fixed_primary_sku(db: Session) -> PrimaryIssuanceSku:
     sku = db.get(PrimaryIssuanceSku, PRIMARY_ISSUANCE_SKU_ID)
     if sku is not None:
+        sku.display_name = PRIMARY_ISSUANCE_DISPLAY_NAME
+        sku.profile_label = PRIMARY_ISSUANCE_PROFILE_LABEL
+        sku.gpu_spec = PRIMARY_ISSUANCE_GPU_SPEC
+        sku.model_family = PRIMARY_ISSUANCE_MODEL_FAMILY
+        sku.price_cents = PRIMARY_ISSUANCE_PRICE_CENTS
+        sku.currency = PRIMARY_ISSUANCE_CURRENCY
+        db.add(sku)
+        db.flush()
         return sku
 
     sku = PrimaryIssuanceSku(

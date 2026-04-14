@@ -135,7 +135,7 @@ def test_list_primary_issuance_skus_returns_fixed_catalog_with_stock(client: tup
     assert sku["sku_id"] == "apple-silicon-96gb-qwen-family"
     assert sku["display_name"] == "Apple Silicon 96GB Unified Memory + Qwen Family"
     assert sku["price_cents"] == 390
-    assert sku["currency"] == "USDC"
+    assert sku["currency"] == "USDT"
     assert sku["stock_available"] == 10
 
 
@@ -149,7 +149,7 @@ def test_create_primary_purchase_intent_persists_purchase_and_hsp_intent(
     assert payload["buyer_user_id"] == "buyer-1"
     assert payload["state"] == PaymentState.PENDING.value
     assert payload["amount_cents"] == 390
-    assert payload["currency"] == "USDC"
+    assert payload["currency"] == "USDT"
     assert payload["checkout_url"].startswith("https://mock-hsp.local/checkout/")
     assert payload["provider"] == "hsp"
     assert payload["provider_reference"].startswith("payreq_")
@@ -212,6 +212,30 @@ def test_atomic_stock_reservation_only_consumes_last_unit_once(
 
     assert first is True
     assert second is False
+
+
+def test_list_primary_issuance_skus_rewrites_existing_catalog_currency_to_usdt(
+    client: tuple[TestClient, SpyOnchainLifecycleService],
+) -> None:
+    test_client, _spy_lifecycle = client
+
+    test_client.get("/api/v1/primary-issuance/skus")
+    with get_container().session_factory() as session:
+        sku = session.get(PrimaryIssuanceSku, "apple-silicon-96gb-qwen-family")
+        assert sku is not None
+        sku.currency = "USDC"
+        session.add(sku)
+        session.commit()
+
+    response = test_client.get("/api/v1/primary-issuance/skus")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload[0]["currency"] == "USDT"
+    with get_container().session_factory() as session:
+        sku = session.get(PrimaryIssuanceSku, "apple-silicon-96gb-qwen-family")
+        assert sku is not None
+        assert sku.currency == "USDT"
 
 
 def test_successful_hsp_webhook_finalizes_primary_purchase_exactly_once(
