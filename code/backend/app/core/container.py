@@ -1,6 +1,8 @@
 from functools import lru_cache
+from pathlib import Path
 
 from sqlalchemy import create_engine, event
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import Settings, get_settings
@@ -23,6 +25,7 @@ def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
 class Container:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self._ensure_sqlite_parent_directory(settings.database_url)
         connect_args = {}
         if settings.database_url.startswith("sqlite"):
             connect_args["check_same_thread"] = False
@@ -71,6 +74,18 @@ class Container:
             owner_resolver=self.buyer_address_resolver.resolve_user_id,
             settings=self.settings,
         )
+
+    @staticmethod
+    def _ensure_sqlite_parent_directory(database_url: str) -> None:
+        try:
+            url = make_url(database_url)
+        except Exception:
+            return
+        if not url.drivername.startswith("sqlite"):
+            return
+        if not url.database or url.database == ":memory:":
+            return
+        Path(url.database).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 
 
 @lru_cache
