@@ -94,10 +94,13 @@ contract HashkeyNonStandardERC20Test is TestBase {
         vm.prank(BUYER);
         orderBook.confirmResult(orderId);
 
+        assertEq(usdt.balanceOf(PLATFORM_TREASURY), _stablecoinUnitsForCents(90), "backend reserve should sweep to treasury");
+        assertEq(usdt.balanceOf(address(settlement)), _stablecoinUnitsForCents(10), "settlement should retain only platform share");
+
         vm.prank(PLATFORM_TREASURY);
         uint256 claimed = settlement.claimPlatformRevenue(address(usdt));
         assertEq(claimed, _stablecoinUnitsForCents(10), "platform claim mismatch");
-        assertEq(usdt.balanceOf(PLATFORM_TREASURY), _stablecoinUnitsForCents(10), "treasury should receive usdt");
+        assertEq(usdt.balanceOf(PLATFORM_TREASURY), _stablecoinUnitsForCents(100), "treasury should receive full usdt proceeds");
     }
 
     function testMarketplaceSupportsNoReturnUSDT() public {

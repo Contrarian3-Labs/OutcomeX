@@ -37,6 +37,17 @@ class StubReceiptReader:
         return self.receipt
 
 
+class FlakyReceiptReader:
+    def __init__(self, *responses) -> None:
+        self._responses = list(responses)
+
+    def get_receipt(self, tx_hash: str) -> ChainReceipt | None:
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
 def test_send_as_treasury_raises_when_receipt_missing(monkeypatch) -> None:
     monkeypatch.setattr("app.onchain.lifecycle_service.PythonTransactionSender", FakeSender)
     service = OnchainLifecycleService(
@@ -74,6 +85,34 @@ def test_send_as_treasury_raises_when_receipt_status_is_failed(monkeypatch) -> N
 
     with pytest.raises(RuntimeError, match="transaction_failed:0xsynthetic"):
         service.send_as_treasury(write_result=_write_result())
+
+
+def test_send_as_treasury_retries_after_transient_receipt_error(monkeypatch) -> None:
+    monkeypatch.setattr("app.onchain.lifecycle_service.PythonTransactionSender", FakeSender)
+    service = OnchainLifecycleService(
+        settings=Settings(
+            onchain_rpc_url="http://127.0.0.1:8545",
+            onchain_platform_treasury_private_key="0xabc",
+            onchain_tx_timeout_seconds=0.5,
+        )
+    )
+    service._receipt_reader = FlakyReceiptReader(
+        RuntimeError("temporary_rpc_reset"),
+        ChainReceipt(
+            tx_hash="0xsynthetic",
+            status=1,
+            from_address="0x9999999999999999999999999999999999999999",
+            to_address="0x0000000000000000000000000000000000000135",
+            block_number=123,
+            event_id="receipt:0xsynthetic:123",
+        ),
+    )
+
+    receipt = service.send_as_treasury(write_result=_write_result())
+
+    assert receipt.tx_hash == "0xsynthetic"
+    assert receipt.receipt is not None
+    assert receipt.receipt.status == 1
 
 
 class _CapturingSender(FakeSender):

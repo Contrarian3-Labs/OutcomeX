@@ -15,11 +15,17 @@ from app.domain.accounting import effective_paid_amount_cents
 from app.domain.benchmark_solutions import BenchmarkSolution, get_benchmark_solution
 from app.domain.claim_projection import project_order_refund_claim
 from app.domain.enums import ExecutionRunStatus, ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
-from app.domain.models import ExecutionRun, Machine, Order, Payment
+from app.domain.models import ExecutionRun, Machine, Order, Payment, utc_now
+from app.domain.order_truth import set_authoritative_order_truth
 from app.domain.planning import build_fast_recommended_plans, select_recommended_plan
 from app.domain.pwr_amounts import pwr_wei_to_float
 from app.domain.revenue_amounts import latest_success_payment
-from app.domain.rules import has_sufficient_payment
+from app.domain.rules import (
+    calculate_failed_or_no_valid_preview_breakdown,
+    calculate_rejected_valid_preview_breakdown,
+    has_sufficient_payment,
+)
+from app.domain.settlement_projection import ensure_confirmed_settlement_projection, ensure_settlement_projection
 from app.execution import ExecutionStrategy, IntentRequest
 from app.execution.service import ExecutionEngineService
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
@@ -159,6 +165,80 @@ def _succeeded_payment_total_cents(order_id: str, db: Session) -> int:
             Payment.state == PaymentState.SUCCEEDED,
         )
     )
+
+
+def _authoritative_event_id_from_broadcast(broadcast) -> str:
+    receipt = getattr(broadcast, "receipt", None)
+    receipt_event_id = getattr(receipt, "event_id", None)
+    if receipt_event_id:
+        return str(receipt_event_id)
+    return f"tx:{broadcast.tx_hash}"
+
+
+def _project_authoritative_order_status(
+    *,
+    order: Order,
+    order_status: str,
+    event_id: str,
+    db: Session,
+) -> None:
+    set_authoritative_order_truth(order, order_status=order_status, event_id=event_id)
+    machine = db.get(Machine, order.machine_id)
+
+    if order_status == "PREVIEW_READY":
+        order.preview_state = PreviewState.READY
+        if order.state == OrderState.EXECUTING:
+            order.state = OrderState.RESULT_PENDING_CONFIRMATION
+        db.add(order)
+        if machine is not None:
+            db.add(machine)
+        return
+
+    if order_status in {"CONFIRMED", "REJECTED", "REFUNDED"}:
+        if machine is not None:
+            machine.has_active_tasks = False
+            db.add(machine)
+
+        paid_cents = _succeeded_payment_total_cents(order.id, db)
+        gross_amount_cents = effective_paid_amount_cents(order=order, paid_amount_cents=paid_cents)
+
+        if order_status == "CONFIRMED":
+            order.state = OrderState.RESULT_CONFIRMED
+            order.result_confirmed_at = order.result_confirmed_at or utc_now()
+            if machine is not None:
+                settlement, entry = ensure_confirmed_settlement_projection(
+                    db=db,
+                    order=order,
+                    machine=machine,
+                    gross_amount_cents=gross_amount_cents,
+                    distributed_at=order.result_confirmed_at,
+                )
+                settlement.state = SettlementState.DISTRIBUTED
+                db.add(settlement)
+                db.add(entry)
+        else:
+            order.state = OrderState.CANCELLED
+            breakdown = (
+                calculate_rejected_valid_preview_breakdown(gross_amount_cents)
+                if order_status == "REJECTED"
+                else calculate_failed_or_no_valid_preview_breakdown(gross_amount_cents)
+            )
+            if machine is not None:
+                settlement, entry = ensure_settlement_projection(
+                    db=db,
+                    order=order,
+                    machine=machine,
+                    gross_amount_cents=breakdown.gross_amount_cents,
+                    platform_fee_cents=breakdown.platform_fee_cents,
+                    machine_share_cents=breakdown.machine_share_cents,
+                    distributed_at=utc_now(),
+                )
+                settlement.state = SettlementState.DISTRIBUTED
+                db.add(settlement)
+                db.add(entry)
+
+        order.settlement_state = SettlementState.DISTRIBUTED
+        db.add(order)
 
 
 def _has_authoritative_paid_projection(order: Order) -> bool:
@@ -635,6 +715,15 @@ def confirm_result(
             detail=f"Onchain buyer signer is not configured: {exc}",
         ) from exc
 
+    _project_authoritative_order_status(
+        order=order,
+        order_status="CONFIRMED",
+        event_id=_authoritative_event_id_from_broadcast(broadcast),
+        db=db,
+    )
+    db.commit()
+    db.refresh(order)
+
     return OrderSettlementActionResponse(
         order_id=order.id,
         state=order.state,
@@ -678,6 +767,15 @@ def reject_valid_preview(
             detail=f"Onchain buyer signer is not configured: {exc}",
         ) from exc
 
+    _project_authoritative_order_status(
+        order=order,
+        order_status="REJECTED",
+        event_id=_authoritative_event_id_from_broadcast(broadcast),
+        db=db,
+    )
+    db.commit()
+    db.refresh(order)
+
     return OrderSettlementActionResponse(
         order_id=order.id,
         state=order.state,
@@ -720,6 +818,15 @@ def refund_failed_or_no_valid_preview(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Onchain buyer signer is not configured: {exc}",
         ) from exc
+
+    _project_authoritative_order_status(
+        order=order,
+        order_status="REFUNDED",
+        event_id=_authoritative_event_id_from_broadcast(broadcast),
+        db=db,
+    )
+    db.commit()
+    db.refresh(order)
 
     return OrderSettlementActionResponse(
         order_id=order.id,
@@ -777,7 +884,12 @@ def mock_mark_result_ready(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Onchain machine-owner signer is not configured: {exc}",
             ) from exc
-        db.refresh(order)
+        _project_authoritative_order_status(
+            order=order,
+            order_status="PREVIEW_READY",
+            event_id=_authoritative_event_id_from_broadcast(broadcast),
+            db=db,
+        )
         metadata_updates["onchain_preview_ready_tx_hash"] = broadcast.tx_hash
         merged_metadata = dict(order.execution_metadata or {})
         merged_metadata.update(metadata_updates)

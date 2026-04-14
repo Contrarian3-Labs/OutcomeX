@@ -114,6 +114,14 @@ contract SettlementController is Ownable {
             }
         }
 
+        if (input.paymentToken != address(0) && input.paymentToken != pwrToken) {
+            uint256 backendReserveShare = paymentBasis - breakdown.refundToBuyer - breakdown.platformShare;
+            if (backendReserveShare > 0) {
+                bool reserveSweepSuccess = input.paymentToken.safeTransfer(platformTreasury, backendReserveShare);
+                require(reserveSweepSuccess, "BACKEND_RESERVE_TRANSFER_FAILED");
+            }
+        }
+
         if (breakdown.machineShare > 0) {
             if (input.paymentToken == pwrToken && breakdown.dividendEligible) {
                 bool funded = pwrToken.safeTransfer(address(revenueVault), breakdown.machineShare);

@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.core.config import reset_settings_cache
 from app.core.container import get_container, reset_container_cache
 from app.domain.enums import ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
-from app.domain.models import Machine, Order, Payment, SettlementRecord
+from app.domain.models import Machine, Order, Payment, RevenueEntry, SettlementRecord
 from app.main import create_app
 from app.onchain.claim_state_reader import get_settlement_claim_state_reader
 from app.onchain.lifecycle_service import get_onchain_lifecycle_service
@@ -109,6 +109,18 @@ class StubOrderWriter:
             method_name="refundFailedOrNoValidPreview",
             idempotency_key=f"failed-refund:{order.id}",
             payload={"order_id": int(order.onchain_order_id or "0")},
+        )
+
+    def mark_preview_ready(self, order: Order, *, valid_preview: bool = True) -> OrderWriteResult:
+        return OrderWriteResult(
+            tx_hash="0xwrite-preview-ready",
+            submitted_at=datetime.now(timezone.utc),
+            chain_id=133,
+            contract_name="OrderBook",
+            contract_address="0x0000000000000000000000000000000000000133",
+            method_name="markPreviewReady",
+            idempotency_key=f"preview:{order.id}",
+            payload={"order_id": int(order.onchain_order_id or "0"), "valid_preview": valid_preview},
         )
 
 
@@ -258,3 +270,72 @@ def test_confirm_result_exposes_user_sign_payload_for_recoverable_settlement_flo
     assert payload["method_name"] == "confirmResult"
     assert payload["calldata"].startswith("0xeb05cf51")
     assert lifecycle.calls == []
+
+
+def test_confirm_result_server_broadcast_projects_local_confirmed_state(client) -> None:
+    test_client, _, lifecycle = client
+    order_id = _seed_refundable_order(user_id="buyer", payment_currency="USDT")
+
+    container = get_container()
+    with container.session_factory() as db:
+        order = db.get(Order, order_id)
+        order.state = OrderState.RESULT_PENDING_CONFIRMATION
+        order.execution_state = ExecutionState.SUCCEEDED
+        order.preview_state = PreviewState.READY
+        order.settlement_state = SettlementState.READY
+        db.add(order)
+        db.commit()
+
+    response = test_client.post(f"/api/v1/orders/{order_id}/confirm-result")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["order_id"] == order_id
+    assert payload["state"] == "result_confirmed"
+    assert payload["settlement_state"] == "distributed"
+    assert payload["tx_hash"] == "0xconfirmresult"
+    assert lifecycle.calls == [("buyer", "confirmResult")]
+
+    with container.session_factory() as db:
+        order = db.get(Order, order_id)
+        entry = db.query(RevenueEntry).filter(RevenueEntry.order_id == order_id).one()
+        settlement = db.query(SettlementRecord).filter(SettlementRecord.order_id == order_id).one()
+        assert order is not None
+        assert order.state == OrderState.RESULT_CONFIRMED
+        assert order.settlement_state == SettlementState.DISTRIBUTED
+        assert order.result_confirmed_at is not None
+        assert settlement.state == SettlementState.DISTRIBUTED
+        assert entry.beneficiary_user_id == "owner-1"
+        assert entry.machine_share_cents == 900
+
+
+def test_mock_result_ready_projects_authoritative_preview_state(client) -> None:
+    test_client, _, lifecycle = client
+    order_id = _seed_refundable_order(user_id="buyer", payment_currency="USDT")
+
+    container = get_container()
+    with container.session_factory() as db:
+        order = db.get(Order, order_id)
+        order.state = OrderState.EXECUTING
+        order.execution_state = ExecutionState.RUNNING
+        order.preview_state = PreviewState.GENERATING
+        order.settlement_state = SettlementState.READY
+        db.add(order)
+        db.commit()
+
+    response = test_client.post(f"/api/v1/orders/{order_id}/mock-result-ready", json={"valid_preview": True})
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "result_pending_confirmation"
+
+    with container.session_factory() as db:
+        order = db.get(Order, order_id)
+        assert order is not None
+        assert order.state == OrderState.RESULT_PENDING_CONFIRMATION
+        assert order.preview_state == PreviewState.READY
+        assert order.execution_state == ExecutionState.SUCCEEDED
+        metadata = dict(order.execution_metadata or {})
+        assert metadata["preview_valid"] is True
+        assert metadata["authoritative_order_status"] == "PREVIEW_READY"
+        assert metadata["onchain_preview_ready_tx_hash"] == "0xmarkpreviewready"
+    assert lifecycle.calls == [("owner-1", "markPreviewReady")]

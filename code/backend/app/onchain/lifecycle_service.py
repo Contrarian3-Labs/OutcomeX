@@ -225,7 +225,11 @@ class OnchainLifecycleService:
     def _wait_for_receipt(self, tx_hash: str) -> ChainReceipt | None:
         deadline = time.time() + max(0.1, self._settings.onchain_tx_timeout_seconds)
         while time.time() < deadline:
-            receipt = self._receipt_reader.get_receipt(tx_hash)
+            try:
+                receipt = self._receipt_reader.get_receipt(tx_hash)
+            except Exception:
+                time.sleep(0.25)
+                continue
             if receipt is not None:
                 return receipt
             time.sleep(0.25)

@@ -235,7 +235,7 @@ contract OrderPaymentRouterTest is TestBase {
         router.payWithPWR(orderId, _pwrWeiForCents(900));
     }
 
-    function testUSDTConfirmedOrderCreatesRealPlatformClaimAndReserve() public {
+    function testUSDTConfirmedOrderSweepsBackendReserveToTreasury() public {
         vm.prank(BUYER);
         uint256 orderId = orderBook.createOrder(machineId, 100);
 
@@ -253,15 +253,16 @@ contract OrderPaymentRouterTest is TestBase {
 
         assertEq(settlement.platformAccruedByToken(address(usdt)), _stablecoinUnitsForCents(10), "platform usdt claim mismatch");
         assertEq(revenueVault.unsettledRevenueByMachine(machineId), _pwrWeiForCents(90), "machine pwr claim mismatch");
-        assertEq(usdt.balanceOf(address(settlement)), _stablecoinUnitsForCents(100), "escrow should hold full reserve before claims");
+        assertEq(usdt.balanceOf(PLATFORM_TREASURY), _stablecoinUnitsForCents(90), "backend reserve should sweep to treasury");
+        assertEq(usdt.balanceOf(address(settlement)), _stablecoinUnitsForCents(10), "settlement should retain only platform claim");
 
         vm.expectEmit(true, true, false, true, address(settlement));
         emit PlatformRevenueClaimedDetailed(PLATFORM_TREASURY, address(usdt), _stablecoinUnitsForCents(10), 0);
         vm.prank(PLATFORM_TREASURY);
         uint256 claimed = settlement.claimPlatformRevenue(address(usdt));
         assertEq(claimed, _stablecoinUnitsForCents(10), "platform claim amount mismatch");
-        assertEq(usdt.balanceOf(PLATFORM_TREASURY), _stablecoinUnitsForCents(10), "platform should receive real usdt");
-        assertEq(usdt.balanceOf(address(settlement)), _stablecoinUnitsForCents(90), "remaining usdt should stay as reserve backing");
+        assertEq(usdt.balanceOf(PLATFORM_TREASURY), _stablecoinUnitsForCents(100), "treasury should receive swept reserve plus platform claim");
+        assertEq(usdt.balanceOf(address(settlement)), 0, "settlement should fully drain after platform claim");
     }
 
     function testPWRConfirmedOrderCreatesPlatformClaimAndMachineReserve() public {

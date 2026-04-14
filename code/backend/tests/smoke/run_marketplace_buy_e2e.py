@@ -513,7 +513,7 @@ def main() -> None:
                     fn_name="createListing",
                     args=[
                         onchain_machine_id,
-                        Web3.to_checksum_address(deployment.usdc),
+                        Web3.to_checksum_address(deployment.usdt),
                         listing_price_units,
                         int(time.time()) + 3600,
                     ],
@@ -540,14 +540,14 @@ def main() -> None:
 
             funding_tx = _transfer_erc20(
                 web3=web3,
-                token_address=deployment.usdc,
+                token_address=deployment.usdt,
                 sender_private_key=admin.private_key,
                 to=buyer.address,
                 amount=5_000_000,
             )
-            approve_usdc_tx = _approve_erc20_max(
+            approve_usdt_tx = _approve_erc20_max(
                 web3=web3,
-                token_address=deployment.usdc,
+                token_address=deployment.usdt,
                 owner_private_key=buyer.private_key,
                 spender=deployment.machine_marketplace,
             )
@@ -597,8 +597,8 @@ def main() -> None:
             report["transactions"] = {
                 "approve_marketplace": approve_marketplace_tx,
                 "create_listing": create_listing_tx,
-                "fund_buyer_usdc": funding_tx,
-                "approve_usdc": approve_usdc_tx,
+                "fund_buyer_usdt": funding_tx,
+                "approve_usdt": approve_usdt_tx,
                 "buy_listing": buy_listing_tx,
             }
             report["api_snapshots"]["after_buy"] = {
@@ -608,6 +608,7 @@ def main() -> None:
             }
             report["final_checks"] = {
                 "listing_became_active": active_listing["state"] == "active",
+                "listing_uses_usdt": active_listing["payment_token_symbol"] == "USDT",
                 "buyer_is_canonical_owner": machine_after_buy["owner_user_id"] == buyer.user_id,
                 "buyer_wallet_projected": machine_after_buy["owner_chain_address"] == buyer.address.lower(),
                 "active_listing_cleared": machine_after_buy["active_listing"] is None,
