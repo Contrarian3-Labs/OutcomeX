@@ -42,5 +42,6 @@ code/backend/.env
 code/backend/data/
 code/backend/outcomex.db
 code/backend/outcomex-local.db
+code/backend/outcomex-hashkey-testnet.db
 code/backend/scripts/__pycache__/
 .local/
