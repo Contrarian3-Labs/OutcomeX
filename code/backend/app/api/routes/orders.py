@@ -277,6 +277,7 @@ def _serialize_order(order: Order, *, db: Session) -> OrderResponse:
     machine = db.get(Machine, order.machine_id) if order.machine_id else None
     machine_is_available = _machine_is_runtime_available(order, machine.id) if machine is not None else None
     quote_snapshot = _resolve_order_quote_snapshot(order)
+    latest_payment = max(order.payments, key=lambda payment: payment.created_at) if order.payments else None
     return OrderResponse.model_validate(
         {
             "id": order.id,
@@ -310,6 +311,24 @@ def _serialize_order(order: Order, *, db: Session) -> OrderResponse:
             "execution_request": order.execution_request,
             "execution_metadata": order.execution_metadata,
             "latest_success_payment_currency": order.latest_success_payment_currency,
+            "latest_payment": (
+                {
+                    "payment_id": latest_payment.id,
+                    "provider": latest_payment.provider,
+                    "provider_reference": latest_payment.provider_reference,
+                    "merchant_order_id": latest_payment.merchant_order_id,
+                    "checkout_url": latest_payment.checkout_url,
+                    "state": latest_payment.state,
+                    "callback_state": latest_payment.callback_state,
+                    "callback_event_id": latest_payment.callback_event_id,
+                    "callback_tx_hash": latest_payment.callback_tx_hash,
+                    "amount_cents": latest_payment.amount_cents,
+                    "currency": latest_payment.currency,
+                    "created_at": latest_payment.created_at,
+                }
+                if latest_payment is not None
+                else None
+            ),
             "result_confirmed_at": order.result_confirmed_at,
             "created_at": order.created_at,
         }

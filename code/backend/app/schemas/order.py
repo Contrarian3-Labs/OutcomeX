@@ -22,6 +22,21 @@ class OrderCreateRequest(BaseModel):
     selected_plan_id: str | None = None
 
 
+class OrderPaymentSummaryResponse(BaseModel):
+    payment_id: str
+    provider: str
+    provider_reference: str | None
+    merchant_order_id: str | None
+    checkout_url: str | None
+    state: PaymentState
+    callback_state: str | None
+    callback_event_id: str | None
+    callback_tx_hash: str | None
+    amount_cents: int
+    currency: str
+    created_at: datetime
+
+
 class OrderResponse(BaseModel):
     id: str
     onchain_order_id: str | None
@@ -54,6 +69,7 @@ class OrderResponse(BaseModel):
     execution_request: dict | None
     execution_metadata: dict | None
     latest_success_payment_currency: str | None = None
+    latest_payment: OrderPaymentSummaryResponse | None = None
     result_confirmed_at: datetime | None
     created_at: datetime
 

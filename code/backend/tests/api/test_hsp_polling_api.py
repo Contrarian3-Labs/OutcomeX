@@ -94,6 +94,7 @@ def client(tmp_path) -> tuple[TestClient, SpyOrderWriter]:
     os.environ["OUTCOMEX_HSP_APP_SECRET"] = "as_test_secret"
     os.environ["OUTCOMEX_HSP_PAY_TO_ADDRESS"] = "0x9999999999999999999999999999999999999999"
     os.environ["OUTCOMEX_HSP_MERCHANT_PRIVATE_KEY_PEM"] = "-----BEGIN EC PRIVATE KEY-----\nMHQCAQEEIEf8gQYenT5tskecihwTBGvrfqSTA3hRrunNTOADm/jJoAcGBSuBBAAK\noUQDQgAEOas7ZFkne5CsJx2VH70raQ4h9vSAmPe3Gtw2WKoz4yicVfBrPcc2LQHt\nBKXyZPxdDRrU0XLRNQJZxluyoE0Vaw==\n-----END EC PRIVATE KEY-----"
+    os.environ["OUTCOMEX_HSP_SUPPORTED_CURRENCIES"] = "USDC,USDT"
     os.environ["OUTCOMEX_ONCHAIN_USDC_ADDRESS"] = "0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e"
     os.environ["OUTCOMEX_ONCHAIN_USDT_ADDRESS"] = "0x372325443233fEbaC1F6998aC750276468c83CC6"
     reset_settings_cache()
@@ -152,14 +153,47 @@ def _create_order(client: TestClient, machine_id: str) -> dict:
     return response.json()
 
 
+def test_order_detail_includes_latest_hsp_payment_summary(client) -> None:
+    test_client, _ = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine_id=machine["id"])
+    payment_response = test_client.post(
+        f"/api/v1/payments/orders/{order['id']}/intent",
+        json={"amount_cents": 500, "currency": "USDC"},
+    )
+    assert payment_response.status_code == 201, payment_response.text
+    payment = payment_response.json()
+
+    order_after = test_client.get(f"/api/v1/orders/{order['id']}")
+
+    assert order_after.status_code == 200
+    payload = order_after.json()
+    assert payload["latest_payment"] == {
+        "payment_id": payment["payment_id"],
+        "provider": "hsp",
+        "provider_reference": "PAY-REQ-1",
+        "merchant_order_id": "order-merchant-1",
+        "checkout_url": "https://pay.hashkey.com/flow/flow-1",
+        "state": "pending",
+        "callback_state": None,
+        "callback_event_id": None,
+        "callback_tx_hash": None,
+        "amount_cents": 500,
+        "currency": "USDC",
+        "created_at": payload["latest_payment"]["created_at"],
+    }
+
+
 def test_sync_hsp_payment_endpoint_marks_payment_succeeded(client) -> None:
     test_client, spy_writer = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine_id=machine["id"])
-    payment = test_client.post(
+    payment_response = test_client.post(
         f"/api/v1/payments/orders/{order['id']}/intent",
         json={"amount_cents": 500, "currency": "USDC"},
-    ).json()
+    )
+    assert payment_response.status_code == 201, payment_response.text
+    payment = payment_response.json()
 
     sync_response = test_client.post(f"/api/v1/payments/{payment['payment_id']}/sync-hsp")
 
@@ -200,10 +234,12 @@ def test_sync_hsp_payment_promotes_included_status_when_receipt_confirms_transfe
     test_client, spy_writer = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine_id=machine["id"])
-    payment = test_client.post(
+    payment_response = test_client.post(
         f"/api/v1/payments/orders/{order['id']}/intent",
         json={"amount_cents": 500, "currency": "USDC"},
-    ).json()
+    )
+    assert payment_response.status_code == 201, payment_response.text
+    payment = payment_response.json()
 
     container = get_container()
     container.hsp_adapter.query_payment_status = lambda **_: HSPWebhookEvent(
