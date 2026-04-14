@@ -6,9 +6,11 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.api.routes.machines import MACHINE_ASSET_COST_CENTS, MOCK_MACHINE_SPEC
-from app.domain.models import Machine, Order, RevenueEntry
+from app.core.container import get_container
+from app.domain.models import Machine, OnchainIndexerCursor, Order, RevenueEntry
+from app.indexer.evm_runtime import build_subscriptions, load_runtime_config
 from app.runtime.cost_service import get_runtime_cost_service
-from app.schemas.network import NetworkOverviewResponse
+from app.schemas.network import NetworkOverviewResponse, OnchainIndexerRuntimeResponse
 
 router = APIRouter()
 
@@ -73,4 +75,25 @@ def get_network_overview(db: Session = Depends(get_db)) -> NetworkOverviewRespon
         confirmed_deliveries_30d=confirmed_deliveries_30d,
         indicative_realized_apr_network=indicative_realized_apr_network,
         pwr_anchor_price_cents=get_runtime_cost_service().pwr_anchor_price_cents,
+    )
+
+
+@router.get("/onchain-indexer", response_model=OnchainIndexerRuntimeResponse)
+def get_onchain_indexer_runtime(db: Session = Depends(get_db)) -> OnchainIndexerRuntimeResponse:
+    container = get_container()
+    runtime = load_runtime_config(container.settings)
+    status = getattr(container.onchain_indexer, "status", None)
+    subscriptions = build_subscriptions(container.settings)
+    cursor = db.get(OnchainIndexerCursor, runtime.chain_id)
+    return OnchainIndexerRuntimeResponse(
+        enabled=bool(getattr(status, "enabled", False)),
+        reason=str(getattr(status, "reason", "unknown")),
+        chain_id=runtime.chain_id,
+        rpc_url=runtime.rpc_url,
+        poll_seconds=runtime.poll_seconds,
+        confirmation_depth=runtime.confirmation_depth,
+        bootstrap_block=runtime.bootstrap_block,
+        max_block_span=runtime.max_block_span,
+        subscription_contracts=sorted({subscription.contract_name for subscription in subscriptions}),
+        last_indexed_block=cursor.last_indexed_block if cursor is not None else None,
     )

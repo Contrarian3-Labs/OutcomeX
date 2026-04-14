@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import base64
+from decimal import Decimal, InvalidOperation
 import hashlib
 import hmac
 import json
 import secrets
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import httpx
 from cryptography.hazmat.primitives import hashes, serialization
@@ -40,8 +41,48 @@ def _cents_from_smallest_units(amount: str) -> int:
     return amount_int // 10_000
 
 
+def _cents_from_hashkey_amount(amount: str) -> int:
+    raw = amount.strip()
+    if not raw:
+        raise ValueError("HashKey amount is empty")
+    if "." not in raw:
+        amount_int = int(raw)
+        if amount_int >= 10_000 and amount_int % 10_000 == 0:
+            return amount_int // 10_000
+    try:
+        decimal_amount = Decimal(raw)
+    except InvalidOperation as exc:  # pragma: no cover - defensive guard
+        raise ValueError("HashKey amount is not a valid decimal amount") from exc
+    cents = decimal_amount * Decimal(100)
+    if cents != cents.to_integral_value():
+        raise ValueError("HashKey amount is not aligned to whole USD cents")
+    return int(cents)
+
+
 def _utc_timestamp() -> int:
     return int(datetime.now(timezone.utc).timestamp())
+
+
+DEFAULT_CART_EXPIRY_TTL = timedelta(hours=2)
+
+
+def _parse_supported_currencies(value: str | tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
+    if value is None:
+        return ("USDC", "USDT")
+    if isinstance(value, str):
+        candidates = [part.strip().upper() for part in value.split(",")]
+    else:
+        candidates = [str(part).strip().upper() for part in value]
+    supported = tuple(part for part in candidates if part)
+    return supported or ("USDC", "USDT")
+
+
+def _resolve_cart_expiry(expires_at: datetime | None) -> datetime:
+    now = datetime.now(timezone.utc)
+    resolved = expires_at.astimezone(timezone.utc) if expires_at is not None else now + DEFAULT_CART_EXPIRY_TTL
+    if resolved <= now:
+        return now + DEFAULT_CART_EXPIRY_TTL
+    return resolved
 
 
 @dataclass(slots=True)
@@ -63,8 +104,8 @@ class HSPWebhookEvent:
     cart_mandate_id: str
     flow_id: str | None
     status: str
-    amount_cents: int
-    currency: str
+    amount_cents: int | None
+    currency: str | None
     tx_hash: str | None = None
 
 
@@ -86,6 +127,7 @@ class HSPAdapter:
         pay_to_address: str = "",
         redirect_url: str = "",
         webhook_tolerance_seconds: int = 300,
+        supported_currencies: str | tuple[str, ...] | list[str] | None = None,
         usdc_address: str = "",
         usdt_address: str = "",
         client: httpx.Client | None = None,
@@ -103,6 +145,7 @@ class HSPAdapter:
         self.pay_to_address = pay_to_address
         self.redirect_url = redirect_url
         self.webhook_tolerance_seconds = webhook_tolerance_seconds
+        self.supported_currencies = _parse_supported_currencies(supported_currencies)
         self.usdc_address = usdc_address
         self.usdt_address = usdt_address
         self._client = client or httpx.Client(timeout=30.0)
@@ -114,8 +157,7 @@ class HSPAdapter:
             and self.app_secret
             and self.merchant_private_key_pem
             and self.pay_to_address
-            and self._token_address_for_currency("USDC")
-            and self._token_address_for_currency("USDT")
+            and all(self._configured_token_address(currency) for currency in self.supported_currencies)
         )
 
     @property
@@ -221,7 +263,7 @@ class HSPAdapter:
         expires_at: datetime | None,
     ) -> dict[str, Any]:
         amount_value = f"{amount_cents / 100:.2f}"
-        cart_expiry = (expires_at or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        cart_expiry = _resolve_cart_expiry(expires_at).isoformat().replace("+00:00", "Z")
         cart_contents: dict[str, Any] = {
             "id": order_id,
             "user_cart_confirmation_required": True,
@@ -287,16 +329,24 @@ class HSPAdapter:
         jose_signature = r_value.to_bytes(32, "big") + s_value.to_bytes(32, "big")
         return f"{signing_input}.{_b64url(jose_signature)}"
 
-    def _merchant_request(self, *, method: str, path: str, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _merchant_request(
+        self,
+        *,
+        method: str,
+        path: str,
+        json_body: dict[str, Any] | None = None,
+        query_params: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         timestamp = str(_utc_timestamp())
         nonce = secrets.token_hex(16)
         canonical_body = _canonical_json_bytes(json_body) if json_body is not None else b""
         body_hash = hashlib.sha256(canonical_body).hexdigest() if canonical_body else ""
+        query_string = urlencode(query_params or {}, doseq=True)
         message = "\n".join(
             [
                 method.upper(),
                 path,
-                "",
+                query_string,
                 body_hash,
                 timestamp,
                 nonce,
@@ -310,9 +360,12 @@ class HSPAdapter:
             "X-Nonce": nonce,
             "X-Signature": signature,
         }
+        url = f"{self.api_base_url}{path}"
+        if query_string:
+            url = f"{url}?{query_string}"
         response = self._client.request(
             method=method.upper(),
-            url=f"{self.api_base_url}{path}",
+            url=url,
             headers=headers,
             content=canonical_body or None,
         )
@@ -332,13 +385,27 @@ class HSPAdapter:
             return None
         return segments[-1]
 
-    def _token_address_for_currency(self, currency: str) -> str:
+    def supports_currency(self, currency: str) -> bool:
+        return currency.upper() in self.supported_currencies
+
+    def _configured_token_address(self, currency: str) -> str:
         normalized = currency.upper()
         if normalized == "USDC":
             return self.usdc_address
         if normalized == "USDT":
             return self.usdt_address
         raise RuntimeError(f"Unsupported HSP currency: {currency}")
+
+    def _token_address_for_currency(self, currency: str) -> str:
+        normalized = currency.upper()
+        if normalized not in {"USDC", "USDT"}:
+            raise RuntimeError(f"Unsupported HSP currency: {currency}")
+        if not self.supports_currency(normalized):
+            enabled = ", ".join(self.supported_currencies) or "none"
+            raise RuntimeError(
+                f"HashKey Merchant checkout for {normalized} is not enabled on this deployment (enabled: {enabled})"
+            )
+        return self._configured_token_address(normalized)
 
     def parse_webhook(self, body: bytes) -> HSPWebhookEvent:
         payload = json.loads(body.decode("utf-8"))
@@ -354,6 +421,72 @@ class HSPAdapter:
             amount_cents=_cents_from_smallest_units(str(payload["amount"])),
             currency=str(payload["token"]).upper(),
             tx_hash=str(payload.get("tx_signature")) if payload.get("tx_signature") else None,
+        )
+
+    def _parse_payment_status_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        fallback_payment_request_id: str | None = None,
+        fallback_cart_mandate_id: str | None = None,
+        fallback_amount_cents: int | None = None,
+        fallback_currency: str | None = None,
+    ) -> HSPWebhookEvent:
+        payment_request_id = str(payload.get("payment_request_id") or fallback_payment_request_id or "").strip()
+        cart_mandate_id = str(payload.get("cart_mandate_id") or fallback_cart_mandate_id or "").strip()
+        payment_url = str(payload.get("payment_url", "")).strip()
+        raw_amount = str(payload.get("amount", "")).strip()
+        raw_currency = str(payload.get("token", "")).strip()
+        amount_cents = _cents_from_hashkey_amount(raw_amount) if raw_amount else fallback_amount_cents
+        currency = raw_currency.upper() if raw_currency else (fallback_currency.upper() if fallback_currency else None)
+        return HSPWebhookEvent(
+            event_id=str(payload.get("request_id") or payment_request_id),
+            payment_request_id=payment_request_id,
+            cart_mandate_id=cart_mandate_id,
+            flow_id=str(payload.get("flow_id") or self._extract_flow_id(payment_url) or "").strip() or None,
+            status=str(payload["status"]).lower(),
+            amount_cents=amount_cents,
+            currency=currency,
+            tx_hash=str(payload.get("tx_signature")) if payload.get("tx_signature") else None,
+        )
+
+    def query_payment_status(
+        self,
+        *,
+        payment_request_id: str | None = None,
+        cart_mandate_id: str | None = None,
+        flow_id: str | None = None,
+        fallback_amount_cents: int | None = None,
+        fallback_currency: str | None = None,
+    ) -> HSPWebhookEvent | None:
+        provided = {
+            "payment_request_id": payment_request_id,
+            "cart_mandate_id": cart_mandate_id,
+            "flow_id": flow_id,
+        }
+        query_params = {key: value for key, value in provided.items() if value}
+        if len(query_params) != 1:
+            raise ValueError("Exactly one payment query identifier is required")
+        response_payload = self._merchant_request(
+            method="GET",
+            path="/api/v1/merchant/payments",
+            query_params=query_params,
+        )
+        data = response_payload.get("data")
+        if isinstance(data, list):
+            if not data:
+                return None
+            record = data[0]
+        elif isinstance(data, dict) and data:
+            record = data
+        else:
+            return None
+        return self._parse_payment_status_payload(
+            record,
+            fallback_payment_request_id=payment_request_id,
+            fallback_cart_mandate_id=cart_mandate_id,
+            fallback_amount_cents=fallback_amount_cents,
+            fallback_currency=fallback_currency,
         )
 
     def build_webhook_signature(self, *, body: bytes, timestamp: str) -> str:

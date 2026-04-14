@@ -2,14 +2,10 @@
 pragma solidity ^0.8.24;
 
 import {Ownable} from "./common/Ownable.sol";
+import {SafeERC20Like} from "./common/SafeERC20Like.sol";
 import {IOrderLifecycle} from "./interfaces/IOrderLifecycle.sol";
 import {IOrderPaymentRouter} from "./interfaces/IOrderPaymentRouter.sol";
-import {IPermit2} from "./interfaces/IPermit2.sol";
 import {OrderRecord, OrderStatus} from "./types/OutcomeXTypes.sol";
-
-interface IERC20Like {
-    function transferFrom(address from, address to, uint256 amount) external returns (bool);
-}
 
 interface IUSDCWithAuthorization {
     function receiveWithAuthorization(
@@ -26,16 +22,18 @@ interface IUSDCWithAuthorization {
 }
 
 contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
+    using SafeERC20Like for address;
+    uint256 internal constant STABLECOIN_UNITS_PER_CENT = 10_000;
+
     bytes32 public constant PAYMENT_SOURCE_USDC_EIP3009 = keccak256("USDC_EIP3009");
-    bytes32 public constant PAYMENT_SOURCE_USDT_PERMIT2 = keccak256("USDT_PERMIT2");
+    bytes32 public constant PAYMENT_SOURCE_USDT_DIRECT = keccak256("USDT_DIRECT");
     bytes32 public constant PAYMENT_SOURCE_PWR = keccak256("PWR_DIRECT");
     bytes32 public constant PAYMENT_SOURCE_HSP = keccak256("HSP_CONFIRMED");
 
     IOrderLifecycle public immutable orderBook;
     IUSDCWithAuthorization public immutable usdc;
-    IERC20Like public immutable usdt;
-    IERC20Like public immutable pwr;
-    IPermit2 public immutable permit2;
+    address public immutable usdt;
+    address public immutable pwr;
     address public settlementEscrow;
 
     mapping(uint256 => bytes32) public paymentSourceByOrder;
@@ -47,20 +45,17 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
         address orderBookAddress,
         address usdcAddress,
         address usdtAddress,
-        address pwrAddress,
-        address permit2Address
+        address pwrAddress
     ) Ownable(initialOwner) {
         require(orderBookAddress != address(0), "ZERO_ORDER_BOOK");
         require(usdcAddress != address(0), "ZERO_USDC");
         require(usdtAddress != address(0), "ZERO_USDT");
         require(pwrAddress != address(0), "ZERO_PWR");
-        require(permit2Address != address(0), "ZERO_PERMIT2");
 
         orderBook = IOrderLifecycle(orderBookAddress);
         usdc = IUSDCWithAuthorization(usdcAddress);
-        usdt = IERC20Like(usdtAddress);
-        pwr = IERC20Like(pwrAddress);
-        permit2 = IPermit2(permit2Address);
+        usdt = usdtAddress;
+        pwr = pwrAddress;
     }
 
     function setSettlementEscrow(address newEscrow) external onlyOwner {
@@ -80,7 +75,8 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
         bytes32 r,
         bytes32 s
     ) external {
-        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender, true);
+        uint256 grossAmount = _stablecoinUnitsToCents(amount);
+        bool dividendEligible = _validateOrderForPayment(orderId, grossAmount, msg.sender, true);
         require(validAfter <= block.timestamp, "AUTH_NOT_YET_VALID");
         require(validBefore >= block.timestamp, "AUTH_EXPIRED");
 
@@ -89,31 +85,23 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
         _markOrderPaid(orderId, amount, address(usdc), PAYMENT_SOURCE_USDC_EIP3009, dividendEligible, msg.sender);
     }
 
-    function payWithUSDT(uint256 orderId, uint256 amount, uint256 nonce, uint256 deadline, bytes calldata signature)
-        external
-    {
-        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender, true);
-        require(deadline >= block.timestamp, "PERMIT_EXPIRED");
+    function payWithUSDT(uint256 orderId, uint256 amount, uint256, uint256, bytes calldata) external {
+        uint256 grossAmount = _stablecoinUnitsToCents(amount);
+        bool dividendEligible = _validateOrderForPayment(orderId, grossAmount, msg.sender, true);
 
-        IPermit2.PermitTransferFrom memory permit = IPermit2.PermitTransferFrom({
-            permitted: IPermit2.TokenPermissions({token: address(usdt), amount: amount}),
-            nonce: nonce,
-            deadline: deadline
-        });
-        IPermit2.SignatureTransferDetails memory transferDetails =
-            IPermit2.SignatureTransferDetails({to: _settlementEscrow(), requestedAmount: amount});
+        bool success = address(usdt).safeTransferFrom(msg.sender, _settlementEscrow(), amount);
+        require(success, "USDT_TRANSFER_FAILED");
 
-        permit2.permitTransferFrom(permit, transferDetails, msg.sender, signature);
-        _markOrderPaid(orderId, amount, address(usdt), PAYMENT_SOURCE_USDT_PERMIT2, dividendEligible, msg.sender);
+        _markOrderPaid(orderId, amount, usdt, PAYMENT_SOURCE_USDT_DIRECT, dividendEligible, msg.sender);
     }
 
     function payWithPWR(uint256 orderId, uint256 amount) external {
         bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender, true);
 
-        bool success = pwr.transferFrom(msg.sender, _settlementEscrow(), amount);
+        bool success = pwr.safeTransferFrom(msg.sender, _settlementEscrow(), amount);
         require(success, "PWR_TRANSFER_FAILED");
 
-        _markOrderPaid(orderId, amount, address(pwr), PAYMENT_SOURCE_PWR, dividendEligible, msg.sender);
+        _markOrderPaid(orderId, amount, pwr, PAYMENT_SOURCE_PWR, dividendEligible, msg.sender);
     }
 
     function createOrderByAdapter(address buyer, uint256 machineId, uint256 amount)
@@ -136,8 +124,9 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
         bytes32 r,
         bytes32 s
     ) external returns (uint256 orderId) {
-        orderId = orderBook.createOrderForBuyer(msg.sender, machineId, amount);
-        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender, true);
+        uint256 grossAmount = _stablecoinUnitsToCents(amount);
+        orderId = orderBook.createOrderForBuyer(msg.sender, machineId, grossAmount);
+        bool dividendEligible = _validateOrderForPayment(orderId, grossAmount, msg.sender, true);
         require(validAfter <= block.timestamp, "AUTH_NOT_YET_VALID");
         require(validBefore >= block.timestamp, "AUTH_EXPIRED");
 
@@ -149,34 +138,28 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
     function createOrderAndPayWithUSDT(
         uint256 machineId,
         uint256 amount,
-        uint256 nonce,
-        uint256 deadline,
-        bytes calldata signature
+        uint256,
+        uint256,
+        bytes calldata
     ) external returns (uint256 orderId) {
-        orderId = orderBook.createOrderForBuyer(msg.sender, machineId, amount);
-        bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender, true);
-        require(deadline >= block.timestamp, "PERMIT_EXPIRED");
+        uint256 grossAmount = _stablecoinUnitsToCents(amount);
+        orderId = orderBook.createOrderForBuyer(msg.sender, machineId, grossAmount);
+        bool dividendEligible = _validateOrderForPayment(orderId, grossAmount, msg.sender, true);
 
-        IPermit2.PermitTransferFrom memory permit = IPermit2.PermitTransferFrom({
-            permitted: IPermit2.TokenPermissions({token: address(usdt), amount: amount}),
-            nonce: nonce,
-            deadline: deadline
-        });
-        IPermit2.SignatureTransferDetails memory transferDetails =
-            IPermit2.SignatureTransferDetails({to: _settlementEscrow(), requestedAmount: amount});
+        bool success = address(usdt).safeTransferFrom(msg.sender, _settlementEscrow(), amount);
+        require(success, "USDT_TRANSFER_FAILED");
 
-        permit2.permitTransferFrom(permit, transferDetails, msg.sender, signature);
-        _markOrderPaid(orderId, amount, address(usdt), PAYMENT_SOURCE_USDT_PERMIT2, dividendEligible, msg.sender);
+        _markOrderPaid(orderId, amount, usdt, PAYMENT_SOURCE_USDT_DIRECT, dividendEligible, msg.sender);
     }
 
     function createOrderAndPayWithPWR(uint256 machineId, uint256 amount) external returns (uint256 orderId) {
         orderId = orderBook.createOrderForBuyer(msg.sender, machineId, amount);
         bool dividendEligible = _validateOrderForPayment(orderId, amount, msg.sender, true);
 
-        bool success = pwr.transferFrom(msg.sender, _settlementEscrow(), amount);
+        bool success = pwr.safeTransferFrom(msg.sender, _settlementEscrow(), amount);
         require(success, "PWR_TRANSFER_FAILED");
 
-        _markOrderPaid(orderId, amount, address(pwr), PAYMENT_SOURCE_PWR, dividendEligible, msg.sender);
+        _markOrderPaid(orderId, amount, pwr, PAYMENT_SOURCE_PWR, dividendEligible, msg.sender);
     }
 
     function createPaidOrderByAdapter(address buyer, uint256 machineId, uint256 amount, address paymentToken)
@@ -197,9 +180,10 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
         require(_isSupportedHSPToken(paymentToken), "UNSUPPORTED_HSP_TOKEN");
 
         OrderRecord memory order = orderBook.getOrder(orderId);
-        bool dividendEligible = _validateOrderForPayment(orderId, amount, order.buyer, true);
+        uint256 grossAmount = _stablecoinUnitsToCents(amount);
+        bool dividendEligible = _validateOrderForPayment(orderId, grossAmount, order.buyer, true);
 
-        bool success = IERC20Like(paymentToken).transferFrom(msg.sender, _settlementEscrow(), amount);
+        bool success = paymentToken.safeTransferFrom(msg.sender, _settlementEscrow(), amount);
         require(success, "ADAPTER_TRANSFER_FAILED");
 
         _markOrderPaid(orderId, amount, paymentToken, PAYMENT_SOURCE_HSP, dividendEligible, msg.sender);
@@ -234,7 +218,7 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
         OrderRecord memory order = orderBook.getOrder(orderId);
         address settlementBeneficiary = orderBook.settlementBeneficiaryByOrder(orderId);
         paymentSourceByOrder[orderId] = paymentSource;
-        orderBook.markOrderPaid(orderId, dividendEligible, true, token);
+        orderBook.markOrderPaid(orderId, dividendEligible, true, token, amount);
         emit PaymentFinalized(
             orderId,
             order.machineId,
@@ -255,6 +239,12 @@ contract OrderPaymentRouter is Ownable, IOrderPaymentRouter {
     }
 
     function _isSupportedHSPToken(address token) internal view returns (bool) {
-        return token == address(usdc) || token == address(usdt);
+        return token == address(usdc) || token == usdt;
+    }
+
+    function _stablecoinUnitsToCents(uint256 amount) internal pure returns (uint256) {
+        require(amount > 0, "ZERO_AMOUNT");
+        require(amount % STABLECOIN_UNITS_PER_CENT == 0, "INVALID_AMOUNT_SCALE");
+        return amount / STABLECOIN_UNITS_PER_CENT;
     }
 }

@@ -2,14 +2,13 @@
 pragma solidity ^0.8.24;
 
 import {Ownable} from "./common/Ownable.sol";
+import {SafeERC20Like} from "./common/SafeERC20Like.sol";
 import {MachineAssetNFT, TransferGuardBlocked} from "./MachineAssetNFT.sol";
 import {ITransferGuard} from "./interfaces/ITransferGuard.sol";
 
-interface IERC20TransferFromLike {
-    function transferFrom(address from, address to, uint256 amount) external returns (bool);
-}
-
 contract MachineMarketplace is Ownable {
+    using SafeERC20Like for address;
+
     struct Listing {
         uint256 id;
         uint256 machineId;
@@ -124,8 +123,7 @@ contract MachineMarketplace is Ownable {
             activeListingIdByMachine[listing.machineId] = 0;
         }
 
-        bool paymentSucceeded =
-            IERC20TransferFromLike(listing.paymentToken).transferFrom(msg.sender, listing.seller, listing.price);
+        bool paymentSucceeded = listing.paymentToken.safeTransferFrom(msg.sender, listing.seller, listing.price);
         require(paymentSucceeded, "PAYMENT_TRANSFER_FAILED");
 
         machineAsset.safeTransferFrom(listing.seller, msg.sender, listing.machineId);

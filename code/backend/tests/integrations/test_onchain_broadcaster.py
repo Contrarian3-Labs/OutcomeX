@@ -16,6 +16,18 @@ class StubReceiptReader:
         return self._receipt
 
 
+class SequencedReceiptReader:
+    def __init__(self, receipts: list[ChainReceipt | None]) -> None:
+        self._receipts = list(receipts)
+        self.calls = 0
+
+    def get_receipt(self, tx_hash: str) -> ChainReceipt | None:
+        self.calls += 1
+        if self._receipts:
+            return self._receipts.pop(0)
+        return None
+
+
 def _write_result() -> OrderWriteResult:
     return OrderWriteResult(
         tx_hash="0xabc123",
@@ -78,3 +90,28 @@ def test_broadcaster_falls_back_to_deterministic_receipt_without_live_rpc() -> N
     assert receipt.event_id.startswith("OrderCreated:")
     assert receipt.onchain_order_id.isdigit()
     assert receipt.block_number >= 1_000_000
+
+
+def test_broadcaster_waits_for_live_receipt_when_required() -> None:
+    live_receipt = ChainReceipt(
+        tx_hash="0xabc123",
+        status=1,
+        from_address="0xadmin",
+        to_address="0x0000000000000000000000000000000000000134",
+        block_number=778,
+        event_id="receipt:0xabc123:778",
+        metadata={"logs": [_order_created_log(43)]},
+    )
+    reader = SequencedReceiptReader([None, live_receipt])
+    broadcaster = OnchainBroadcaster(
+        receipt_reader=reader,
+        require_live_receipt=True,
+        receipt_wait_seconds=0.3,
+    )
+
+    receipt = broadcaster.broadcast_create_order(write_result=_write_result())
+
+    assert reader.calls >= 2
+    assert receipt.tx_hash == "0xabc123"
+    assert receipt.event_id == "OrderCreated:43:0xabc123"
+    assert receipt.onchain_order_id == "43"

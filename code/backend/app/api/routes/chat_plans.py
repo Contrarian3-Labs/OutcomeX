@@ -5,6 +5,7 @@ from app.api.deps import get_db
 from app.domain.benchmark_solutions import get_benchmark_solution
 from app.domain.models import ChatPlan
 from app.domain.planning import build_fast_recommended_plans
+from app.execution import ExecutionStrategy
 from app.runtime.cost_service import RuntimeCostService, get_runtime_cost_service
 from app.schemas.chat_plan import ChatPlanRequest, ChatPlanResponse, RecommendedPlanResponse
 from app.services.attachments import (
@@ -14,6 +15,25 @@ from app.services.attachments import (
 )
 
 router = APIRouter()
+
+
+def build_recommended_plans(  # noqa: PLR0913
+    *,
+    user_id: str,
+    chat_session_id: str,
+    user_message: str,
+    preferred_strategy: ExecutionStrategy | None,
+    input_files: tuple[str, ...],
+    planning_context_key: str = "",
+):
+    input_files
+    return build_fast_recommended_plans(
+        user_id=user_id,
+        chat_session_id=chat_session_id,
+        user_message=user_message,
+        preferred_strategy=preferred_strategy,
+        planning_context_key=planning_context_key,
+    )
 
 
 def _resolve_planning_prompt(payload: ChatPlanRequest) -> tuple[str, tuple[str, ...]]:
@@ -56,12 +76,13 @@ def create_chat_plan(
             attachment_session_id=payload.attachment_session_id,
             attachment_session_token=payload.attachment_session_token,
             attachment_ids=tuple(payload.attachment_ids),
-        ):
-            recommended_plans = build_fast_recommended_plans(
+        ) as resolved_input_files:
+            recommended_plans = build_recommended_plans(
                 user_id=payload.user_id,
                 chat_session_id=payload.chat_session_id,
                 user_message=planning_prompt,
                 preferred_strategy=solution.preferred_execution_strategy if solution else payload.mode,
+                input_files=resolved_input_files,
                 planning_context_key=planning_context_id,
             )
     except AttachmentResolutionError as exc:

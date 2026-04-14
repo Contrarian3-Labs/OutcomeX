@@ -77,7 +77,7 @@ def test_pay_order_by_adapter_uses_existing_order_id() -> None:
     assert write_result.contract_name == "OrderPaymentRouter"
     assert write_result.method_name == "payOrderByAdapter"
     assert write_result.payload["order_id"] == "1"
-    assert write_result.payload["amount"] == 1000
+    assert write_result.payload["amount"] == 1000 * 10_000
     assert write_result.payload["payment_token_address"] == "0x79aec4eea31d50792f61d1ca0733c18c89524c9e"
 
 
@@ -170,7 +170,7 @@ def test_writer_builds_usdt_direct_payment_call_spec() -> None:
     assert intent.contract_name == "OrderPaymentRouter"
     assert intent.method_name == "createOrderAndPayWithUSDT"
     assert intent.payload["currency"] == "USDT"
-    assert intent.payload["signing_standard"] == "permit2"
+    assert intent.payload["signing_standard"] == "erc20_approve"
     calldata = encode_contract_call(intent)
     assert calldata is not None
     assert calldata.startswith("0x3d961057")

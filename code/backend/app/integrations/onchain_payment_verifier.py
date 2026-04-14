@@ -62,7 +62,8 @@ class OnchainPaymentVerifier:
                 return self._failure(tx_hash=tx_hash_normalized, reason="wallet_mismatch", wallet_address=wallet_address)
 
             normalized_wallet = wallet_address.lower() if wallet_address is not None else None
-            expected_chain_amount = self._expected_chain_amount(payment)
+            expected_payment_amount = self._expected_chain_amount(payment)
+            expected_order_gross_amount = self._expected_order_gross_amount(order=order, payment=payment)
             payment_event = decode_payment_finalized_event(
                 receipt=receipt,
                 contract_address=self._contracts_registry.payment_router().contract_address,
@@ -81,7 +82,7 @@ class OnchainPaymentVerifier:
             expected_token = self._contracts_registry.payment_token(payment.currency.upper())
             if str(payment_event["token"]) != expected_token:
                 return self._failure(tx_hash=tx_hash_normalized, reason="payment_token_mismatch", wallet_address=wallet_address)
-            if payment_event.get("amount") != expected_chain_amount:
+            if payment_event.get("amount") != expected_payment_amount:
                 return self._failure(tx_hash=tx_hash_normalized, reason="payment_amount_mismatch", wallet_address=wallet_address)
             if normalized_wallet is not None and str(payment_event.get("buyer")) != normalized_wallet:
                 return self._failure(tx_hash=tx_hash_normalized, reason="buyer_mismatch", wallet_address=wallet_address)
@@ -107,7 +108,7 @@ class OnchainPaymentVerifier:
                     )
                 if order.onchain_machine_id and str(decoded_event.get("machine_id")) != str(order.onchain_machine_id):
                     return self._failure(tx_hash=tx_hash_normalized, reason="machine_id_mismatch", wallet_address=wallet_address)
-                if decoded_event.get("gross_amount") != expected_chain_amount:
+                if decoded_event.get("gross_amount") != expected_order_gross_amount:
                     return self._failure(tx_hash=tx_hash_normalized, reason="amount_mismatch", wallet_address=wallet_address)
                 if normalized_wallet is not None and decoded_event.get("buyer") != normalized_wallet:
                     return self._failure(tx_hash=tx_hash_normalized, reason="buyer_mismatch", wallet_address=wallet_address)
@@ -153,8 +154,18 @@ class OnchainPaymentVerifier:
         )
 
     @staticmethod
+    def _expected_order_gross_amount(*, order: Order, payment: Payment) -> int:
+        normalized_currency = payment.currency.upper()
+        if normalized_currency in {"USDC", "USDT"}:
+            return int(order.quoted_amount_cents)
+        return OnchainPaymentVerifier._expected_chain_amount(payment)
+
+    @staticmethod
     def _expected_chain_amount(payment: Payment) -> int:
-        if payment.currency.upper() != "PWR":
+        normalized_currency = payment.currency.upper()
+        if normalized_currency in {"USDC", "USDT"}:
+            return int(payment.amount_cents) * 10_000
+        if normalized_currency != "PWR":
             return int(payment.amount_cents)
         provider_payload = dict(payment.provider_payload or {})
         direct_intent_payload = dict(provider_payload.get("direct_intent_payload") or {})

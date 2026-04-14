@@ -24,10 +24,12 @@ class SpyOrderWriter:
         self.mark_paid_calls: list[dict] = []
 
     def create_order(self, order, *, buyer_wallet_address, gross_amount_override=None):
+        gross_amount = order.quoted_amount_cents if gross_amount_override is None else gross_amount_override
         self.create_order_calls.append(
             {
                 "order_id": order.id,
                 "buyer_wallet_address": buyer_wallet_address,
+                "gross_amount": gross_amount,
             }
         )
         return OrderWriteResult(
@@ -38,7 +40,7 @@ class SpyOrderWriter:
             contract_address="0x0000000000000000000000000000000000000134",
             method_name="createOrderByAdapter",
             idempotency_key="writer-create-order",
-            payload={"buyer": buyer_wallet_address, "machine_id": order.machine_id, "gross_amount": order.quoted_amount_cents},
+            payload={"buyer": buyer_wallet_address, "machine_id": order.machine_id, "gross_amount": gross_amount},
         )
 
     def mark_preview_ready(self, order):  # pragma: no cover - route noise for this test
@@ -67,7 +69,7 @@ class SpyOrderWriter:
             idempotency_key=f"writer-pay-order-{payment.id}",
             payload={
                 "order_id": order.onchain_order_id,
-                "amount": payment.amount_cents,
+                "amount": payment.amount_cents * 10_000,
                 "payment_token_address": "0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
             },
         )
@@ -147,6 +149,12 @@ def client(tmp_path) -> tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster,
     os.environ["OUTCOMEX_BUYER_WALLET_MAP_JSON"] = json.dumps(
         {"user-2": "0x2222222222222222222222222222222222222222"}
     )
+    os.environ["OUTCOMEX_HSP_APP_KEY"] = ""
+    os.environ["OUTCOMEX_HSP_APP_SECRET"] = ""
+    os.environ["OUTCOMEX_HSP_PAY_TO_ADDRESS"] = ""
+    os.environ["OUTCOMEX_HSP_MERCHANT_PRIVATE_KEY_PEM"] = ""
+    os.environ["OUTCOMEX_HSP_REDIRECT_URL"] = ""
+    os.environ["OUTCOMEX_HSP_SUPPORTED_CURRENCIES"] = "USDC,USDT"
     reset_settings_cache()
     reset_container_cache()
     spy_writer = SpyOrderWriter()
@@ -313,6 +321,7 @@ def test_hsp_webhook_is_idempotent_and_freezes_settlement_policy(
         {
             "order_id": order["id"],
             "buyer_wallet_address": "0x2222222222222222222222222222222222222222",
+            "gross_amount": 500,
         }
     ]
     assert spy_writer.pay_order_by_adapter_calls == [
@@ -384,6 +393,7 @@ def test_hsp_webhook_marks_authoritative_paid_projection_when_order_is_already_a
         {
             "order_id": order["id"],
             "buyer_wallet_address": "0x2222222222222222222222222222222222222222",
+            "gross_amount": 500,
         }
     ]
     assert spy_writer.pay_order_by_adapter_calls == [
@@ -559,6 +569,47 @@ def test_hsp_payment_intent_supports_usdt_checkout_and_success_webhook(
     assert order_after_payment.status_code == 200
     assert order_after_payment.json()["latest_success_payment_currency"] == "USDT"
     assert order_after_payment.json()["execution_metadata"]["authoritative_paid_projection"] is True
+
+
+def test_hsp_payment_intent_rejects_currencies_disabled_by_deployment(tmp_path) -> None:
+    db_path = tmp_path / "hsp-supported-currencies.db"
+    os.environ["OUTCOMEX_DATABASE_URL"] = f"sqlite+pysqlite:///{db_path.as_posix()}"
+    os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
+    os.environ["OUTCOMEX_BUYER_WALLET_MAP_JSON"] = json.dumps(
+        {"user-2": "0x2222222222222222222222222222222222222222"}
+    )
+    os.environ["OUTCOMEX_HSP_SUPPORTED_CURRENCIES"] = "USDT"
+    reset_settings_cache()
+    reset_container_cache()
+    spy_writer = SpyOrderWriter()
+    spy_broadcaster = SpyOnchainBroadcaster()
+    spy_sender = SpyTransactionSender()
+    app = create_app()
+    app.dependency_overrides[get_order_writer] = lambda: spy_writer
+    app.dependency_overrides[get_onchain_broadcaster] = lambda: spy_broadcaster
+    app.dependency_overrides[get_onchain_transaction_sender] = lambda: spy_sender
+    try:
+        with TestClient(app) as test_client:
+            machine = _create_machine(test_client)
+            usdc_order = _create_order(test_client, machine_id=machine["id"], quoted_amount_cents=500)
+            usdc_response = test_client.post(
+                f"/api/v1/payments/orders/{usdc_order['id']}/intent",
+                json={"amount_cents": 500, "currency": "USDC"},
+            )
+            assert usdc_response.status_code == 400
+            assert usdc_response.json()["detail"] == "HSP checkout for USDC is not enabled on this deployment (enabled: USDT)"
+
+            usdt_order = _create_order(test_client, machine_id=machine["id"], quoted_amount_cents=500)
+            usdt_response = test_client.post(
+                f"/api/v1/payments/orders/{usdt_order['id']}/intent",
+                json={"amount_cents": 500, "currency": "USDT"},
+            )
+            assert usdt_response.status_code == 201
+            assert usdt_response.json()["provider"] == "hsp"
+    finally:
+        os.environ.pop("OUTCOMEX_HSP_SUPPORTED_CURRENCIES", None)
+        reset_settings_cache()
+        reset_container_cache()
 
 
 def test_hsp_payment_intent_defaults_to_usdc_and_rejects_non_stablecoin_checkout_currency(

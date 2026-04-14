@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     hsp_network: str = "hashkey-testnet"
     hsp_pay_to_address: str = ""
     hsp_webhook_tolerance_seconds: int = 300
+    hsp_supported_currencies: str = "USDC,USDT"
+    hsp_poll_enabled: bool = True
+    hsp_poll_seconds: float = 5.0
     dashscope_api_key: str = ""
     dashscope_base_url: str = "https://dashscope-intl.aliyuncs.com"
     dashscope_compatible_base_url: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
+import time
 
 from app.core.config import get_settings
 from app.onchain.contracts_registry import ContractsRegistry
@@ -28,10 +29,12 @@ class OnchainBroadcaster:
         receipt_reader: ReceiptReader | None = None,
         require_live_receipt: bool = False,
         contracts_registry: ContractsRegistry | None = None,
+        receipt_wait_seconds: float = 10.0,
     ) -> None:
         self._receipt_reader = receipt_reader or get_receipt_reader()
         self._require_live_receipt = require_live_receipt
         self._contracts_registry = contracts_registry or ContractsRegistry()
+        self._receipt_wait_seconds = max(0.0, receipt_wait_seconds)
 
     def broadcast_create_order(self, *, write_result: OrderWriteResult) -> OnchainCreateOrderReceipt:
         return self._build_receipt(write_result=write_result, fallback_seed=write_result.idempotency_key)
@@ -40,7 +43,7 @@ class OnchainBroadcaster:
         return self._build_receipt(write_result=write_result, fallback_seed=f"paid:{write_result.idempotency_key}")
 
     def _build_receipt(self, *, write_result: OrderWriteResult, fallback_seed: str) -> OnchainCreateOrderReceipt:
-        receipt = self._receipt_reader.get_receipt(write_result.tx_hash)
+        receipt = self._wait_for_receipt(write_result.tx_hash)
         if receipt is not None:
             decoded_event = None
             for contract_address in (
@@ -81,6 +84,18 @@ class OnchainBroadcaster:
             block_number=self._derive_block_number(seed=fallback_seed),
         )
 
+    def _wait_for_receipt(self, tx_hash: str):
+        if not self._require_live_receipt:
+            return self._receipt_reader.get_receipt(tx_hash)
+
+        deadline = time.time() + self._receipt_wait_seconds
+        while time.time() < deadline:
+            receipt = self._receipt_reader.get_receipt(tx_hash)
+            if receipt is not None:
+                return receipt
+            time.sleep(0.25)
+        return self._receipt_reader.get_receipt(tx_hash)
+
     @staticmethod
     def _derive_onchain_order_id(*, seed: str) -> str:
         digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
@@ -95,4 +110,7 @@ class OnchainBroadcaster:
 @lru_cache
 def get_onchain_broadcaster() -> OnchainBroadcaster:
     settings = get_settings()
-    return OnchainBroadcaster(require_live_receipt=bool(settings.onchain_rpc_url.strip()))
+    return OnchainBroadcaster(
+        require_live_receipt=bool(settings.onchain_rpc_url.strip()),
+        receipt_wait_seconds=settings.onchain_receipt_timeout_seconds,
+    )

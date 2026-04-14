@@ -27,7 +27,7 @@ Usage: $(basename "$0") [--prepare-only]
 Starts a deterministic local browser demo stack for OutcomeX:
 - fresh Anvil chain on 127.0.0.1:8545
 - local contract deployment
-- buyer HSK/PWR/USDC/USDT funding + machine mint seed
+- three demo owner wallets funded with HSK/PWR/USDT + machine mint seed
 - backend on 127.0.0.1:8787
 - frontend on 127.0.0.1:8080
 
@@ -224,17 +224,20 @@ cat <<EOF
 Local browser demo is ready.
 
 Manual testing checklist:
-- Buyer-1 (0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC) is pre-funded with 10,000 HSK, 10,000 PWR, 10,000 USDC, and 10,000 USDT; use this wallet for purchase flows.
+- `buyer`, `owner-1`, and `owner-2` wallets are each pre-funded with 10 HSK, 10,000 PWR, and 100 USDT; use `buyer` to buy the seeded machines.
 - Owner-1 owns machine-owner-1 and the machine stays unlisted so you can test listing creation and delisting flows.
-- Owner-2 and owner-3 each own a machine with active onchain secondary listings seeded during startup.
+- Owner-2 owns two machines with active onchain secondary listings seeded in USDT during startup.
 - Primary issuance stock is seeded to 10 so primary issuance flows remain available after seeding.
 
 Seed summary:
-- Buyer: buyer-1 (10,000 HSK / 10,000 PWR / 10,000 USDC / 10,000 USDT, wallet 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC)
+- Demo wallets:
+  - buyer (10 HSK / 10,000 PWR / 100 USDT, wallet 0xd9180752dfdC003Fa5bD2a4bb9b0Ead2E2149CdB)
+  - owner-1 (10 HSK / 10,000 PWR / 100 USDT, wallet 0x0A4401376B024E72cA9481192c88F4d4eb80cDf8)
+  - owner-2 (10 HSK / 10,000 PWR / 100 USDT, wallet 0x1feDb8e927b9A1c9878c8C9e0beA518Fc96A9265)
 - Owners:
   - owner-1 → machine-owner-1 (unlisted)
-  - owner-2 → machine-owner-2 (active USDC listing, 1,250,000 units)
-  - owner-3 → machine-owner-3 (active USDC listing, 1,550,000 units)
+  - owner-2 → machine-owner-2 (active USDT listing, 1,250,000 units)
+  - owner-2 → machine-owner-3 (active USDT listing, 1,550,000 units)
 - Primary issuance stock: 10
 
 URLs:
@@ -243,10 +246,10 @@ URLs:
 - Anvil:    http://127.0.0.1:8545
 
 Suggested wallets on Anvil:
-- buyer-1:  0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC
-- owner-1:  0x70997970C51812dc3A010C7d01b50e0d17dc79C8
-- owner-2:  0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65
-- owner-3:  0x90F79bf6EB2c4f870365E785982E1f101E93b906
+- buyer:    0xd9180752dfdC003Fa5bD2a4bb9b0Ead2E2149CdB
+- owner-1:  0x0A4401376B024E72cA9481192c88F4d4eb80cDf8
+- owner-2:  0x1feDb8e927b9A1c9878c8C9e0beA518Fc96A9265
+
 
 Logs:
 - $ANVIL_LOG

@@ -71,7 +71,7 @@ class SpyOrderWriter:
             }
         elif currency == "USDT":
             method_name = "createOrderAndPayWithUSDT"
-            signing_standard = "permit2"
+            signing_standard = "erc20_approve"
             payload = {
                 "client_order_id": order.id,
                 "machine_id": order.machine_id,
@@ -225,13 +225,6 @@ def _seed_legacy_direct_payment(
                     "from": (wallet_address or "0x00000000000000000000000000000000000000aa").lower(),
                 }
             }
-        elif currency == "USDT":
-            signing_request = {
-                "message": {
-                    "nonce": "12345",
-                    "deadline": "1712235000",
-                }
-            }
         else:
             signing_request = None
         payment.provider_reference = direct_intent.method_name
@@ -331,7 +324,7 @@ def test_finalize_usdc_direct_payment_intent_returns_wallet_envelope(
     assert payload["submit_payload"]["s"] == "0x" + "22" * 32
 
 
-def test_finalize_usdt_direct_payment_intent_returns_wallet_envelope(
+def test_finalize_usdt_direct_payment_intent_is_not_supported_without_signing_request(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainPaymentVerifier],
 ) -> None:
     test_client, spy_writer, _spy_verifier = client
@@ -344,14 +337,8 @@ def test_finalize_usdt_direct_payment_intent_returns_wallet_envelope(
         json={"signature": "0x" + "22" * 65},
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["method_name"] == "createOrderAndPayWithUSDT"
-    assert payload["calldata"].startswith("0x3d961057")
-    assert payload["submit_payload"]["signature"] == "0x" + "22" * 65
-    assert payload["submit_payload"]["to"] == payload["contract_address"]
-    assert payload["submit_payload"]["data"] == payload["calldata"]
-    assert payload["submit_payload"]["value"] == "0x0"
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Direct payment signing request not found"
 
 
 def test_sync_onchain_payment_marks_paid_projection_and_records_correlation(

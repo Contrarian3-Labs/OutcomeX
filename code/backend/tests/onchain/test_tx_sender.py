@@ -102,6 +102,9 @@ def test_python_sender_replaces_tx_hash_for_create_order_by_adapter() -> None:
     assert isinstance(estimated_tx, dict)
     assert estimated_tx["to"] == "0x0000000000000000000000000000000000000134"
     assert estimated_tx["from"] == "0x9999999999999999999999999999999999999999"
+    assert estimated_tx["nonce"] == "0x3"
+    assert estimated_tx["gasPrice"] == "0x4a817c800"
+    assert estimated_tx["value"] == "0x0"
     assert str(estimated_tx["data"]).startswith(CREATE_ORDER_BY_ADAPTER_SELECTOR)
     assert account.signed_txs[0]["gas"] == 21000
     assert result.tx_hash == "0xlivehash"

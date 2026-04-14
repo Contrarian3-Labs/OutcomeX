@@ -121,7 +121,7 @@ contract MachineMarketplaceTest is TestBase {
         uint256 orderId = orderBook.createOrder(machineId, 500);
 
         vm.prank(PAYMENT_ADAPTER);
-        orderBook.markOrderPaid(orderId, true, true, address(usdc));
+        orderBook.markOrderPaid(orderId, true, true, address(usdc), 500);
 
         vm.prank(SELLER);
         machineAsset.approve(address(marketplace), machineId);
@@ -144,7 +144,7 @@ contract MachineMarketplaceTest is TestBase {
         uint256 orderId = orderBook.createOrder(machineId, 500);
 
         vm.prank(PAYMENT_ADAPTER);
-        orderBook.markOrderPaid(orderId, true, true, address(usdc));
+        orderBook.markOrderPaid(orderId, true, true, address(usdc), 500);
 
         vm.prank(BUYER);
         usdc.approve(address(marketplace), 1_000_000);

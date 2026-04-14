@@ -72,8 +72,16 @@ def _payment_token_decimals(address: str | None) -> int | None:
 def _claim_amount_to_cents(payload: RevenueClaimedEvent) -> int:
     if payload.claim_kind == "machine_revenue":
         return pwr_wei_to_cents(payload.amount_wei)
-    if _payment_token_symbol(payload.token_address) == "PWR":
+
+    symbol = _payment_token_symbol(payload.token_address)
+    if symbol == "PWR":
         return pwr_wei_to_cents(payload.amount_wei)
+
+    decimals = _payment_token_decimals(payload.token_address)
+    if symbol in {"USDC", "USDT"} and decimals is not None:
+        amount_cents = (Decimal(payload.amount_wei) * Decimal(100)) / (Decimal(10) ** decimals)
+        return int(amount_cents.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
     return payload.amount_wei
 
 

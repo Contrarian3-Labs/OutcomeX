@@ -81,7 +81,6 @@ class LocalAccount:
 class Deployment:
     usdc: str
     usdt: str
-    permit2: str
     pwr: str
     machine_asset: str
     revenue_vault: str
@@ -219,7 +218,6 @@ def _deploy_contracts(*, rpc_url: str, admin: LocalAccount, treasury: LocalAccou
         for name in (
             "MockUSDCWithAuthorization",
             "MockUSDT",
-            "MockPermit2",
             "PWRToken",
             "MachineAssetNFT",
             "RevenueVault",
@@ -231,12 +229,11 @@ def _deploy_contracts(*, rpc_url: str, admin: LocalAccount, treasury: LocalAccou
         raise RuntimeError("deployment_addresses_incomplete")
     raw_return = str(payload.get("returns", {}).get("deployed", {}).get("value", ""))
     pieces = [part.strip() for part in raw_return.strip("() ").split(",") if part.strip()]
-    if len(pieces) < 10:
+    if len(pieces) < 9:
         raise RuntimeError(f"deployment_return_unexpected:{raw_return}")
     return Deployment(
         usdc=addresses["MockUSDCWithAuthorization"],
         usdt=addresses["MockUSDT"],
-        permit2=addresses["MockPermit2"],
         pwr=addresses["PWRToken"],
         machine_asset=addresses["MachineAssetNFT"],
         revenue_vault=addresses["RevenueVault"],
@@ -272,7 +269,6 @@ def _configure_backend_env(*, deployment: Deployment, admin: LocalAccount, buyer
             "OUTCOMEX_ONCHAIN_SETTLEMENT_CONTROLLER_ADDRESS": deployment.settlement_controller,
             "OUTCOMEX_ONCHAIN_REVENUE_VAULT_ADDRESS": deployment.revenue_vault,
             "OUTCOMEX_ONCHAIN_PWR_TOKEN_ADDRESS": deployment.pwr,
-            "OUTCOMEX_ONCHAIN_PERMIT2_ADDRESS": deployment.permit2,
             "OUTCOMEX_ONCHAIN_USDC_ADDRESS": deployment.usdc,
             "OUTCOMEX_ONCHAIN_USDT_ADDRESS": deployment.usdt,
             "OUTCOMEX_ONCHAIN_BROADCASTER_PRIVATE_KEY": admin.private_key,
@@ -287,6 +283,12 @@ def _configure_backend_env(*, deployment: Deployment, admin: LocalAccount, buyer
             "OUTCOMEX_ONCHAIN_INDEXER_POLL_SECONDS": "0.2",
             "OUTCOMEX_ONCHAIN_INDEXER_CONFIRMATION_DEPTH": "0",
             "OUTCOMEX_EXECUTION_SYNC_ENABLED": "false",
+        "OUTCOMEX_HSP_APP_KEY": "ak_test",
+        "OUTCOMEX_HSP_APP_SECRET": "dev-key",
+        "OUTCOMEX_HSP_PAY_TO_ADDRESS": treasury.address,
+        "OUTCOMEX_HSP_REDIRECT_URL": "https://outcomex.local/mock-hsp",
+        "OUTCOMEX_HSP_SUPPORTED_CURRENCIES": "USDC,USDT",
+        "OUTCOMEX_HSP_MERCHANT_PRIVATE_KEY_PEM": "-----BEGIN EC PRIVATE KEY-----\nMHQCAQEEIEf8gQYenT5tskecihwTBGvrfqSTA3hRrunNTOADm/jJoAcGBSuBBAAK\noUQDQgAEOas7ZFkne5CsJx2VH70raQ4h9vSAmPe3Gtw2WKoz4yicVfBrPcc2LQHt\nBKXyZPxdDRrU0XLRNQJZxluyoE0Vaw==\n-----END EC PRIVATE KEY-----",
         }
     )
 
@@ -298,6 +300,7 @@ def _import_backend_modules() -> dict[str, Any]:
     from app.main import create_app
     from app.onchain.lifecycle_service import reset_onchain_lifecycle_service_cache
     from app.domain.models import Machine, Order
+    from app.integrations.hsp_adapter import HSPMerchantOrder
     from app.onchain.order_writer import OrderWriter
     from app.onchain.tx_sender import encode_contract_call
 
@@ -311,6 +314,7 @@ def _import_backend_modules() -> dict[str, Any]:
         "Order": Order,
         "OrderWriter": OrderWriter,
         "encode_contract_call": encode_contract_call,
+        "HSPMerchantOrder": HSPMerchantOrder,
     }
 
 
@@ -514,6 +518,16 @@ def main() -> None:
         real_indexer = container.onchain_indexer
         container.onchain_indexer = _ManualIndexerProxy()
         app = modules["create_app"]()
+        container.hsp_adapter.create_payment_intent = lambda order_id, amount_cents, currency, expires_at: modules["HSPMerchantOrder"](
+            provider="hsp",
+            merchant_order_id=f"merchant-{order_id}",
+            flow_id=f"flow-{order_id}",
+            provider_reference=f"PAY-REQ-{order_id}",
+            payment_url=f"https://outcomex.local/mock-hsp/{order_id}",
+            amount_cents=amount_cents,
+            currency=currency.upper(),
+            provider_payload={"mode": "mock-e2e", "expires_at": expires_at.isoformat() if expires_at else None},
+        )
         with TestClient(app) as client:
             if not getattr(real_indexer, "status", None) or not real_indexer.status.enabled:
                 raise RuntimeError(f"indexer_not_live:{getattr(real_indexer, 'status', None)}")

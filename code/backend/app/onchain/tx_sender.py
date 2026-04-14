@@ -136,7 +136,15 @@ class PythonTransactionSender:
             "gasPrice": gas_price,
             "value": 0,
         }
-        tx["gas"] = int(self._rpc_client.call("eth_estimateGas", [tx]), 16)
+        estimate_tx = {
+            "to": tx["to"],
+            "from": tx["from"],
+            "data": tx["data"],
+            "nonce": hex(nonce),
+            "gasPrice": hex(gas_price),
+            "value": "0x0",
+        }
+        tx["gas"] = int(self._rpc_client.call("eth_estimateGas", [estimate_tx]), 16)
 
         signed = account.sign_transaction(tx)
         raw_tx = self._raw_transaction_hex(signed)
@@ -173,7 +181,8 @@ class PythonTransactionSender:
             raw_tx = getattr(signed, "rawTransaction", None)
         if raw_tx is None:
             raise RuntimeError("signed_transaction_missing_raw_bytes")
-        return raw_tx.hex() if hasattr(raw_tx, "hex") else str(raw_tx)
+        encoded = raw_tx.hex() if hasattr(raw_tx, "hex") else str(raw_tx)
+        return encoded if str(encoded).startswith("0x") else f"0x{encoded}"
 
     @classmethod
     def _encode_method_call(cls, *, method_name: str, payload: dict[str, Any]) -> str:

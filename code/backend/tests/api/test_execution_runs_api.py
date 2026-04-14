@@ -247,6 +247,11 @@ def client(tmp_path) -> tuple[TestClient, _ExecutionServiceStub]:
     os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
     os.environ["OUTCOMEX_EXECUTION_SYNC_ENABLED"] = "false"
     os.environ["OUTCOMEX_BUYER_WALLET_MAP_JSON"] = '{"user-1":"0x00000000000000000000000000000000000000aa"}'
+    os.environ["OUTCOMEX_HSP_APP_KEY"] = ""
+    os.environ["OUTCOMEX_HSP_APP_SECRET"] = ""
+    os.environ["OUTCOMEX_HSP_PAY_TO_ADDRESS"] = ""
+    os.environ["OUTCOMEX_HSP_MERCHANT_PRIVATE_KEY_PEM"] = ""
+    os.environ["OUTCOMEX_HSP_REDIRECT_URL"] = ""
     reset_settings_cache()
     reset_container_cache()
     app = create_app()

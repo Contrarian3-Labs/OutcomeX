@@ -17,7 +17,7 @@ Included:
 Implemented and tested:
 
 - `USDC` direct pay via EIP-3009-style authorization
-- `USDT` direct pay via Permit2-style transfer
+- `USDT` direct pay via ERC-20 approve + transferFrom
 - `PWR` direct pay via ERC-20 approve + transferFrom
 - real token escrow into `SettlementController`
 - real refund claims in the original payment token
@@ -44,7 +44,6 @@ The repository now includes a local deployment script that deploys:
 
 - `MockUSDCWithAuthorization`
 - `MockUSDT`
-- `MockPermit2`
 - `PWRToken`
 - `MachineAssetNFT`
 - `RevenueVault`

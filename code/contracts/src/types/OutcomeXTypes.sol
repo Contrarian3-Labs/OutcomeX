@@ -39,6 +39,7 @@ struct SettlementInput {
     address buyer;
     address settlementBeneficiary;
     address paymentToken;
+    uint256 paymentAmount;
     uint256 grossAmount;
     bool dividendEligible;
 }

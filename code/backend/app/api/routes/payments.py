@@ -12,6 +12,7 @@ from app.core.container import Container
 from app.core.config import get_settings
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.enums import PaymentState
+from app.integrations.hsp_adapter import HSPWebhookEvent
 from app.domain.models import Machine, Order, Payment, utc_now
 from app.domain.order_truth import set_authoritative_order_truth
 from app.domain.rules import has_sufficient_payment, is_dividend_eligible
@@ -20,6 +21,7 @@ from app.integrations.onchain_broadcaster import OnchainBroadcaster, get_onchain
 from app.integrations.onchain_payment_verifier import OnchainPaymentVerifier, get_onchain_payment_verifier
 from app.onchain.contracts_registry import ContractsRegistry
 from app.onchain.order_writer import OrderWriter, get_order_writer
+from app.onchain.receipts import get_receipt_reader
 from app.onchain.tx_sender import TransactionSender, get_onchain_transaction_sender
 from app.onchain.tx_sender import encode_contract_call
 from app.runtime.cost_service import RuntimeCostService, get_runtime_cost_service
@@ -30,6 +32,7 @@ from app.schemas.payment import (
     DirectPaymentIntentResponse,
     DirectPaymentSyncRequest,
     DirectPaymentSyncResponse,
+    HSPPaymentSyncResponse,
     MockPaymentConfirmRequest,
     MockPaymentConfirmResponse,
     PaymentIntentRequest,
@@ -42,6 +45,223 @@ PWR_WEI_MULTIPLIER = Decimal("1000000000000000000")
 
 TERMINAL_PAYMENT_STATES = {PaymentState.SUCCEEDED, PaymentState.FAILED, PaymentState.REFUNDED}
 HSP_STABLECOIN_CURRENCIES = {"USDC", "USDT"}
+SUCCESS_STATUSES = {"completed", "confirmed", "succeeded", "payment-successful"}
+FAILED_STATUSES = {"cancelled", "failed", "rejected", "payment-failed"}
+PENDING_STATUSES = {"created", "pending", "processing", "payment-included", "payment-required"}
+ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+
+def _map_hsp_status(status_value: str) -> PaymentState:
+    normalized = status_value.lower()
+    if normalized in SUCCESS_STATUSES:
+        return PaymentState.SUCCEEDED
+    if normalized in FAILED_STATUSES:
+        return PaymentState.FAILED
+    if normalized in PENDING_STATUSES:
+        return PaymentState.PENDING
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported HSP status")
+
+
+def _normalize_hsp_tx_hash(raw_tx_hash: str | None) -> str | None:
+    if raw_tx_hash is None:
+        return None
+    normalized = raw_tx_hash.strip().lower()
+    return normalized or None
+
+
+def _stablecoin_smallest_units_from_cents(amount_cents: int) -> int:
+    return amount_cents * 10_000
+
+
+def _hsp_receipt_confirms_payment(*, payment: Payment, event: HSPWebhookEvent, container: Container) -> bool:
+    tx_hash = _normalize_hsp_tx_hash(event.tx_hash)
+    if tx_hash is None or not tx_hash.startswith("0x"):
+        return False
+
+    receipt = get_receipt_reader().get_receipt(tx_hash)
+    if receipt is None or receipt.status != 1:
+        return False
+
+    token_address = container.contracts_registry.payment_token(payment.currency.upper()).lower()
+    expected_amount = _stablecoin_smallest_units_from_cents(payment.amount_cents)
+
+    for raw_log in receipt.metadata.get("logs", []):
+        topics = [str(topic).lower() for topic in raw_log.get("topics", [])]
+        if not topics or topics[0] != ERC20_TRANSFER_TOPIC:
+            continue
+        if str(raw_log.get("address", "")).lower() != token_address:
+            continue
+        try:
+            amount = int(str(raw_log.get("data", "0x0")), 16)
+        except ValueError:
+            continue
+        if amount == expected_amount:
+            return True
+    return False
+
+
+def _effective_hsp_mapped_state(*, payment: Payment, event: HSPWebhookEvent, container: Container) -> PaymentState:
+    mapped_state = _map_hsp_status(event.status)
+    if mapped_state == PaymentState.PENDING and event.status.lower() == "payment-included":
+        if _hsp_receipt_confirms_payment(payment=payment, event=event, container=container):
+            return PaymentState.SUCCEEDED
+    return mapped_state
+
+
+def _query_hsp_payment_event(payment: Payment, *, container: Container) -> HSPWebhookEvent | None:
+    if payment.provider != "hsp" or not container.hsp_adapter.is_live_configured:
+        return None
+    if payment.provider_reference:
+        return container.hsp_adapter.query_payment_status(
+            payment_request_id=payment.provider_reference,
+            fallback_amount_cents=payment.amount_cents,
+            fallback_currency=payment.currency,
+        )
+    if payment.flow_id:
+        return container.hsp_adapter.query_payment_status(
+            flow_id=payment.flow_id,
+            fallback_amount_cents=payment.amount_cents,
+            fallback_currency=payment.currency,
+        )
+    if payment.merchant_order_id:
+        return container.hsp_adapter.query_payment_status(
+            cart_mandate_id=payment.merchant_order_id,
+            fallback_amount_cents=payment.amount_cents,
+            fallback_currency=payment.currency,
+        )
+    return None
+
+
+def _apply_hsp_payment_event(
+    payment: Payment,
+    *,
+    event: HSPWebhookEvent,
+    db: Session,
+    container: Container,
+    order_writer: OrderWriter,
+    onchain_broadcaster: OnchainBroadcaster,
+    tx_sender: TransactionSender,
+) -> PaymentState:
+    if event.amount_cents is not None and event.amount_cents != payment.amount_cents:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="HSP payment amount mismatch")
+    if event.currency is not None and event.currency != payment.currency.upper():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="HSP payment currency mismatch")
+
+    mapped_state = _effective_hsp_mapped_state(payment=payment, event=event, container=container)
+    if mapped_state == PaymentState.SUCCEEDED and payment.state != PaymentState.SUCCEEDED:
+        normalized_tx_hash = _normalize_hsp_tx_hash(event.tx_hash)
+        if normalized_tx_hash is None or not normalized_tx_hash.startswith("0x"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Successful HSP payment must include tx signature",
+            )
+        reused_tx = db.scalar(
+            select(Payment.id).where(
+                Payment.id != payment.id,
+                Payment.state == PaymentState.SUCCEEDED,
+                func.lower(Payment.callback_tx_hash) == normalized_tx_hash,
+            )
+        )
+        if reused_tx is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="HSP tx signature already used by another payment",
+            )
+        order = db.get(Order, payment.order_id)
+        if order is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+        _ensure_onchain_order_anchor(
+            order=order,
+            container=container,
+            order_writer=order_writer,
+            onchain_broadcaster=onchain_broadcaster,
+            tx_sender=tx_sender,
+            db=db,
+            unresolved_wallet_detail="Buyer wallet address unresolved for HSP settlement",
+        )
+        write_result = order_writer.pay_order_by_adapter(order, payment)
+        broadcasted_write = tx_sender.send(write_result)
+        create_paid_receipt = onchain_broadcaster.broadcast_create_paid_order(write_result=broadcasted_write)
+        db.refresh(order)
+        db.refresh(payment)
+        if order.onchain_order_id is None:
+            _backfill_order_chain_anchor_from_receipt(order, create_paid_receipt)
+        _mark_authoritative_paid_projection(
+            order,
+            order_status="PAID",
+            event_id=create_paid_receipt.event_id,
+        )
+        db.add(order)
+
+    _apply_payment_state(payment, state=mapped_state, db=db, order_writer=order_writer, write_chain=False)
+    payment.callback_event_id = event.event_id
+    payment.callback_state = event.status
+    payment.callback_received_at = utc_now()
+    payment.callback_tx_hash = _normalize_hsp_tx_hash(event.tx_hash)
+    db.add(payment)
+    return mapped_state
+
+
+def sync_hsp_payment(
+    payment: Payment,
+    *,
+    db: Session,
+    container: Container,
+    order_writer: OrderWriter,
+    onchain_broadcaster: OnchainBroadcaster,
+    tx_sender: TransactionSender,
+) -> tuple[bool, str | None]:
+    event = _query_hsp_payment_event(payment, container=container)
+    if event is None:
+        return False, None
+    _apply_hsp_payment_event(
+        payment,
+        event=event,
+        db=db,
+        container=container,
+        order_writer=order_writer,
+        onchain_broadcaster=onchain_broadcaster,
+        tx_sender=tx_sender,
+    )
+    db.commit()
+    return True, event.status
+
+
+def sync_pending_hsp_payments_once(*, session_factory, container: Container, limit: int = 50) -> int:
+    if not container.hsp_adapter.is_live_configured:
+        return 0
+    synced = 0
+    order_writer = get_order_writer()
+    onchain_broadcaster = get_onchain_broadcaster()
+    tx_sender = get_onchain_transaction_sender()
+    with session_factory() as db:
+        payments = list(
+            db.scalars(
+                select(Payment)
+                .where(
+                    Payment.provider == "hsp",
+                    Payment.state == PaymentState.PENDING,
+                )
+                .order_by(Payment.created_at.asc())
+                .limit(limit)
+            )
+        )
+        for payment in payments:
+            try:
+                polled, _ = sync_hsp_payment(
+                    payment,
+                    db=db,
+                    container=container,
+                    order_writer=order_writer,
+                    onchain_broadcaster=onchain_broadcaster,
+                    tx_sender=tx_sender,
+                )
+            except Exception:
+                db.rollback()
+                continue
+            if polled:
+                synced += 1
+    return synced
 
 
 def _ensure_demo_write_allowed(*, detail: str) -> None:
@@ -130,10 +350,10 @@ def _build_direct_signing_request(
     chain_id: int,
     permit2_address: str,
 ) -> dict[str, Any] | None:
-    settings = get_settings()
-    if currency == "PWR":
+    if currency in {"PWR", "USDT"}:
         return None
     if currency == "USDC":
+        settings = get_settings()
         if not buyer_wallet_address:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -176,41 +396,7 @@ def _build_direct_signing_request(
                 "nonce": nonce,
             },
         }
-    return {
-        "kind": "eip712",
-        "primaryType": "PermitTransferFrom",
-        "domain": {
-            "name": settings.onchain_permit2_name,
-            "chainId": chain_id,
-            "verifyingContract": permit2_address,
-        },
-        "types": {
-            "EIP712Domain": [
-                {"name": "name", "type": "string"},
-                {"name": "chainId", "type": "uint256"},
-                {"name": "verifyingContract", "type": "address"},
-            ],
-            "PermitTransferFrom": [
-                {"name": "permitted", "type": "TokenPermissions"},
-                {"name": "spender", "type": "address"},
-                {"name": "nonce", "type": "uint256"},
-                {"name": "deadline", "type": "uint256"},
-            ],
-            "TokenPermissions": [
-                {"name": "token", "type": "address"},
-                {"name": "amount", "type": "uint256"},
-            ],
-        },
-        "message": {
-            "permitted": {
-                "token": token_address,
-                "amount": str(amount_cents),
-            },
-            "spender": router_address,
-            "nonce": str(secrets.randbits(128)),
-            "deadline": str(int((utc_now() + timedelta(minutes=30)).timestamp())),
-        },
-    }
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported direct payment currency")
 
 
 def _direct_wallet_submit_payload(direct_intent) -> tuple[str, dict[str, Any]]:
@@ -381,7 +567,7 @@ def _ensure_onchain_order_anchor(
     response_model=PaymentIntentResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Create HSP stablecoin checkout",
-    description="Formal stablecoin checkout path for OutcomeX. Supported stablecoins are USDC and USDT via HSP.",
+    description="Formal stablecoin checkout path for OutcomeX. Available stablecoins depend on the deployed HSP app configuration.",
 )
 def create_payment_intent(
     order_id: str,
@@ -402,6 +588,12 @@ def create_payment_intent(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="HSP checkout only supports USDC or USDT stablecoins",
+        )
+    if not container.hsp_adapter.supports_currency(currency):
+        enabled = ", ".join(container.hsp_adapter.supported_currencies) or "none"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"HSP checkout for {currency} is not enabled on this deployment (enabled: {enabled})",
         )
 
     if payload.amount_cents != order.quoted_amount_cents:
@@ -631,15 +823,6 @@ def finalize_direct_payment_intent(
                 "s": s,
             }
         )
-    elif currency == "USDT":
-        message = signing_request["message"]
-        direct_intent.payload.update(
-            {
-                "permit_nonce": message["nonce"],
-                "deadline": message["deadline"],
-                "signature": _normalize_signature(payload.signature),
-            }
-        )
     else:  # pragma: no cover
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported direct payment currency")
 
@@ -726,6 +909,39 @@ def sync_onchain_payment(
         state=payment.state,
         tx_hash=verification.tx_hash,
         synced_onchain=True,
+    )
+
+
+@router.post("/{payment_id}/sync-hsp", response_model=HSPPaymentSyncResponse)
+def sync_hsp_payment_status(
+    payment_id: str,
+    db: Session = Depends(get_db),
+    container: Container = Depends(get_dependency_container),
+    order_writer: OrderWriter = Depends(get_order_writer),
+    onchain_broadcaster: OnchainBroadcaster = Depends(get_onchain_broadcaster),
+    tx_sender: TransactionSender = Depends(get_onchain_transaction_sender),
+) -> HSPPaymentSyncResponse:
+    payment = db.get(Payment, payment_id)
+    if payment is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found")
+    if payment.provider != "hsp":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Payment is not an HSP payment")
+
+    polled, remote_status = sync_hsp_payment(
+        payment,
+        db=db,
+        container=container,
+        order_writer=order_writer,
+        onchain_broadcaster=onchain_broadcaster,
+        tx_sender=tx_sender,
+    )
+    db.refresh(payment)
+    return HSPPaymentSyncResponse(
+        payment_id=payment.id,
+        state=payment.state,
+        remote_status=remote_status,
+        callback_event_id=payment.callback_event_id,
+        polled=polled,
     )
 
 

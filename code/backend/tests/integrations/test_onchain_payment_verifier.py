@@ -174,7 +174,7 @@ def test_verifier_prefers_live_receipt_when_available() -> None:
                             order_id=42,
                             payer=BUYER_ADDRESS,
                             token=USDC_ADDRESS,
-                            amount=1000,
+                            amount=1000 * 10_000,
                         ),
                     ]
                 },
@@ -275,7 +275,7 @@ def test_verifier_rejects_machine_id_mismatch_from_order_created_event() -> None
                             order_id=42,
                             payer=BUYER_ADDRESS,
                             token=USDC_ADDRESS,
-                            amount=1000,
+                            amount=1000 * 10_000,
                         ),
                     ]
                 },
@@ -314,7 +314,7 @@ def test_verifier_rejects_payment_token_mismatch_from_router_event() -> None:
                             order_id=42,
                             payer=BUYER_ADDRESS,
                             token=USDT_ADDRESS,
-                            amount=1000,
+                            amount=1000 * 10_000,
                         ),
                     ]
                 },

@@ -429,6 +429,39 @@ def test_list_machine_revenue_projects_claimed_and_claimable_per_entry_fifo(clie
     assert newer_entry["claimable_cents"] == 250
 
 
+def test_list_machine_revenue_maps_null_token_machine_claim_to_pwr_fields(client: TestClient) -> None:
+    owner_user_id = "owner-machine-pwr-null-token"
+    machine = _seed_machine_with_revenue(owner_user_id=owner_user_id, machine_share_cents=126)
+    container = get_container()
+    with container.session_factory() as db:
+        db.add(
+            SettlementClaimRecord(
+                event_id="evt-machine-null-token-pwr",
+                claim_kind="machine_revenue",
+                claimant_user_id=owner_user_id,
+                account_address="0xownerpwr",
+                token_address=None,
+                amount_cents=126,
+                amount_wei="5040000000000000000",
+                tx_hash="0xmachine-null-token-pwr",
+                machine_id=machine.id,
+                claimed_at=datetime.now(timezone.utc),
+            )
+        )
+        db.commit()
+
+    response = client.get(f"/api/v1/revenue/machines/{machine.id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["claimed_cents"] == 126
+    assert payload[0]["claimable_cents"] == 0
+    assert payload[0]["machine_share_pwr"] == 5.04
+    assert payload[0]["claimed_pwr"] == 5.04
+    assert payload[0]["claimable_pwr"] == 0.0
+
+
 def test_platform_overview_reports_projected_claimed_and_claimable_by_currency(client: TestClient) -> None:
     owner_user_id = "owner-platform-test"
     _seed_machine_with_revenue(owner_user_id=owner_user_id, machine_share_cents=900, payment_currency="USDC")
@@ -459,5 +492,4 @@ def test_platform_overview_reports_projected_claimed_and_claimable_by_currency(c
     assert payload["claimable_cents"] == 60
     assert payload["claim_history"][0]["claim_kind"] == "platform_revenue"
     assert payload["claim_history"][0]["amount_cents"] == 40
-
 

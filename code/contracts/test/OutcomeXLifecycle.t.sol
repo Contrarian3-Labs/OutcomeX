@@ -69,7 +69,7 @@ contract OutcomeXLifecycleTest is TestBase {
         uint256 orderId = orderBook.createOrder(machineId, 1_000);
 
         vm.prank(PAYMENT_ADAPTER);
-        orderBook.markOrderPaid(orderId, true, false, address(0));
+        orderBook.markOrderPaid(orderId, true, false, address(0), 1_000);
 
         vm.prank(MACHINE_OWNER);
         orderBook.markPreviewReady(orderId, true);
@@ -112,7 +112,7 @@ contract OutcomeXLifecycleTest is TestBase {
         uint256 orderId = orderBook.createOrder(machineId, 1_000);
 
         vm.prank(PAYMENT_ADAPTER);
-        orderBook.markOrderPaid(orderId, true, false, address(0));
+        orderBook.markOrderPaid(orderId, true, false, address(0), 1_000);
 
         vm.prank(MACHINE_OWNER);
         orderBook.markPreviewReady(orderId, true);
@@ -145,7 +145,7 @@ contract OutcomeXLifecycleTest is TestBase {
         uint256 orderId = orderBook.createOrder(machineId, 500);
 
         vm.prank(PAYMENT_ADAPTER);
-        orderBook.markOrderPaid(orderId, true, true, address(0));
+        orderBook.markOrderPaid(orderId, true, true, address(0), 500);
 
         vm.startPrank(MACHINE_OWNER);
         vm.expectRevert(abi.encodeWithSelector(TransferGuardBlocked.selector, machineId, orderBook.REASON_ACTIVE_TASK()));
@@ -177,7 +177,7 @@ contract OutcomeXLifecycleTest is TestBase {
         uint256 orderId = orderBook.createOrder(machineId, 1_000);
 
         vm.prank(PAYMENT_ADAPTER);
-        orderBook.markOrderPaid(orderId, false, false, address(0));
+        orderBook.markOrderPaid(orderId, false, false, address(0), 1_000);
 
         vm.prank(MACHINE_OWNER);
         orderBook.markPreviewReady(orderId, true);
@@ -199,7 +199,7 @@ contract OutcomeXLifecycleTest is TestBase {
         uint256 orderId = orderBook.createOrder(machineId, 600);
 
         vm.prank(PAYMENT_ADAPTER);
-        orderBook.markOrderPaid(orderId, true, false, address(0));
+        orderBook.markOrderPaid(orderId, true, false, address(0), 600);
 
         vm.prank(MACHINE_OWNER);
         orderBook.markPreviewReady(orderId, false);
@@ -217,7 +217,7 @@ contract OutcomeXLifecycleTest is TestBase {
         uint256 orderId = orderBook.createOrder(machineId, 400);
 
         vm.prank(PAYMENT_ADAPTER);
-        orderBook.markOrderPaid(orderId, true, false, address(0));
+        orderBook.markOrderPaid(orderId, true, false, address(0), 400);
 
         vm.prank(BUYER);
         vm.expectRevert(bytes("REFUND_NOT_AUTHORIZED"));
@@ -233,7 +233,7 @@ contract OutcomeXLifecycleTest is TestBase {
         assertEq(machineAsset.ownerOf(machineId), RECEIVER, "ownership should move before payment");
 
         vm.prank(PAYMENT_ADAPTER);
-        orderBook.markOrderPaid(orderId, true, false, address(0));
+        orderBook.markOrderPaid(orderId, true, false, address(0), 1_000);
 
         vm.prank(RECEIVER);
         vm.expectRevert(bytes("NOT_MACHINE_OWNER"));

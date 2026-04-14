@@ -11,6 +11,16 @@ from app.domain.models import Machine, Order, Payment, SettlementRecord
 from app.onchain.contracts_registry import ContractsRegistry
 
 
+STABLECOIN_UNITS_PER_CENT = 10_000
+
+
+def _payment_amount_onchain(*, currency: str, amount_cents: int) -> int:
+    normalized = currency.upper()
+    if normalized in {"USDC", "USDT"}:
+        return amount_cents * STABLECOIN_UNITS_PER_CENT
+    return amount_cents
+
+
 @dataclass(frozen=True)
 class OrderWriteResult:
     tx_hash: str
@@ -65,7 +75,7 @@ class OrderWriter:
         currency = payment.currency.upper()
         payload = {
             "order_id": self._chain_order_id(order),
-            "amount": payment.amount_cents,
+            "amount": _payment_amount_onchain(currency=currency, amount_cents=payment.amount_cents),
             "payment_token_address": self._contracts_registry.payment_token(currency),
         }
         return self._submit_to_target(
@@ -99,7 +109,7 @@ class OrderWriter:
             }
         elif currency == "USDT":
             method_name = "createOrderAndPayWithUSDT"
-            signing_standard = "permit2"
+            signing_standard = "erc20_approve"
             payload = {
                 "client_order_id": order.id,
                 "machine_id": self._chain_machine_id(order),

@@ -7,7 +7,6 @@ import {OrderPaymentRouter} from "../src/OrderPaymentRouter.sol";
 import {PWRToken} from "../src/PWRToken.sol";
 import {RevenueVault} from "../src/RevenueVault.sol";
 import {SettlementController} from "../src/SettlementController.sol";
-import {MockPermit2} from "../src/mocks/MockPermit2.sol";
 import {MockUSDCWithAuthorization} from "../src/mocks/MockUSDCWithAuthorization.sol";
 import {MockUSDT} from "../src/mocks/MockUSDT.sol";
 import {OrderRecord, OrderStatus} from "../src/types/OutcomeXTypes.sol";
@@ -42,7 +41,6 @@ contract OrderPaymentRouterTest is TestBase {
 
     MockUSDCWithAuthorization internal usdc;
     MockUSDT internal usdt;
-    MockPermit2 internal permit2;
     PWRToken internal pwr;
     MachineAssetNFT internal machineAsset;
     RevenueVault internal revenueVault;
@@ -56,16 +54,19 @@ contract OrderPaymentRouterTest is TestBase {
         return (amountCents * 1 ether) / PWR_ANCHOR_PRICE_CENTS;
     }
 
+    function _stablecoinUnitsForCents(uint256 amountCents) internal pure returns (uint256) {
+        return amountCents * 10_000;
+    }
+
     function setUp() public {
         usdc = new MockUSDCWithAuthorization();
         usdt = new MockUSDT();
-        permit2 = new MockPermit2();
         pwr = new PWRToken(ADMIN);
         machineAsset = new MachineAssetNFT(ADMIN);
         revenueVault = new RevenueVault(ADMIN, address(pwr), address(machineAsset), 25);
         settlement = new SettlementController(ADMIN, address(revenueVault), address(pwr), PLATFORM_TREASURY);
         orderBook = new OrderBook(ADMIN, address(machineAsset));
-        router = new OrderPaymentRouter(ADMIN, address(orderBook), address(usdc), address(usdt), address(pwr), address(permit2));
+        router = new OrderPaymentRouter(ADMIN, address(orderBook), address(usdc), address(usdt), address(pwr));
 
         vm.startPrank(ADMIN);
         pwr.setMinter(address(revenueVault), true);
@@ -86,27 +87,34 @@ contract OrderPaymentRouterTest is TestBase {
 
     function testUSDCFailedBeforePreviewCanRefundRealFunds() public {
         vm.prank(BUYER);
-        uint256 orderId = orderBook.createOrder(machineId, 1_000_000);
+        uint256 orderId = orderBook.createOrder(machineId, 100);
 
         vm.prank(BUYER);
         router.payWithUSDCByAuthorization(
-            orderId, 1_000_000, block.timestamp - 1, block.timestamp + 1 days, keccak256("nonce-1"), 0, bytes32(0), bytes32(0)
+            orderId,
+            _stablecoinUnitsForCents(100),
+            block.timestamp - 1,
+            block.timestamp + 1 days,
+            keccak256("nonce-1"),
+            0,
+            bytes32(0),
+            bytes32(0)
         );
 
-        assertEq(usdc.balanceOf(address(settlement)), 1_000_000, "settlement should escrow usdc");
+        assertEq(usdc.balanceOf(address(settlement)), _stablecoinUnitsForCents(100), "settlement should escrow usdc");
 
         vm.prank(BUYER);
         orderBook.refundFailedOrNoValidPreview(orderId);
 
         OrderRecord memory order = orderBook.getOrder(orderId);
         assertEq(uint256(order.status), uint256(OrderStatus.Refunded), "expected refunded status");
-        assertEq(settlement.refundableByToken(BUYER, address(usdc)), 1_000_000, "refund ledger mismatch");
+        assertEq(settlement.refundableByToken(BUYER, address(usdc)), _stablecoinUnitsForCents(100), "refund ledger mismatch");
 
         vm.expectEmit(true, true, false, true, address(settlement));
-        emit RefundClaimedDetailed(BUYER, address(usdc), 1_000_000, 0);
+        emit RefundClaimedDetailed(BUYER, address(usdc), _stablecoinUnitsForCents(100), 0);
         vm.prank(BUYER);
         uint256 claimed = settlement.claimRefund(address(usdc));
-        assertEq(claimed, 1_000_000, "refund amount mismatch");
+        assertEq(claimed, _stablecoinUnitsForCents(100), "refund amount mismatch");
         assertEq(usdc.balanceOf(BUYER), 5_000_000, "buyer should recover all usdc");
         assertEq(usdc.balanceOf(address(settlement)), 0, "settlement escrow should be empty");
     }
@@ -114,26 +122,34 @@ contract OrderPaymentRouterTest is TestBase {
     function testCreateAndPayWithUSDCRecordsBuyerAsCaller() public {
         vm.prank(BUYER);
         uint256 orderId = router.createOrderAndPayWithUSDC(
-            machineId, 1_000_000, block.timestamp - 1, block.timestamp + 1 days, keccak256("nonce-create-pay-1"), 0, bytes32(0), bytes32(0)
+            machineId,
+            _stablecoinUnitsForCents(100),
+            block.timestamp - 1,
+            block.timestamp + 1 days,
+            keccak256("nonce-create-pay-1"),
+            0,
+            bytes32(0),
+            bytes32(0)
         );
 
         OrderRecord memory order = orderBook.getOrder(orderId);
         assertEq(order.buyer, BUYER, "buyer should be external caller");
         assertEq(uint256(order.status), uint256(OrderStatus.Paid), "order should be paid");
-        assertEq(usdc.balanceOf(address(settlement)), 1_000_000, "settlement should escrow usdc");
+        assertEq(usdc.balanceOf(address(settlement)), _stablecoinUnitsForCents(100), "settlement should escrow usdc");
     }
 
     function testCreateAndPayWithUSDTRecordsBuyerAsCaller() public {
         vm.prank(BUYER);
-        usdt.approve(address(permit2), 1_000_000);
+        usdt.approve(address(router), _stablecoinUnitsForCents(100));
 
         vm.prank(BUYER);
-        uint256 orderId = router.createOrderAndPayWithUSDT(machineId, 1_000_000, 1, block.timestamp + 1 days, hex"BEEF");
+        uint256 orderId =
+            router.createOrderAndPayWithUSDT(machineId, _stablecoinUnitsForCents(100), 1, block.timestamp + 1 days, hex"BEEF");
 
         OrderRecord memory order = orderBook.getOrder(orderId);
         assertEq(order.buyer, BUYER, "buyer should be external caller");
         assertEq(uint256(order.status), uint256(OrderStatus.Paid), "order should be paid");
-        assertEq(usdt.balanceOf(address(settlement)), 1_000_000, "settlement should escrow usdt");
+        assertEq(usdt.balanceOf(address(settlement)), _stablecoinUnitsForCents(100), "settlement should escrow usdt");
     }
 
     function testCreateAndPayWithPWRRecordsBuyerAsCaller() public {
@@ -156,7 +172,7 @@ contract OrderPaymentRouterTest is TestBase {
 
     function testCreateOrderByAdapterCreatesUnpaidOrderForBuyer() public {
         vm.prank(ADMIN);
-        uint256 orderId = router.createOrderByAdapter(BUYER, machineId, 1_000_000);
+        uint256 orderId = router.createOrderByAdapter(BUYER, machineId, 100);
 
         OrderRecord memory order = orderBook.getOrder(orderId);
         assertEq(order.buyer, BUYER, "buyer should match adapter input");
@@ -174,11 +190,11 @@ contract OrderPaymentRouterTest is TestBase {
 
     function testPayOrderByAdapterPaysExistingOrderAndBlocksTransfer() public {
         vm.prank(ADMIN);
-        uint256 orderId = router.createOrderByAdapter(BUYER, machineId, 1_000_000);
+        uint256 orderId = router.createOrderByAdapter(BUYER, machineId, 100);
 
         uint256 adminBalanceBefore = usdc.balanceOf(ADMIN);
         vm.startPrank(ADMIN);
-        usdc.approve(address(router), 1_000_000);
+        usdc.approve(address(router), _stablecoinUnitsForCents(100));
         vm.expectEmit(true, true, true, true, address(router));
         emit PaymentFinalized(
             orderId,
@@ -186,20 +202,20 @@ contract OrderPaymentRouterTest is TestBase {
             BUYER,
             ADMIN,
             address(usdc),
-            1_000_000,
+            _stablecoinUnitsForCents(100),
             router.PAYMENT_SOURCE_HSP(),
             MACHINE_OWNER,
             true,
             true
         );
-        router.payOrderByAdapter(orderId, 1_000_000, address(usdc));
+        router.payOrderByAdapter(orderId, _stablecoinUnitsForCents(100), address(usdc));
         vm.stopPrank();
 
         OrderRecord memory order = orderBook.getOrder(orderId);
         assertEq(uint256(order.status), uint256(OrderStatus.Paid), "order should be paid");
         assertEq(orderBook.activeTaskCountByMachine(machineId), 1, "active task should be tracked");
-        assertEq(usdc.balanceOf(address(settlement)), 1_000_000, "settlement should escrow adapter funds");
-        assertEq(usdc.balanceOf(ADMIN), adminBalanceBefore - 1_000_000, "adapter caller should fund escrow");
+        assertEq(usdc.balanceOf(address(settlement)), _stablecoinUnitsForCents(100), "settlement should escrow adapter funds");
+        assertEq(usdc.balanceOf(ADMIN), adminBalanceBefore - _stablecoinUnitsForCents(100), "adapter caller should fund escrow");
     }
 
     function testPayWithPWRRejectsAmountDifferentFromFrozenOrderGross() public {
@@ -221,13 +237,13 @@ contract OrderPaymentRouterTest is TestBase {
 
     function testUSDTConfirmedOrderCreatesRealPlatformClaimAndReserve() public {
         vm.prank(BUYER);
-        uint256 orderId = orderBook.createOrder(machineId, 1_000_000);
+        uint256 orderId = orderBook.createOrder(machineId, 100);
 
         vm.prank(BUYER);
-        usdt.approve(address(permit2), 1_000_000);
+        usdt.approve(address(router), _stablecoinUnitsForCents(100));
 
         vm.prank(BUYER);
-        router.payWithUSDT(orderId, 1_000_000, 1, block.timestamp + 1 days, hex"BEEF");
+        router.payWithUSDT(orderId, _stablecoinUnitsForCents(100), 1, block.timestamp + 1 days, hex"BEEF");
 
         vm.prank(MACHINE_OWNER);
         orderBook.markPreviewReady(orderId, true);
@@ -235,17 +251,17 @@ contract OrderPaymentRouterTest is TestBase {
         vm.prank(BUYER);
         orderBook.confirmResult(orderId);
 
-        assertEq(settlement.platformAccruedByToken(address(usdt)), 100_000, "platform usdt claim mismatch");
-        assertEq(revenueVault.unsettledRevenueByMachine(machineId), _pwrWeiForCents(900_000), "machine pwr claim mismatch");
-        assertEq(usdt.balanceOf(address(settlement)), 1_000_000, "escrow should hold full reserve before claims");
+        assertEq(settlement.platformAccruedByToken(address(usdt)), _stablecoinUnitsForCents(10), "platform usdt claim mismatch");
+        assertEq(revenueVault.unsettledRevenueByMachine(machineId), _pwrWeiForCents(90), "machine pwr claim mismatch");
+        assertEq(usdt.balanceOf(address(settlement)), _stablecoinUnitsForCents(100), "escrow should hold full reserve before claims");
 
         vm.expectEmit(true, true, false, true, address(settlement));
-        emit PlatformRevenueClaimedDetailed(PLATFORM_TREASURY, address(usdt), 100_000, 0);
+        emit PlatformRevenueClaimedDetailed(PLATFORM_TREASURY, address(usdt), _stablecoinUnitsForCents(10), 0);
         vm.prank(PLATFORM_TREASURY);
         uint256 claimed = settlement.claimPlatformRevenue(address(usdt));
-        assertEq(claimed, 100_000, "platform claim amount mismatch");
-        assertEq(usdt.balanceOf(PLATFORM_TREASURY), 100_000, "platform should receive real usdt");
-        assertEq(usdt.balanceOf(address(settlement)), 900_000, "remaining usdt should stay as reserve backing");
+        assertEq(claimed, _stablecoinUnitsForCents(10), "platform claim amount mismatch");
+        assertEq(usdt.balanceOf(PLATFORM_TREASURY), _stablecoinUnitsForCents(10), "platform should receive real usdt");
+        assertEq(usdt.balanceOf(address(settlement)), _stablecoinUnitsForCents(90), "remaining usdt should stay as reserve backing");
     }
 
     function testPWRConfirmedOrderCreatesPlatformClaimAndMachineReserve() public {

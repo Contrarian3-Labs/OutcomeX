@@ -90,3 +90,11 @@ class DirectPaymentSyncResponse(BaseModel):
     state: PaymentState
     tx_hash: str
     synced_onchain: bool
+
+
+class HSPPaymentSyncResponse(BaseModel):
+    payment_id: str
+    state: PaymentState
+    remote_status: str | None = None
+    callback_event_id: str | None = None
+    polled: bool = False

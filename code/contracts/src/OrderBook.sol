@@ -28,6 +28,7 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
     mapping(uint256 => uint256) public activeTaskCountByMachine;
     mapping(uint256 => address) public settlementBeneficiaryByOrder;
     mapping(uint256 => address) public paymentTokenByOrder;
+    mapping(uint256 => uint256) public paymentAmountByOrder;
     mapping(uint256 => bool) public dividendEligibleByOrder;
     mapping(uint256 => bool) public refundAuthorizedByOrder;
     mapping(uint256 => bool) public settlementClassifiedByOrder;
@@ -134,7 +135,8 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
         uint256 orderId,
         bool dividendEligible,
         bool refundFailedOrNoValidPreviewAuthorized,
-        address paymentToken
+        address paymentToken,
+        uint256 paymentAmount
     )
         external
         onlyPaymentAdapter
@@ -146,6 +148,7 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
         order.status = OrderStatus.Paid;
         order.paidAt = uint64(block.timestamp);
         paymentTokenByOrder[orderId] = paymentToken;
+        paymentAmountByOrder[orderId] = paymentAmount;
         dividendEligibleByOrder[orderId] = dividendEligible;
         refundAuthorizedByOrder[orderId] = refundFailedOrNoValidPreviewAuthorized;
         settlementClassifiedByOrder[orderId] = true;
@@ -259,6 +262,7 @@ contract OrderBook is Ownable, ITransferGuard, IOrderLifecycle {
             buyer: order.buyer,
             settlementBeneficiary: settlementBeneficiary,
             paymentToken: paymentTokenByOrder[order.id],
+            paymentAmount: paymentAmountByOrder[order.id],
             grossAmount: order.grossAmount,
             dividendEligible: dividendEligibleByOrder[order.id]
         });

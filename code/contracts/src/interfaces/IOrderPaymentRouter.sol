@@ -16,7 +16,7 @@ interface IOrderPaymentRouter {
     );
 
     function PAYMENT_SOURCE_USDC_EIP3009() external view returns (bytes32);
-    function PAYMENT_SOURCE_USDT_PERMIT2() external view returns (bytes32);
+    function PAYMENT_SOURCE_USDT_DIRECT() external view returns (bytes32);
     function PAYMENT_SOURCE_PWR() external view returns (bytes32);
     function PAYMENT_SOURCE_HSP() external view returns (bytes32);
 

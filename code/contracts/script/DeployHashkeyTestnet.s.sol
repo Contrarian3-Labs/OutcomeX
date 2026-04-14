@@ -8,15 +8,13 @@ import {OrderPaymentRouter} from "../src/OrderPaymentRouter.sol";
 import {PWRToken} from "../src/PWRToken.sol";
 import {RevenueVault} from "../src/RevenueVault.sol";
 import {SettlementController} from "../src/SettlementController.sol";
-import {MockUSDCWithAuthorization} from "../src/mocks/MockUSDCWithAuthorization.sol";
-import {MockUSDT} from "../src/mocks/MockUSDT.sol";
 
 interface Vm {
     function startBroadcast() external;
     function stopBroadcast() external;
 }
 
-contract DeployLocal {
+contract DeployHashkeyTestnet {
     Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
     struct Deployment {
@@ -29,56 +27,58 @@ contract DeployLocal {
         address settlementController;
         address orderBook;
         address orderPaymentRouter;
-        uint256 sampleMachineId;
+        uint256 sampleMachineIdOwner1;
+        uint256 sampleMachineIdOwner2;
     }
 
     event DeploymentAddress(string name, address addr);
-    event DeploymentMachineId(uint256 machineId);
+    event DeploymentMachineId(string label, uint256 machineId);
 
-    function run() external returns (Deployment memory deployed) {
-        return _deploy(tx.origin, tx.origin, tx.origin);
-    }
+    function runWithConfig(
+        address initialOwner,
+        address platformTreasury,
+        address machineOwner1,
+        address machineOwner2,
+        address usdcAddress,
+        address usdtAddress
+    ) external returns (Deployment memory deployed) {
+        require(initialOwner != address(0), "ZERO_INITIAL_OWNER");
+        require(platformTreasury != address(0), "ZERO_PLATFORM_TREASURY");
+        require(machineOwner1 != address(0), "ZERO_MACHINE_OWNER_1");
+        require(machineOwner2 != address(0), "ZERO_MACHINE_OWNER_2");
+        require(usdcAddress != address(0), "ZERO_USDC");
+        require(usdtAddress != address(0), "ZERO_USDT");
 
-    function runWithConfig(address initialOwner, address platformTreasury, address machineOwner)
-        external
-        returns (Deployment memory deployed)
-    {
-        return _deploy(initialOwner, platformTreasury, machineOwner);
-    }
-
-    function _deploy(address initialOwner, address platformTreasury, address machineOwner)
-        internal
-        returns (Deployment memory deployed)
-    {
         vm.startBroadcast();
 
-        deployed.usdc = address(new MockUSDCWithAuthorization());
-        deployed.usdt = address(new MockUSDT());
+        deployed.usdc = usdcAddress;
+        deployed.usdt = usdtAddress;
         deployed.pwr = address(new PWRToken(initialOwner));
         deployed.machineAsset = address(new MachineAssetNFT(initialOwner));
+
         address[] memory supportedTokens = new address[](2);
         supportedTokens[0] = deployed.usdc;
         supportedTokens[1] = deployed.usdt;
+
         deployed.machineMarketplace = address(new MachineMarketplace(initialOwner, deployed.machineAsset, supportedTokens));
         deployed.revenueVault = address(new RevenueVault(initialOwner, deployed.pwr, deployed.machineAsset, 25));
         deployed.settlementController =
             address(new SettlementController(initialOwner, deployed.revenueVault, deployed.pwr, platformTreasury));
         deployed.orderBook = address(new OrderBook(initialOwner, deployed.machineAsset));
-        deployed.orderPaymentRouter = address(new OrderPaymentRouter(
-            initialOwner,
-            deployed.orderBook,
-            deployed.usdc,
-            deployed.usdt,
-            deployed.pwr
-        ));
+        deployed.orderPaymentRouter = address(
+            new OrderPaymentRouter(
+                initialOwner,
+                deployed.orderBook,
+                deployed.usdc,
+                deployed.usdt,
+                deployed.pwr
+            )
+        );
 
         PWRToken(deployed.pwr).setMinter(deployed.revenueVault, true);
         PWRToken(deployed.pwr).setMinter(initialOwner, true);
         PWRToken(deployed.pwr).mint(initialOwner, 1_000_000 ether);
         PWRToken(deployed.pwr).setMinter(initialOwner, false);
-
-        MockUSDCWithAuthorization(deployed.usdc).mint(initialOwner, 10_000_000 * 10 ** 6);
-        MockUSDT(deployed.usdt).mint(initialOwner, 10_000_000 * 10 ** 6);
 
         RevenueVault(deployed.revenueVault).setSettlementController(deployed.settlementController);
         OrderPaymentRouter(deployed.orderPaymentRouter).setSettlementEscrow(deployed.settlementController);
@@ -87,7 +87,11 @@ contract DeployLocal {
         OrderBook(deployed.orderBook).setRevenueVault(deployed.revenueVault);
         OrderBook(deployed.orderBook).setPaymentAdapter(deployed.orderPaymentRouter);
         MachineAssetNFT(deployed.machineAsset).setTransferGuard(deployed.orderBook);
-        deployed.sampleMachineId = MachineAssetNFT(deployed.machineAsset).mintMachine(machineOwner, "ipfs://local-machine-001");
+
+        deployed.sampleMachineIdOwner1 =
+            MachineAssetNFT(deployed.machineAsset).mintMachine(machineOwner1, "ipfs://hashkey-testnet-machine-owner-1");
+        deployed.sampleMachineIdOwner2 =
+            MachineAssetNFT(deployed.machineAsset).mintMachine(machineOwner2, "ipfs://hashkey-testnet-machine-owner-2");
 
         vm.stopBroadcast();
 
@@ -100,6 +104,7 @@ contract DeployLocal {
         emit DeploymentAddress("SettlementController", deployed.settlementController);
         emit DeploymentAddress("OrderBook", deployed.orderBook);
         emit DeploymentAddress("OrderPaymentRouter", deployed.orderPaymentRouter);
-        emit DeploymentMachineId(deployed.sampleMachineId);
+        emit DeploymentMachineId("owner-1", deployed.sampleMachineIdOwner1);
+        emit DeploymentMachineId("owner-2", deployed.sampleMachineIdOwner2);
     }
 }

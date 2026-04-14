@@ -46,13 +46,12 @@ def seed_context(tmp_path):
     os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
     os.environ["OUTCOMEX_BUYER_WALLET_MAP_JSON"] = json.dumps(
         {
-            "buyer-1": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
-            "owner-1": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
-            "owner-2": "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65",
-            "owner-3": "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+            "buyer": "0xd9180752dfdC003Fa5bD2a4bb9b0Ead2E2149CdB",
+            "owner-1": "0x0A4401376B024E72cA9481192c88F4d4eb80cDf8",
+            "owner-2": "0x1feDb8e927b9A1c9878c8C9e0beA518Fc96A9265",
         }
     )
-    os.environ["OUTCOMEX_ONCHAIN_USDC_ADDRESS"] = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+    os.environ["OUTCOMEX_ONCHAIN_USDT_ADDRESS"] = "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512"
 
     reset_settings_cache()
     reset_container_cache()
@@ -77,15 +76,9 @@ def test_seed_demo_projection_state_creates_three_machines_two_active_listings_a
         lifecycle=lifecycle,
     )
 
-    assert summary["buyer_wallet"] == "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc"
-    assert summary["owner_wallets"]["owner-2"] == "0x15d34aaf54267db7d7c367839aaf71a00a2c6a65"
-    assert summary["owner_wallets"]["owner-3"] == "0x90f79bf6eb2c4f870365e785982e1f101e93b906"
-
-    assert summary["buyer_wallet"] == "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc"
     assert summary["owner_wallets"] == {
-        "owner-1": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
-        "owner-2": "0x15d34aaf54267db7d7c367839aaf71a00a2c6a65",
-        "owner-3": "0x90f79bf6eb2c4f870365e785982e1f101e93b906",
+        "owner-1": "0x0a4401376b024e72ca9481192c88f4d4eb80cdf8",
+        "owner-2": "0x1fedb8e927b9a1c9878c8c9e0bea518fc96a9265",
     }
 
     assert summary["primary_issuance_stock"] == PRIMARY_ISSUANCE_INITIAL_STOCK
@@ -99,7 +92,7 @@ def test_seed_demo_projection_state_creates_three_machines_two_active_listings_a
         purchases = session.query(PrimaryIssuancePurchase).all()
 
     assert len(machines) == 3
-    assert {machine.owner_user_id for machine in machines} == {"owner-1", "owner-2", "owner-3"}
+    assert {machine.owner_user_id for machine in machines} == {"owner-1", "owner-2"}
     assert len(listings) == 2
     assert all(listing.state == "active" for listing in listings)
     assert sku is not None
@@ -136,37 +129,48 @@ def test_format_seed_report_prints_owners_machines_listings_and_stock(seed_conte
     )
     report = format_seed_report(
         seeded=summary,
-        buyer_balances={
-            "hsk": {"balance": 10_000 * 10**18, "tx": "already_funded"},
-            "pwr": {"balance": 10_000 * 10**18, "tx": "0xpwr"},
-            "usdc": {"balance": 10_000 * 10**6, "tx": "0xusdc"},
-            "usdt": {"balance": 10_000 * 10**6, "tx": "0xusdt"},
+        funded_balances={
+            "owner-1": {
+                "hsk": {"balance": 10 * 10**18, "tx": "already_funded"},
+                "pwr": {"balance": 10_000 * 10**18, "tx": "0xpwr1"},
+                "usdt": {"balance": 100 * 10**6, "tx": "0xusdt1"},
+            },
+            "owner-2": {
+                "hsk": {"balance": 10 * 10**18, "tx": "already_funded"},
+                "pwr": {"balance": 10_000 * 10**18, "tx": "0xpwr2"},
+                "usdt": {"balance": 100 * 10**6, "tx": "0xusdt2"},
+            },
+            "buyer": {
+                "hsk": {"balance": 10 * 10**18, "tx": "already_funded"},
+                "pwr": {"balance": 10_000 * 10**18, "tx": "0xpwr3"},
+                "usdt": {"balance": 100 * 10**6, "tx": "0xusdt3"},
+            },
         },
     )
 
-    assert "- buyer_wallet=0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc" in report
-    assert "  - owner-1: 0x70997970c51812dc3a010c7d01b50e0d17dc79c8" in report
-    assert "  - owner-2: 0x15d34aaf54267db7d7c367839aaf71a00a2c6a65" in report
-    assert "  - owner-3: 0x90f79bf6eb2c4f870365e785982e1f101e93b906" in report
+    assert "  - owner-1: 0x0a4401376b024e72ca9481192c88f4d4eb80cdf8" in report
+    assert "  - owner-2: 0x1fedb8e927b9a1c9878c8c9e0bea518fc96a9265" in report
 
-    assert "owners=owner-1, owner-2, owner-3" in report
+    assert "owners=owner-1, owner-2" in report
     assert "machine-owner-1 owner=owner-1" in report
     assert "machine-owner-2 owner=owner-2" in report
-    assert "machine-owner-3 owner=owner-3" in report
+    assert "machine-owner-3 owner=owner-2" in report
     assert "active_secondary_market_listings:" in report
     assert "onchain_listing_id=2001 machine_id=machine-owner-2 owner=owner-2 price_units=1250000" in report
-    assert "onchain_listing_id=2002 machine_id=machine-owner-3 owner=owner-3 price_units=1550000" in report
+    assert "onchain_listing_id=2002 machine_id=machine-owner-3 owner=owner-2 price_units=1550000" in report
     assert "primary_issuance_stock=10" in report
-    assert "buyer_balances:" in report
-    assert "hsk_wei=10000000000000000000000" in report
+    assert "funded_wallet_balances:" in report
+    assert "hsk_wei=10000000000000000000" in report
     assert "pwr_wei=10000000000000000000000" in report
-    assert "usdc_units=10000000000" in report
-    assert "usdt_units=10000000000" in report
+    assert "usdt_units=100000000" in report
     assert "funding_txs:" in report
     assert "hsk=already_funded" in report
-    assert "pwr=0xpwr" in report
-    assert "usdc=0xusdc" in report
-    assert "usdt=0xusdt" in report
+    assert "pwr=0xpwr1" in report
+    assert "pwr=0xpwr2" in report
+    assert "pwr=0xpwr3" in report
+    assert "usdt=0xusdt1" in report
+    assert "usdt=0xusdt2" in report
+    assert "usdt=0xusdt3" in report
 
 
 def test_seed_demo_projection_state_is_idempotent_without_duplicate_rows(seed_context) -> None:
@@ -198,10 +202,8 @@ def test_seed_demo_projection_state_uses_local_demo_wallet_fallback_for_owner2_o
     _, _, _, lifecycle = seed_context
     os.environ["OUTCOMEX_BUYER_WALLET_MAP_JSON"] = json.dumps(
         {
-            "buyer-1": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
-            "owner-1": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
-            "transferee-1": "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65",
-            "treasury-1": "0x90F79bf6EB2c4f870365E785982E1f101E93b906",
+            "buyer": "0xd9180752dfdC003Fa5bD2a4bb9b0Ead2E2149CdB",
+            "owner-1": "0x0A4401376B024E72cA9481192c88F4d4eb80cDf8",
         }
     )
     reset_settings_cache()
@@ -222,10 +224,9 @@ def test_seed_demo_projection_state_uses_local_demo_wallet_fallback_for_owner2_o
         for machine in session.query(Machine).all():
             machine_wallets[machine.owner_user_id] = machine.owner_chain_address
 
-    assert summary["owners"] == ["owner-1", "owner-2", "owner-3"]
-    assert machine_wallets["owner-1"] == "0x70997970c51812dc3a010c7d01b50e0d17dc79c8"
-    assert machine_wallets["owner-2"] == "0x15d34aaf54267db7d7c367839aaf71a00a2c6a65"
-    assert machine_wallets["owner-3"] == "0x90f79bf6eb2c4f870365e785982e1f101e93b906"
+    assert summary["owners"] == ["owner-1", "owner-2"]
+    assert machine_wallets["owner-1"] == "0x0a4401376b024e72ca9481192c88f4d4eb80cdf8"
+    assert machine_wallets["owner-2"] == "0x1fedb8e927b9a1c9878c8c9e0bea518fc96a9265"
 
 
 def test_seed_demo_projection_state_uses_real_onchain_listing_ids_when_available(seed_context, monkeypatch) -> None:

@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from app.api.middleware.attachment_upload_limit import AttachmentUploadSizeLimitMiddleware
 from app.api.router import create_api_router
+from app.api.routes.payments import sync_pending_hsp_payments_once
 from app.core.container import get_container
 from app.core.config import Settings
 from app.db.base import Base
@@ -27,6 +28,14 @@ async def lifespan(_: FastAPI):
             asyncio.create_task(
                 _execution_sync_worker(container=container),
                 name="outcomex-execution-sync-worker",
+            )
+        )
+
+    if container.settings.hsp_poll_enabled:
+        tasks.append(
+            asyncio.create_task(
+                _hsp_payment_sync_worker(container=container),
+                name="outcomex-hsp-payment-sync-worker",
             )
         )
 
@@ -63,6 +72,23 @@ async def _execution_sync_worker(*, container) -> None:
         await asyncio.sleep(interval_seconds)
 
 
+async def _hsp_payment_sync_worker(*, container) -> None:
+    interval_seconds = _hsp_poll_seconds(container.settings)
+    while True:
+        try:
+            await asyncio.to_thread(
+                sync_pending_hsp_payments_once,
+                session_factory=container.session_factory,
+                container=container,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Keep worker alive; transient HSP/network errors should not stop polling.
+            pass
+        await asyncio.sleep(interval_seconds)
+
+
 async def _onchain_indexer_worker(*, onchain_indexer, settings: Settings) -> None:
     interval_seconds = get_onchain_indexer_poll_seconds(default=2.0, settings=settings)
     while True:
@@ -95,6 +121,10 @@ def _ensure_onchain_runtime_ready(*, container, onchain_indexer) -> None:
 
 def _execution_sync_poll_seconds(settings: Settings, *, default: float = 2.0) -> float:
     return settings.execution_sync_poll_seconds if settings.execution_sync_poll_seconds > 0 else default
+
+
+def _hsp_poll_seconds(settings: Settings, *, default: float = 5.0) -> float:
+    return settings.hsp_poll_seconds if settings.hsp_poll_seconds > 0 else default
 
 
 def create_app() -> FastAPI:

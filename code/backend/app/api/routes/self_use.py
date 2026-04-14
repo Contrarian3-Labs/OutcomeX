@@ -41,6 +41,25 @@ _RUN_KIND_SELF_USE = "self_use"
 _EVM_ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
 
+def build_recommended_plans(  # noqa: PLR0913
+    *,
+    user_id: str,
+    chat_session_id: str,
+    user_message: str,
+    preferred_strategy: ExecutionStrategy | None,
+    input_files: tuple[str, ...],
+    planning_context_key: str = "",
+):
+    input_files
+    return build_fast_recommended_plans(
+        user_id=user_id,
+        chat_session_id=chat_session_id,
+        user_message=user_message,
+        preferred_strategy=preferred_strategy,
+        planning_context_key=planning_context_key,
+    )
+
+
 def _normalize_wallet_address(wallet_address: str) -> str:
     if not _EVM_ADDRESS_RE.match(wallet_address):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid viewer wallet address")
@@ -105,8 +124,8 @@ def create_self_use_plans(
             attachment_session_id=payload.attachment_session_id,
             attachment_session_token=payload.attachment_session_token,
             attachment_ids=tuple(payload.attachment_ids),
-        ):
-            recommended_plans = build_fast_recommended_plans(
+        ) as resolved_input_files:
+            recommended_plans = build_recommended_plans(
                 user_id=normalized_viewer_wallet,
                 chat_session_id=_self_use_external_order_id(
                     machine_id=machine.id,
@@ -114,6 +133,7 @@ def create_self_use_plans(
                 ),
                 user_message=payload.prompt,
                 preferred_strategy=payload.execution_strategy,
+                input_files=resolved_input_files,
                 planning_context_key=planning_context_id,
             )
     except AttachmentResolutionError as exc:
@@ -185,8 +205,8 @@ def create_self_use_run(
             attachment_session_id=payload.attachment_session_id,
             attachment_session_token=payload.attachment_session_token,
             attachment_ids=tuple(payload.attachment_ids),
-        ):
-            recommended_plans = build_fast_recommended_plans(
+        ) as resolved_input_files:
+            recommended_plans = build_recommended_plans(
                 user_id=normalized_viewer_wallet,
                 chat_session_id=_self_use_external_order_id(
                     machine_id=machine.id,
@@ -194,6 +214,7 @@ def create_self_use_run(
                 ),
                 user_message=payload.prompt,
                 preferred_strategy=payload.execution_strategy,
+                input_files=resolved_input_files,
                 planning_context_key=planning_context_id,
             )
             selected_plan = select_recommended_plan(

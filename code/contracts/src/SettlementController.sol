@@ -2,16 +2,15 @@
 pragma solidity ^0.8.24;
 
 import {Ownable} from "./common/Ownable.sol";
+import {SafeERC20Like} from "./common/SafeERC20Like.sol";
 import {IRevenueVault} from "./interfaces/IRevenueVault.sol";
 import {SettlementBreakdown, SettlementInput, SettlementKind} from "./types/OutcomeXTypes.sol";
 
 error NotOrderBook(address caller);
 
-interface IERC20Like {
-    function transfer(address to, uint256 amount) external returns (bool);
-}
-
 contract SettlementController is Ownable {
+    using SafeERC20Like for address;
+
     uint256 public constant BPS_DENOMINATOR = 10_000;
     uint256 public constant PLATFORM_FEE_BPS = 1_000;
     uint256 public constant VALID_PREVIEW_REJECT_REFUND_BPS = 7_000;
@@ -82,17 +81,21 @@ contract SettlementController is Ownable {
     {
         breakdown.kind = kind;
         breakdown.dividendEligible = input.dividendEligible;
+        uint256 paymentBasis = input.paymentAmount > 0 ? input.paymentAmount : input.grossAmount;
+        uint256 pricingBasis = input.paymentToken == pwrToken ? paymentBasis : input.grossAmount;
 
         if (kind == SettlementKind.Confirmed) {
-            breakdown.platformShare = (input.grossAmount * PLATFORM_FEE_BPS) / BPS_DENOMINATOR;
-            breakdown.machineShare = input.grossAmount - breakdown.platformShare;
+            breakdown.platformShare = (paymentBasis * PLATFORM_FEE_BPS) / BPS_DENOMINATOR;
+            breakdown.machineShare = pricingBasis - ((pricingBasis * PLATFORM_FEE_BPS) / BPS_DENOMINATOR);
         } else if (kind == SettlementKind.RejectedValidPreview) {
-            breakdown.refundToBuyer = (input.grossAmount * VALID_PREVIEW_REJECT_REFUND_BPS) / BPS_DENOMINATOR;
-            breakdown.rejectionFee = input.grossAmount - breakdown.refundToBuyer;
+            breakdown.refundToBuyer = (paymentBasis * VALID_PREVIEW_REJECT_REFUND_BPS) / BPS_DENOMINATOR;
+            breakdown.rejectionFee = paymentBasis - breakdown.refundToBuyer;
             breakdown.platformShare = (breakdown.rejectionFee * PLATFORM_FEE_BPS) / BPS_DENOMINATOR;
-            breakdown.machineShare = breakdown.rejectionFee - breakdown.platformShare;
+            uint256 pricingRefund = (pricingBasis * VALID_PREVIEW_REJECT_REFUND_BPS) / BPS_DENOMINATOR;
+            uint256 pricingRejectionFee = pricingBasis - pricingRefund;
+            breakdown.machineShare = pricingRejectionFee - ((pricingRejectionFee * PLATFORM_FEE_BPS) / BPS_DENOMINATOR);
         } else {
-            breakdown.refundToBuyer = input.grossAmount;
+            breakdown.refundToBuyer = paymentBasis;
         }
 
         if (breakdown.refundToBuyer > 0) {
@@ -113,7 +116,7 @@ contract SettlementController is Ownable {
 
         if (breakdown.machineShare > 0) {
             if (input.paymentToken == pwrToken && breakdown.dividendEligible) {
-                bool funded = IERC20Like(pwrToken).transfer(address(revenueVault), breakdown.machineShare);
+                bool funded = pwrToken.safeTransfer(address(revenueVault), breakdown.machineShare);
                 require(funded, "PWR_REVENUE_FUNDING_FAILED");
             }
             revenueVault.accrueRevenue(
@@ -155,7 +158,7 @@ contract SettlementController is Ownable {
         require(amount > 0, "NOTHING_TO_CLAIM");
 
         refundableByToken[msg.sender][token] = 0;
-        bool success = IERC20Like(token).transfer(msg.sender, amount);
+        bool success = token.safeTransfer(msg.sender, amount);
         require(success, "TOKEN_TRANSFER_FAILED");
 
         emit RefundClaimedDetailed(msg.sender, token, amount, refundableByToken[msg.sender][token]);
@@ -179,7 +182,7 @@ contract SettlementController is Ownable {
         require(amount > 0, "NOTHING_TO_CLAIM");
 
         platformAccruedByToken[token] = 0;
-        bool success = IERC20Like(token).transfer(msg.sender, amount);
+        bool success = token.safeTransfer(msg.sender, amount);
         require(success, "TOKEN_TRANSFER_FAILED");
 
         emit PlatformRevenueClaimedDetailed(msg.sender, token, amount, platformAccruedByToken[token]);

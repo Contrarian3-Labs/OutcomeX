@@ -756,7 +756,7 @@ def test_sql_projection_records_refund_and_platform_claims_in_unified_claim_ledg
             payload=RevenueClaimedEvent(
                 machine_id=None,
                 account="0xbuyer000000000000000000000000000000000000",
-                amount_wei=700,
+                amount_wei=700 * 10_000,
                 claim_nonce=None,
                 claim_kind="refund",
                 token_address="0x79aec4eea31d50792f61d1ca0733c18c89524c9e",
@@ -771,7 +771,7 @@ def test_sql_projection_records_refund_and_platform_claims_in_unified_claim_ledg
             payload=RevenueClaimedEvent(
                 machine_id=None,
                 account="0xtreasury00000000000000000000000000000000",
-                amount_wei=30,
+                amount_wei=30 * 10_000,
                 claim_nonce=None,
                 claim_kind="platform_revenue",
                 token_address="0x79aec4eea31d50792f61d1ca0733c18c89524c9e",
@@ -786,8 +786,8 @@ def test_sql_projection_records_refund_and_platform_claims_in_unified_claim_ledg
         assert claims[0].claim_kind == "refund"
         assert claims[0].claimant_user_id == "buyer-1"
         assert claims[0].amount_cents == 700
-        assert claims[0].amount_wei == "700"
+        assert claims[0].amount_wei == str(700 * 10_000)
         assert claims[1].claim_kind == "platform_revenue"
         assert claims[1].claimant_user_id == "platform"
         assert claims[1].amount_cents == 30
-        assert claims[1].amount_wei == "30"
+        assert claims[1].amount_wei == str(30 * 10_000)

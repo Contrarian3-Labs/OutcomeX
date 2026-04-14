@@ -29,8 +29,13 @@ from app.domain.revenue_amounts import (
     settlement_claim_amount_wei,
 )
 from app.domain.rules import has_sufficient_payment
+from app.onchain.claim_state_reader import SettlementClaimStateReader, get_settlement_claim_state_reader
+from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
+from app.onchain.order_writer import OrderWriter, get_order_writer
+from app.onchain.tx_sender import encode_contract_call
 from app.runtime.cost_service import get_runtime_cost_service
 from app.schemas.revenue import (
+    MachineRevenueClaimResponse,
     PaymentLedgerItem,
     PlatformRevenueOverviewResponse,
     RevenueAccountAnalyticsResponse,
@@ -46,6 +51,13 @@ router = APIRouter()
 
 DEFAULT_MACHINE_ASSET_COST_CENTS = 399_900
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+
+
+def _normalize_action_mode(mode: str) -> str:
+    normalized = mode.strip().lower()
+    if normalized not in {"server_broadcast", "user_sign"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported action mode")
+    return normalized
 
 def _succeeded_payment_total_cents(order_id: str, db: Session) -> int:
     return db.scalar(
@@ -421,6 +433,83 @@ def list_machine_revenue(machine_id: str, db: Session = Depends(get_db)) -> list
         )
         for entry in entries
     ]
+
+
+@router.post(
+    "/accounts/{owner_user_id}/machines/{machine_id}/claim",
+    response_model=MachineRevenueClaimResponse,
+    response_model_exclude_none=True,
+)
+def claim_machine_revenue(
+    owner_user_id: str,
+    machine_id: str,
+    mode: str = "server_broadcast",
+    db: Session = Depends(get_db),
+    order_writer: OrderWriter = Depends(get_order_writer),
+    claim_state_reader: SettlementClaimStateReader = Depends(get_settlement_claim_state_reader),
+    onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
+) -> MachineRevenueClaimResponse:
+    machine = db.get(Machine, machine_id)
+    if machine is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
+    if machine.onchain_machine_id is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Machine has no onchain machine id")
+    if not onchain_lifecycle.enabled():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Onchain runtime is not enabled")
+
+    try:
+        claimable_amount = claim_state_reader.machine_claimable_amount(
+            onchain_machine_id=machine.onchain_machine_id,
+            owner_user_id=owner_user_id,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Unable to read onchain machine revenue: {exc}",
+        ) from exc
+    if claimable_amount <= 0:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Machine has no claimable onchain revenue")
+
+    action_mode = _normalize_action_mode(mode)
+    claim_machine = Machine(
+        id=machine.id,
+        display_name=machine.display_name,
+        owner_user_id=owner_user_id,
+        onchain_machine_id=machine.onchain_machine_id,
+        owner_chain_address=machine.owner_chain_address,
+        ownership_source=machine.ownership_source,
+    )
+    write_result = order_writer.claim_machine_revenue(claim_machine)
+    if action_mode == "user_sign":
+        return MachineRevenueClaimResponse(
+            machine_id=machine.id,
+            onchain_machine_id=machine.onchain_machine_id,
+            claimant_user_id=owner_user_id,
+            mode="user_sign",
+            chain_id=write_result.chain_id,
+            contract_address=write_result.contract_address,
+            contract_name=write_result.contract_name,
+            method_name=write_result.method_name,
+            submit_payload=write_result.payload,
+            calldata=encode_contract_call(write_result),
+        )
+
+    try:
+        broadcast = onchain_lifecycle.send_as_user(user_id=owner_user_id, write_result=write_result)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Onchain machine-revenue claimant signer is not configured: {exc}",
+        ) from exc
+
+    return MachineRevenueClaimResponse(
+        machine_id=machine.id,
+        onchain_machine_id=machine.onchain_machine_id,
+        claimant_user_id=owner_user_id,
+        tx_hash=broadcast.tx_hash,
+        contract_name=write_result.contract_name,
+        method_name=write_result.method_name,
+    )
 
 
 @router.get("/accounts/{owner_user_id}/overview", response_model=RevenueAccountOverviewResponse)

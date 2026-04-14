@@ -54,6 +54,7 @@ class Container:
             pay_to_address=settings.hsp_pay_to_address,
             redirect_url=settings.hsp_redirect_url,
             webhook_tolerance_seconds=settings.hsp_webhook_tolerance_seconds,
+            supported_currencies=settings.hsp_supported_currencies,
             usdc_address=settings.onchain_usdc_address,
             usdt_address=settings.onchain_usdt_address,
         )

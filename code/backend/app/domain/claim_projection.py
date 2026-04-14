@@ -254,6 +254,8 @@ def _refund_due_cents(settlement: SettlementRecord) -> int:
 
 
 def _claim_record_amount_wei(record: SettlementClaimRecord) -> int:
+    if record.claim_kind == "machine_revenue":
+        return settlement_claim_amount_wei(record)
     if _claim_record_matches_currency(record.token_address, "PWR"):
         return settlement_claim_amount_wei(record)
     return 0

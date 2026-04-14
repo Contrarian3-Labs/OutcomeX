@@ -18,12 +18,15 @@ from app.domain.enums import ExecutionRunStatus, ExecutionState, OrderState, Pay
 from app.domain.models import ExecutionRun, Machine, Order, Payment
 from app.domain.planning import build_fast_recommended_plans, select_recommended_plan
 from app.domain.pwr_amounts import pwr_wei_to_float
+from app.domain.revenue_amounts import latest_success_payment
 from app.domain.rules import has_sufficient_payment
 from app.execution import ExecutionStrategy, IntentRequest
 from app.execution.service import ExecutionEngineService
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
+from app.onchain.claim_state_reader import SettlementClaimStateReader, get_settlement_claim_state_reader
 from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
 from app.onchain.order_writer import OrderWriter, get_order_writer
+from app.onchain.tx_sender import encode_contract_call
 from app.runtime.cost_service import get_runtime_cost_service
 from app.runtime.hardware_simulator import get_shared_hardware_simulator
 from app.schemas.execution_run import ExecutionRunResponse
@@ -32,9 +35,11 @@ from app.schemas.order import (
     OrderCreateRequest,
     OrderListResponse,
     OrderResponse,
+    OrderSettlementActionResponse,
     ResultReadyRequest,
     ResultReadyResponse,
 )
+from app.schemas.settlement import RefundClaimResponse
 from app.services.attachments import (
     AttachmentResolutionError,
     build_planning_context_id,
@@ -43,6 +48,25 @@ from app.services.attachments import (
 )
 
 router = APIRouter()
+
+
+def build_recommended_plans(  # noqa: PLR0913
+    *,
+    user_id: str,
+    chat_session_id: str,
+    user_message: str,
+    preferred_strategy: ExecutionStrategy | None,
+    input_files: tuple[str, ...],
+    planning_context_key: str = "",
+):
+    input_files
+    return build_fast_recommended_plans(
+        user_id=user_id,
+        chat_session_id=chat_session_id,
+        user_message=user_message,
+        preferred_strategy=preferred_strategy,
+        planning_context_key=planning_context_key,
+    )
 
 
 def _resolve_order_execution_inputs(payload: OrderCreateRequest) -> tuple[str, list[str], BenchmarkSolution | None]:
@@ -78,6 +102,13 @@ def _ensure_demo_write_allowed() -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Mock result-ready is only available in dev/test",
         )
+
+
+def _normalize_action_mode(mode: str) -> str:
+    normalized = mode.strip().lower()
+    if normalized not in {"server_broadcast", "user_sign"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported action mode")
+    return normalized
 
 
 def _is_settlement_policy_frozen(order: Order) -> bool:
@@ -288,6 +319,37 @@ def _encode_orders_cursor(order: Order) -> str:
     return f"{order.created_at.isoformat()}|{order.id}"
 
 
+def _user_sign_refund_claim_response(*, order: Order, currency: str, write_result) -> RefundClaimResponse:
+    return RefundClaimResponse(
+        order_id=order.id,
+        claimant_user_id=order.user_id,
+        currency=currency.upper(),
+        mode="user_sign",
+        chain_id=write_result.chain_id,
+        contract_address=write_result.contract_address,
+        contract_name=write_result.contract_name,
+        method_name=write_result.method_name,
+        submit_payload=write_result.payload,
+        calldata=encode_contract_call(write_result),
+    )
+
+
+def _user_sign_order_action_response(*, order: Order, write_result) -> OrderSettlementActionResponse:
+    return OrderSettlementActionResponse(
+        order_id=order.id,
+        state=order.state,
+        settlement_state=order.settlement_state,
+        mode="user_sign",
+        tx_hash=None,
+        chain_id=write_result.chain_id,
+        contract_address=write_result.contract_address,
+        contract_name=write_result.contract_name,
+        method_name=write_result.method_name,
+        submit_payload=write_result.payload,
+        calldata=encode_contract_call(write_result),
+    )
+
+
 @router.post("", response_model=OrderResponse, status_code=status.HTTP_201_CREATED)
 def create_order(
     payload: OrderCreateRequest,
@@ -321,8 +383,8 @@ def create_order(
             attachment_session_id=payload.attachment_session_id,
             attachment_session_token=payload.attachment_session_token,
             attachment_ids=tuple(payload.attachment_ids),
-        ):
-            recommended_plans = build_fast_recommended_plans(
+        ) as resolved_planning_input_files:
+            recommended_plans = build_recommended_plans(
                 user_id=payload.user_id,
                 chat_session_id=payload.chat_session_id,
                 user_message=execution_prompt,
@@ -331,6 +393,7 @@ def create_order(
                     if benchmark_solution and payload.selected_plan_id is None
                     else payload.execution_strategy
                 ),
+                input_files=resolved_planning_input_files,
                 planning_context_key=planning_context_id,
             )
     except AttachmentResolutionError as exc:
@@ -482,6 +545,189 @@ def get_order_available_actions(
         refund_claim_amount_cents=refund_claim_amount_cents,
         refund_claim_amount_pwr=refund_claim_amount_pwr,
         refund_claim_pwr_anchor_price_cents=refund_projection.pwr_anchor_price_cents,
+    )
+
+
+@router.post("/{order_id}/claim-refund", response_model=RefundClaimResponse, response_model_exclude_none=True)
+def claim_order_refund(
+    order_id: str,
+    mode: str = Query(default="server_broadcast"),
+    db: Session = Depends(get_db),
+    order_writer: OrderWriter = Depends(get_order_writer),
+    claim_state_reader: SettlementClaimStateReader = Depends(get_settlement_claim_state_reader),
+    onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
+) -> RefundClaimResponse:
+    order = db.get(Order, order_id)
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    if not onchain_lifecycle.enabled():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Onchain runtime is not enabled")
+
+    refund_projection = project_order_refund_claim(order=order, db=db)
+    latest_payment = latest_success_payment(order_id=order.id, db=db)
+    currency = (
+        refund_projection.currency
+        or order.latest_success_payment_currency
+        or (latest_payment.currency.upper() if latest_payment is not None else None)
+    )
+    if currency is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Refund currency is unresolved")
+
+    try:
+        onchain_claimable = claim_state_reader.refundable_amount(user_id=order.user_id, currency=currency)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Unable to read onchain refundable balance: {exc}",
+        ) from exc
+    if onchain_claimable <= 0:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Order has no claimable onchain refund")
+
+    action_mode = _normalize_action_mode(mode)
+    write_result = order_writer.claim_refund(currency=currency, user_id=order.user_id, order_id=order.id)
+    if action_mode == "user_sign":
+        return _user_sign_refund_claim_response(order=order, currency=currency, write_result=write_result)
+
+    try:
+        broadcast = onchain_lifecycle.send_as_user(user_id=order.user_id, write_result=write_result)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Onchain refund claimant signer is not configured: {exc}",
+        ) from exc
+
+    return RefundClaimResponse(
+        order_id=order.id,
+        claimant_user_id=order.user_id,
+        currency=currency.upper(),
+        tx_hash=broadcast.tx_hash,
+        contract_name=write_result.contract_name,
+        method_name=write_result.method_name,
+    )
+
+
+@router.post("/{order_id}/confirm-result", response_model=OrderSettlementActionResponse, response_model_exclude_none=True)
+def confirm_result(
+    order_id: str,
+    mode: str = Query(default="server_broadcast"),
+    db: Session = Depends(get_db),
+    order_writer: OrderWriter = Depends(get_order_writer),
+    onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
+) -> OrderSettlementActionResponse:
+    order = db.get(Order, order_id)
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    if not _can_confirm_result(order, db):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Order cannot confirm result")
+    if not onchain_lifecycle.enabled():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Onchain runtime is not enabled")
+
+    action_mode = _normalize_action_mode(mode)
+    write_result = order_writer.confirm_result(order)
+    if action_mode == "user_sign":
+        return _user_sign_order_action_response(order=order, write_result=write_result)
+
+    try:
+        broadcast = onchain_lifecycle.send_as_user(user_id=order.user_id, write_result=write_result)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Onchain buyer signer is not configured: {exc}",
+        ) from exc
+
+    return OrderSettlementActionResponse(
+        order_id=order.id,
+        state=order.state,
+        settlement_state=order.settlement_state,
+        tx_hash=broadcast.tx_hash,
+        contract_name=write_result.contract_name,
+        method_name=write_result.method_name,
+    )
+
+
+@router.post(
+    "/{order_id}/reject-valid-preview",
+    response_model=OrderSettlementActionResponse,
+    response_model_exclude_none=True,
+)
+def reject_valid_preview(
+    order_id: str,
+    mode: str = Query(default="server_broadcast"),
+    db: Session = Depends(get_db),
+    order_writer: OrderWriter = Depends(get_order_writer),
+    onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
+) -> OrderSettlementActionResponse:
+    order = db.get(Order, order_id)
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    if not _can_reject_valid_preview(order, db):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Order cannot reject valid preview")
+    if not onchain_lifecycle.enabled():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Onchain runtime is not enabled")
+
+    action_mode = _normalize_action_mode(mode)
+    write_result = order_writer.reject_valid_preview(order)
+    if action_mode == "user_sign":
+        return _user_sign_order_action_response(order=order, write_result=write_result)
+
+    try:
+        broadcast = onchain_lifecycle.send_as_user(user_id=order.user_id, write_result=write_result)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Onchain buyer signer is not configured: {exc}",
+        ) from exc
+
+    return OrderSettlementActionResponse(
+        order_id=order.id,
+        state=order.state,
+        settlement_state=order.settlement_state,
+        tx_hash=broadcast.tx_hash,
+        contract_name=write_result.contract_name,
+        method_name=write_result.method_name,
+    )
+
+
+@router.post(
+    "/{order_id}/refund-failed-or-no-valid-preview",
+    response_model=OrderSettlementActionResponse,
+    response_model_exclude_none=True,
+)
+def refund_failed_or_no_valid_preview(
+    order_id: str,
+    mode: str = Query(default="server_broadcast"),
+    db: Session = Depends(get_db),
+    order_writer: OrderWriter = Depends(get_order_writer),
+    onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
+) -> OrderSettlementActionResponse:
+    order = db.get(Order, order_id)
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    if not _can_refund_failed_or_no_valid_preview(order, db):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Order cannot trigger failed-preview refund")
+    if not onchain_lifecycle.enabled():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Onchain runtime is not enabled")
+
+    action_mode = _normalize_action_mode(mode)
+    write_result = order_writer.refund_failed_or_no_valid_preview(order)
+    if action_mode == "user_sign":
+        return _user_sign_order_action_response(order=order, write_result=write_result)
+
+    try:
+        broadcast = onchain_lifecycle.send_as_user(user_id=order.user_id, write_result=write_result)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Onchain buyer signer is not configured: {exc}",
+        ) from exc
+
+    return OrderSettlementActionResponse(
+        order_id=order.id,
+        state=order.state,
+        settlement_state=order.settlement_state,
+        tx_hash=broadcast.tx_hash,
+        contract_name=write_result.contract_name,
+        method_name=write_result.method_name,
     )
 
 

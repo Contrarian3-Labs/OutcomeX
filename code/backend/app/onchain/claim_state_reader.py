@@ -10,6 +10,7 @@ from app.onchain.tx_sender import JsonRpcClient, PythonTransactionSender
 
 REFUNDABLE_BY_TOKEN_SELECTOR = "0xed7b5281"
 PLATFORM_ACCRUED_BY_TOKEN_SELECTOR = "0x549b1179"
+CLAIMABLE_BY_MACHINE_OWNER_SELECTOR = "0xc0bd4ed7"
 
 
 class SettlementClaimStateReader(Protocol):
@@ -19,12 +20,18 @@ class SettlementClaimStateReader(Protocol):
     def platform_accrued_amount(self, *, currency: str) -> int:
         ...
 
+    def machine_claimable_amount(self, *, onchain_machine_id: str, owner_user_id: str) -> int:
+        ...
+
 
 class NullSettlementClaimStateReader:
     def refundable_amount(self, *, user_id: str, currency: str) -> int:
         return 0
 
     def platform_accrued_amount(self, *, currency: str) -> int:
+        return 0
+
+    def machine_claimable_amount(self, *, onchain_machine_id: str, owner_user_id: str) -> int:
         return 0
 
 
@@ -67,6 +74,24 @@ class JsonRpcSettlementClaimStateReader:
         )
         return self._call_uint256(
             contract_address=self._contracts_registry.settlement_controller().contract_address,
+            data=data,
+        )
+
+    def machine_claimable_amount(self, *, onchain_machine_id: str, owner_user_id: str) -> int:
+        owner_wallet = self._buyer_address_resolver.resolve_wallet(owner_user_id)
+        if owner_wallet is None:
+            raise RuntimeError("machine_owner_wallet_unresolved")
+        try:
+            machine_id = int(str(onchain_machine_id))
+        except ValueError as exc:
+            raise RuntimeError("invalid_onchain_machine_id") from exc
+        data = (
+            CLAIMABLE_BY_MACHINE_OWNER_SELECTOR
+            + PythonTransactionSender._encode_uint256(machine_id)
+            + PythonTransactionSender._encode_address(owner_wallet)
+        )
+        return self._call_uint256(
+            contract_address=self._contracts_registry.revenue_vault().contract_address,
             data=data,
         )
 

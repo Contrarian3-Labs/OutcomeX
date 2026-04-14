@@ -70,13 +70,13 @@ code/backend
 
 This backend now supports two parallel payment rails:
 
-- `HSP rail`: backend creates checkout intent and later ingests webhook confirmation
+- `HSP rail`: backend creates checkout intent and later syncs merchant status by webhook and/or backend polling
 - `Direct onchain rail`: backend creates a wallet-signable `OrderPaymentRouter` call spec for `USDC` / `USDT` / `PWR`, and later syncs the confirmed tx back into control-plane state
 
 Current direct onchain behavior:
 
 - `USDC` uses `payWithUSDCByAuthorization` (`eip3009`)
-- `USDT` uses `payWithUSDT` (`permit2`)
+- `USDT` uses `payWithUSDT` (`erc20_approve`)
 - `PWR` uses `payWithPWR` (`erc20_approve`)
 
 Current PWR anchor behavior:
@@ -133,6 +133,12 @@ Production note:
 
 - `prod` no longer silently degrades to `NullOnchainIndexer`
 - deploy with a reachable RPC + valid indexer subscriptions + healthy onchain config, or startup will fail fast
+
+HashKey testnet runtime note:
+
+- `code/backend/.env.hashkey-testnet.example` now includes the live HashKey testnet contract addresses plus the HSP polling/env knobs needed for a real `USDT via HSP` rollout
+- current recommended merchant rollout remains `USDT`-only on HashKey testnet; `OUTCOMEX_HSP_SUPPORTED_CURRENCIES=USDT`
+- if webhook stays disabled, keep `OUTCOMEX_HSP_POLL_ENABLED=true` and rely on `POST /api/v1/payments/{payment_id}/sync-hsp` plus background polling
 
 ## Test
 

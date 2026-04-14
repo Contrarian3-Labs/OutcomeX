@@ -106,7 +106,6 @@ class LocalAccount:
 class Deployment:
     usdc: str
     usdt: str
-    permit2: str
     pwr: str
     machine_asset: str
     machine_marketplace: str
@@ -236,7 +235,6 @@ def _deploy_contracts(*, rpc_url: str, admin: LocalAccount, treasury: LocalAccou
     required = (
         "MockUSDCWithAuthorization",
         "MockUSDT",
-        "MockPermit2",
         "PWRToken",
         "MachineAssetNFT",
         "MachineMarketplace",
@@ -250,13 +248,12 @@ def _deploy_contracts(*, rpc_url: str, admin: LocalAccount, treasury: LocalAccou
 
     raw_return = str(payload.get("returns", {}).get("deployed", {}).get("value", ""))
     pieces = [part.strip() for part in raw_return.strip("() ").split(",") if part.strip()]
-    if len(pieces) < 11:
+    if len(pieces) < 10:
         raise RuntimeError(f"deployment_return_unexpected:{raw_return}")
 
     return Deployment(
         usdc=addresses["MockUSDCWithAuthorization"],
         usdt=addresses["MockUSDT"],
-        permit2=addresses["MockPermit2"],
         pwr=addresses["PWRToken"],
         machine_asset=addresses["MachineAssetNFT"],
         machine_marketplace=addresses["MachineMarketplace"],
@@ -295,7 +292,6 @@ def _configure_backend_env(
             "OUTCOMEX_ONCHAIN_SETTLEMENT_CONTROLLER_ADDRESS": deployment.settlement_controller,
             "OUTCOMEX_ONCHAIN_REVENUE_VAULT_ADDRESS": deployment.revenue_vault,
             "OUTCOMEX_ONCHAIN_PWR_TOKEN_ADDRESS": deployment.pwr,
-            "OUTCOMEX_ONCHAIN_PERMIT2_ADDRESS": deployment.permit2,
             "OUTCOMEX_ONCHAIN_USDC_ADDRESS": deployment.usdc,
             "OUTCOMEX_ONCHAIN_USDT_ADDRESS": deployment.usdt,
             "OUTCOMEX_ONCHAIN_BROADCASTER_PRIVATE_KEY": admin.private_key,
