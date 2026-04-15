@@ -17,19 +17,21 @@ os.environ["OUTCOMEX_HSP_PAY_TO_ADDRESS"] = ""
 
 from app.core.config import reset_settings_cache
 from app.core.container import get_container, reset_container_cache
+from app.api.routes import primary_issuance as primary_issuance_module
 from app.domain.enums import PaymentState
 from app.api.routes.primary_issuance import _reserve_primary_stock_atomically
 from app.domain.models import Machine, PrimaryIssuancePurchase, PrimaryIssuanceSku
 from app.integrations.hsp_adapter import HSPWebhookEvent
 from app.main import create_app
 from app.onchain.lifecycle_service import MintedMachineReceipt, get_onchain_lifecycle_service
+from app.onchain.receipts import ChainReceipt
 
 
 class SpyOnchainLifecycleService:
     def __init__(self) -> None:
         self.mint_calls: list[dict[str, str]] = []
         self.reconcile_hits: dict[str, str] = {}
-        self.find_calls: list[str] = []
+        self.find_calls: list[dict[str, object]] = []
         self.find_error: str | None = None
         self._counter = 0
 
@@ -52,8 +54,8 @@ class SpyOnchainLifecycleService:
             onchain_machine_id=machine_id,
         )
 
-    def find_minted_machine_by_token_uri(self, *, token_uri: str) -> str | None:
-        self.find_calls.append(token_uri)
+    def find_minted_machine_by_token_uri(self, *, token_uri: str, from_block: int | None = None) -> str | None:
+        self.find_calls.append({"token_uri": token_uri, "from_block": from_block})
         if self.find_error:
             raise RuntimeError(self.find_error)
         return self.reconcile_hits.get(token_uri)
@@ -406,7 +408,7 @@ def test_primary_success_retry_with_new_event_does_not_remint_after_success_mark
     assert retry.json()["duplicate"] is False
     assert retry.json()["minted_onchain_machine_id"] == "9901"
     assert len(spy_lifecycle.mint_calls) == 0
-    assert spy_lifecycle.find_calls == [token_uri]
+    assert spy_lifecycle.find_calls == [{"token_uri": token_uri, "from_block": None}]
 
     with get_container().session_factory() as session:
         persisted = session.get(PrimaryIssuancePurchase, purchase["purchase_id"])
@@ -414,6 +416,56 @@ def test_primary_success_retry_with_new_event_does_not_remint_after_success_mark
         assert persisted.minted_machine_id is not None
         assert persisted.minted_onchain_machine_id == "9901"
         assert persisted.stock_reserved is False
+
+
+def test_primary_success_retry_reconciles_from_callback_receipt_block(
+    client: tuple[TestClient, SpyOnchainLifecycleService],
+    monkeypatch,
+) -> None:
+    test_client, spy_lifecycle = client
+    purchase = _create_purchase_intent(test_client)
+    token_uri = f"ipfs://outcomex-machine/primary-issuance/{purchase['purchase_id']}"
+    spy_lifecycle.reconcile_hits[token_uri] = "9902"
+
+    with get_container().session_factory() as session:
+        persisted = session.get(PrimaryIssuancePurchase, purchase["purchase_id"])
+        assert persisted is not None
+        persisted.state = PaymentState.SUCCEEDED
+        persisted.callback_event_id = "evt-initial-success"
+        persisted.callback_tx_hash = "0xcallbacktx"
+        persisted.stock_reserved = True
+        session.add(persisted)
+        session.commit()
+
+    class ReceiptReaderStub:
+        @staticmethod
+        def get_receipt(tx_hash: str):
+            if tx_hash != "0xcallbacktx":
+                return None
+            return ChainReceipt(
+                tx_hash="0xcallbacktx",
+                status=1,
+                from_address="0x1111111111111111111111111111111111111111",
+                to_address="0x2222222222222222222222222222222222222222",
+                block_number=43210,
+                event_id=f"receipt:{tx_hash}:43210",
+                metadata={},
+            )
+
+    monkeypatch.setattr(primary_issuance_module, "get_receipt_reader", lambda: ReceiptReaderStub())
+
+    retry_payload = _webhook_payload(
+        purchase,
+        status="payment-successful",
+        request_id="evt-primary-retry-reconcile-from-block",
+        tx_signature="0xretrynewtxblock",
+    )
+    retry_body, retry_headers = _sign_payload(retry_payload)
+    retry = test_client.post("/api/v1/payments/hsp/webhooks", content=retry_body, headers=retry_headers)
+
+    assert retry.status_code == 200
+    assert retry.json()["minted_onchain_machine_id"] == "9902"
+    assert spy_lifecycle.find_calls == [{"token_uri": token_uri, "from_block": 43210}]
 
 
 def test_primary_fresh_success_skips_reconciliation_and_mints_directly(

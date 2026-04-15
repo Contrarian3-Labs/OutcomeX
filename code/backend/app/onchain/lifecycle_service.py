@@ -77,11 +77,11 @@ class OnchainLifecycleService:
             onchain_machine_id=machine_mint["machine_id"] if machine_mint is not None else None,
         )
 
-    def find_minted_machine_by_token_uri(self, *, token_uri: str) -> str | None:
+    def find_minted_machine_by_token_uri(self, *, token_uri: str, from_block: int | None = None) -> str | None:
         if not self.enabled():
             return None
 
-        logs = self._fetch_machine_minted_logs()
+        logs = self._fetch_machine_minted_logs(from_block=from_block)
         for log in reversed(logs):
             decoded = self._decode_machine_minted_log(log)
             if decoded.get("token_uri") != token_uri:
@@ -145,31 +145,46 @@ class OnchainLifecycleService:
         normalized_key = UserSignerRegistry._normalize_private_key(normalized)
         return UserSigner(user_id=wallet_address, wallet_address=wallet_address, private_key=normalized_key)
 
-    def _fetch_machine_minted_logs(self) -> list[dict[str, Any]]:
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "eth_getLogs",
-            "params": [
-                {
-                    "fromBlock": "0x0",
-                    "toBlock": "latest",
-                    "address": self._contracts_registry.machine_asset().contract_address,
-                    "topics": [MACHINE_MINTED_TOPIC0],
-                }
-            ],
-        }
+    def _fetch_machine_minted_logs(self, *, from_block: int | None = None) -> list[dict[str, Any]]:
+        start_block = max(0, from_block if from_block is not None else self._settings.onchain_indexer_bootstrap_block)
+        max_span = max(1, int(self._settings.onchain_indexer_max_block_span))
         try:
             with httpx.Client(timeout=max(1.0, self._settings.onchain_receipt_timeout_seconds)) as client:
-                response = client.post(self._settings.onchain_rpc_url, json=payload)
-                response.raise_for_status()
-                body = response.json()
+                latest_block_response = client.post(
+                    self._settings.onchain_rpc_url,
+                    json={"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []},
+                )
+                latest_block_response.raise_for_status()
+                latest_block = int(str(latest_block_response.json().get("result", "0x0")), 16)
+
+                results: list[dict[str, Any]] = []
+                block_cursor = start_block
+                while block_cursor <= latest_block:
+                    batch_to_block = min(block_cursor + max_span - 1, latest_block)
+                    payload = {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "eth_getLogs",
+                        "params": [
+                            {
+                                "fromBlock": hex(block_cursor),
+                                "toBlock": hex(batch_to_block),
+                                "address": self._contracts_registry.machine_asset().contract_address,
+                                "topics": [MACHINE_MINTED_TOPIC0],
+                            }
+                        ],
+                    }
+                    response = client.post(self._settings.onchain_rpc_url, json=payload)
+                    response.raise_for_status()
+                    body = response.json()
+                    result = body.get("result")
+                    if not isinstance(result, list):
+                        raise RuntimeError("machine_minted_log_fetch_invalid_payload")
+                    results.extend(item for item in result if isinstance(item, dict))
+                    block_cursor = batch_to_block + 1
         except Exception as exc:  # pragma: no cover - network failures vary by environment
             raise RuntimeError("machine_minted_log_fetch_failed") from exc
-        result = body.get("result")
-        if not isinstance(result, list):
-            raise RuntimeError("machine_minted_log_fetch_invalid_payload")
-        return [item for item in result if isinstance(item, dict)]
+        return results
 
     @staticmethod
     def _decode_machine_minted_log(log: dict[str, Any]) -> dict[str, str]:

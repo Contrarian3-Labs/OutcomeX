@@ -138,6 +138,27 @@ def _primary_hsp_receipt_confirms_payment(*, purchase: PrimaryIssuancePurchase, 
     return False
 
 
+def _primary_purchase_reconciliation_from_block(
+    purchase: PrimaryIssuancePurchase,
+    *,
+    candidate_tx_hashes: tuple[str | None, ...] = (),
+) -> int | None:
+    receipt_reader = get_receipt_reader()
+    candidate_blocks: list[int] = []
+    all_tx_hashes = (purchase.callback_tx_hash, *candidate_tx_hashes)
+    for raw_tx_hash in all_tx_hashes:
+        tx_hash = _normalize_hsp_tx_hash(raw_tx_hash)
+        if tx_hash is None or not tx_hash.startswith("0x"):
+            continue
+        receipt = receipt_reader.get_receipt(tx_hash)
+        if receipt is None:
+            continue
+        candidate_blocks.append(int(receipt.block_number))
+    if not candidate_blocks:
+        return None
+    return min(candidate_blocks)
+
+
 def _effective_primary_hsp_mapped_state(
     *,
     purchase: PrimaryIssuancePurchase,
@@ -289,6 +310,7 @@ def _finalize_primary_purchase_success(
     onchain_lifecycle: OnchainLifecycleService,
     db: Session,
     reconcile_existing_mint: bool,
+    reconciliation_candidate_tx_hashes: tuple[str | None, ...] = (),
 ) -> None:
     if purchase.minted_machine_id is not None:
         return
@@ -305,8 +327,15 @@ def _finalize_primary_purchase_success(
 
     token_uri = _primary_purchase_token_uri(purchase)
     if reconcile_existing_mint:
+        reconciliation_from_block = _primary_purchase_reconciliation_from_block(
+            purchase,
+            candidate_tx_hashes=reconciliation_candidate_tx_hashes,
+        )
         try:
-            existing_onchain_machine_id = onchain_lifecycle.find_minted_machine_by_token_uri(token_uri=token_uri)
+            existing_onchain_machine_id = onchain_lifecycle.find_minted_machine_by_token_uri(
+                token_uri=token_uri,
+                from_block=reconciliation_from_block,
+            )
         except RuntimeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -401,6 +430,7 @@ def apply_primary_purchase_hsp_webhook(
             sku = db.get(PrimaryIssuanceSku, purchase.sku_id)
             if sku is None:
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Primary issuance SKU not found")
+            previous_callback_tx_hash = purchase.callback_tx_hash
             _mark_primary_purchase_callback(purchase=purchase, event=event)
             db.add(purchase)
             _finalize_primary_purchase_success(
@@ -410,6 +440,7 @@ def apply_primary_purchase_hsp_webhook(
                 onchain_lifecycle=onchain_lifecycle,
                 db=db,
                 reconcile_existing_mint=True,
+                reconciliation_candidate_tx_hashes=(previous_callback_tx_hash, event.tx_hash),
             )
             return {
                 "purchase_id": purchase.id,

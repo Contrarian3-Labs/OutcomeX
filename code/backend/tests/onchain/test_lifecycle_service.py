@@ -1,154 +1,70 @@
-from datetime import datetime, timezone
+from __future__ import annotations
 
-import pytest
+import httpx
 
 from app.core.config import Settings
 from app.onchain.lifecycle_service import OnchainLifecycleService
-from app.onchain.order_writer import OrderWriteResult
-from app.onchain.receipts import ChainReceipt
 
 
-def _write_result() -> OrderWriteResult:
-    return OrderWriteResult(
-        tx_hash="0xsynthetic",
-        submitted_at=datetime(2026, 4, 6, tzinfo=timezone.utc),
-        chain_id=133,
-        contract_name="SettlementController",
-        contract_address="0x0000000000000000000000000000000000000135",
-        method_name="claimPlatformRevenue",
-        idempotency_key="key",
-        payload={"payment_token_address": "0x79aec4eea31d50792f61d1ca0733c18c89524c9e"},
-    )
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self):
+        return self._payload
 
 
-class FakeSender:
-    def __init__(self, **kwargs) -> None:
-        self.kwargs = kwargs
+def test_fetch_machine_minted_logs_batches_by_max_block_span(monkeypatch) -> None:
+    requests: list[dict] = []
 
-    def send(self, write_result: OrderWriteResult) -> OrderWriteResult:
-        return write_result
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
 
+        def __enter__(self):
+            return self
 
-class StubReceiptReader:
-    def __init__(self, receipt: ChainReceipt | None) -> None:
-        self.receipt = receipt
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
 
-    def get_receipt(self, tx_hash: str) -> ChainReceipt | None:
-        return self.receipt
+        def post(self, url: str, json: dict):
+            requests.append(json)
+            method = json["method"]
+            if method == "eth_blockNumber":
+                return _FakeResponse({"result": hex(15)})
+            if method == "eth_getLogs":
+                params = json["params"][0]
+                return _FakeResponse(
+                    {
+                        "result": [
+                            {
+                                "blockNumber": params["fromBlock"],
+                                "transactionHash": f"0x{params['fromBlock'][2:]:0>64}",
+                            }
+                        ]
+                    }
+                )
+            raise AssertionError(f"unexpected method: {method}")
 
+    monkeypatch.setattr(httpx, "Client", FakeClient)
 
-class FlakyReceiptReader:
-    def __init__(self, *responses) -> None:
-        self._responses = list(responses)
-
-    def get_receipt(self, tx_hash: str) -> ChainReceipt | None:
-        response = self._responses.pop(0)
-        if isinstance(response, Exception):
-            raise response
-        return response
-
-
-def test_send_as_treasury_raises_when_receipt_missing(monkeypatch) -> None:
-    monkeypatch.setattr("app.onchain.lifecycle_service.PythonTransactionSender", FakeSender)
     service = OnchainLifecycleService(
         settings=Settings(
-            onchain_rpc_url="http://127.0.0.1:8545",
-            onchain_platform_treasury_private_key="0xabc",
-            onchain_tx_timeout_seconds=0.1,
-        )
-    )
-    service._receipt_reader = StubReceiptReader(None)
-
-    with pytest.raises(RuntimeError, match="transaction_receipt_missing:0xsynthetic"):
-        service.send_as_treasury(write_result=_write_result())
-
-
-def test_send_as_treasury_raises_when_receipt_status_is_failed(monkeypatch) -> None:
-    monkeypatch.setattr("app.onchain.lifecycle_service.PythonTransactionSender", FakeSender)
-    service = OnchainLifecycleService(
-        settings=Settings(
-            onchain_rpc_url="http://127.0.0.1:8545",
-            onchain_platform_treasury_private_key="0xabc",
-            onchain_tx_timeout_seconds=0.1,
-        )
-    )
-    service._receipt_reader = StubReceiptReader(
-        ChainReceipt(
-            tx_hash="0xsynthetic",
-            status=0,
-            from_address="0x9999999999999999999999999999999999999999",
-            to_address="0x0000000000000000000000000000000000000135",
-            block_number=123,
-            event_id="receipt:0xsynthetic:123",
+            onchain_rpc_url="https://rpc.example",
+            onchain_machine_asset_address="0x0000000000000000000000000000000000000132",
+            onchain_indexer_bootstrap_block=5,
+            onchain_indexer_max_block_span=2,
         )
     )
 
-    with pytest.raises(RuntimeError, match="transaction_failed:0xsynthetic"):
-        service.send_as_treasury(write_result=_write_result())
+    logs = service._fetch_machine_minted_logs(from_block=12)
 
-
-def test_send_as_treasury_retries_after_transient_receipt_error(monkeypatch) -> None:
-    monkeypatch.setattr("app.onchain.lifecycle_service.PythonTransactionSender", FakeSender)
-    service = OnchainLifecycleService(
-        settings=Settings(
-            onchain_rpc_url="http://127.0.0.1:8545",
-            onchain_platform_treasury_private_key="0xabc",
-            onchain_tx_timeout_seconds=0.5,
-        )
-    )
-    service._receipt_reader = FlakyReceiptReader(
-        RuntimeError("temporary_rpc_reset"),
-        ChainReceipt(
-            tx_hash="0xsynthetic",
-            status=1,
-            from_address="0x9999999999999999999999999999999999999999",
-            to_address="0x0000000000000000000000000000000000000135",
-            block_number=123,
-            event_id="receipt:0xsynthetic:123",
-        ),
-    )
-
-    receipt = service.send_as_treasury(write_result=_write_result())
-
-    assert receipt.tx_hash == "0xsynthetic"
-    assert receipt.receipt is not None
-    assert receipt.receipt.status == 1
-
-
-class _CapturingSender(FakeSender):
-    def send(self, write_result: OrderWriteResult) -> OrderWriteResult:
-        self.last_write_result = write_result
-        return write_result
-
-
-def test_send_as_user_prefers_expected_wallet_signer_from_explicit_keys(monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    def sender_factory(**kwargs):
-        captured.update(kwargs)
-        return FakeSender(**kwargs)
-
-    monkeypatch.setattr("app.onchain.lifecycle_service.PythonTransactionSender", sender_factory)
-    service = OnchainLifecycleService(
-        settings=Settings(
-            onchain_rpc_url="http://127.0.0.1:8545",
-            buyer_wallet_map_json='{"owner-1":"0x70997970c51812dc3a010c7d01b50e0d17dc79c8"}',
-            user_signer_private_keys_json='{"owner-1":"0x59c6995e998f97a5a0044976f8a35f1dcd80e45f5c7b0f0f3a6cce8d7b5a5a6d"}',
-            onchain_machine_owner_private_key="0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
-            onchain_tx_timeout_seconds=0.1,
-        )
-    )
-    service._receipt_reader = StubReceiptReader(
-        ChainReceipt(
-            tx_hash="0xsynthetic",
-            status=1,
-            from_address="0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
-            to_address="0x0000000000000000000000000000000000000135",
-            block_number=123,
-            event_id="receipt:0xsynthetic:123",
-        )
-    )
-
-    service.send_as_user(user_id="owner-1", write_result=_write_result())
-
-    assert captured["private_key"] == "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+    assert [request["method"] for request in requests] == ["eth_blockNumber", "eth_getLogs", "eth_getLogs"]
+    assert requests[1]["params"][0]["fromBlock"] == hex(12)
+    assert requests[1]["params"][0]["toBlock"] == hex(13)
+    assert requests[2]["params"][0]["fromBlock"] == hex(14)
+    assert requests[2]["params"][0]["toBlock"] == hex(15)
+    assert len(logs) == 2
