@@ -8,7 +8,7 @@ from app.execution.contracts import ExecutionStrategy
 
 class OrderCreateRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=64)
-    machine_id: str = Field(min_length=1, max_length=36)
+    machine_id: str | None = Field(default=None, min_length=1, max_length=36)
     chat_session_id: str = Field(min_length=1, max_length=64)
     user_prompt: str = Field(min_length=1)
     benchmark_task_id: str | None = None

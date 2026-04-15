@@ -273,6 +273,104 @@ def _machine_is_runtime_available(order: Order, machine_id: str) -> bool:
     return snapshot.queued_count < simulator.profile.max_queue_depth
 
 
+def _request_workload(
+    *,
+    prompt: str,
+    input_files: list[str],
+    execution_strategy: ExecutionStrategy,
+    machine_id: str,
+):
+    return ExecutionEngineService._estimate_workload(
+        IntentRequest(
+            intent_id=f"route:{machine_id}",
+            prompt=prompt,
+            input_files=tuple(input_files),
+            execution_strategy=execution_strategy,
+            context={"machine_id": machine_id},
+        )
+    )
+
+
+def _machine_can_accept_order_request(
+    *,
+    machine: Machine,
+    prompt: str,
+    input_files: list[str],
+    execution_strategy: ExecutionStrategy,
+) -> bool:
+    if machine.has_active_tasks or machine.has_unsettled_revenue:
+        return False
+
+    simulator = get_shared_hardware_simulator(machine.id)
+    snapshot = simulator.snapshot()
+    workload = _request_workload(
+        prompt=prompt,
+        input_files=input_files,
+        execution_strategy=execution_strategy,
+        machine_id=machine.id,
+    )
+    can_run_now = (
+        snapshot.running_count < snapshot.max_concurrency
+        and snapshot.used_capacity_units + workload.capacity_units <= snapshot.total_capacity_units
+        and snapshot.used_memory_mb + workload.memory_mb <= snapshot.total_memory_mb
+    )
+    if can_run_now:
+        return True
+    return snapshot.queued_count < simulator.profile.max_queue_depth
+
+
+def _route_order_machine(
+    *,
+    payload: OrderCreateRequest,
+    db: Session,
+    prompt: str,
+    input_files: list[str],
+    execution_strategy: ExecutionStrategy,
+) -> Machine:
+    requested_machine = db.get(Machine, payload.machine_id) if payload.machine_id else None
+    if payload.machine_id and requested_machine is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
+
+    if requested_machine is not None:
+        if requested_machine.owner_user_id == payload.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Create order cannot target your own machine. Use the self-use workspace instead.",
+            )
+        if not _machine_can_accept_order_request(
+            machine=requested_machine,
+            prompt=prompt,
+            input_files=input_files,
+            execution_strategy=execution_strategy,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Requested machine is not currently available for routed execution.",
+            )
+        return requested_machine
+
+    candidates = list(
+        db.scalars(
+            select(Machine)
+            .where(Machine.owner_user_id != payload.user_id)
+            .order_by(Machine.created_at.asc(), Machine.id.asc())
+        )
+    )
+    for machine in candidates:
+        if _machine_can_accept_order_request(
+            machine=machine,
+            prompt=prompt,
+            input_files=input_files,
+            execution_strategy=execution_strategy,
+        ):
+            return machine
+
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="No active non-owner machine is currently available for routed execution.",
+    )
+
+
 def _serialize_order(order: Order, *, db: Session) -> OrderResponse:
     machine = db.get(Machine, order.machine_id) if order.machine_id else None
     machine_is_available = _machine_is_runtime_available(order, machine.id) if machine is not None else None
@@ -454,10 +552,6 @@ def create_order(
     payload: OrderCreateRequest,
     db: Session = Depends(get_db),
 ) -> OrderResponse:
-    machine = db.get(Machine, payload.machine_id)
-    if machine is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
-
     execution_prompt, execution_input_files, benchmark_solution = _resolve_order_execution_inputs(payload)
 
     derived_planning_context_id = build_planning_context_id(
@@ -522,6 +616,14 @@ def create_order(
             status_code=status.HTTP_409_CONFLICT,
             detail="Selected plan is invalid for this request",
         )
+
+    machine = _route_order_machine(
+        payload=payload,
+        db=db,
+        prompt=execution_prompt,
+        input_files=execution_input_files,
+        execution_strategy=selected_plan.strategy,
+    )
 
     order = Order(
         user_id=payload.user_id,
