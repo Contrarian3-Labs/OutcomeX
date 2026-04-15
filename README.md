@@ -113,7 +113,6 @@ So the repo references AgentSkillOS architecture, but it materially changes the 
 - `code/contracts` - Foundry contracts for machine assets, marketplace, order lifecycle, payment routing, settlement, and claims
 - `code/agentskillos` - vendored execution runtime used by OutcomeX for planning and delivery
 - `code/README.md` - engineering map of the monorepo
-- `HACKATHON_REVIEW.md` - architecture and submission review
 
 ## Current implementation posture
 
@@ -136,6 +135,14 @@ What should be stated carefully:
 - Product and control-plane overview: `code/backend/README.md`
 - Protocol and settlement model: `code/contracts/README.md`
 - Execution-kernel integration: `code/agentskillos/README.md`
-- Hackathon review and positioning guidance: `HACKATHON_REVIEW.md`
-- Demo narrative: `docs/demo-script-cn.md`
-- Validation evidence: `docs/e2e-validation-2026-04-09-cn.md`
+- Monorepo engineering guide: `code/README.md`
+
+## Markdown index
+
+Current top-level markdown navigation for the documentation set created in this repo:
+
+- `README.md` - product overview, DeFi/RWA positioning, and architecture
+- `code/README.md` - monorepo structure and subsystem boundaries
+- `code/backend/README.md` - backend control-plane responsibilities and runtime model
+- `code/contracts/README.md` - onchain protocol, settlement, and machine-asset logic
+- `code/agentskillos/README.md` - vendored AgentSkillOS role and OutcomeX integration boundary
