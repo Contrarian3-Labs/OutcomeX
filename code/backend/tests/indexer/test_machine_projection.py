@@ -100,12 +100,13 @@ def test_machine_ownership_integrator_persists_chain_owner_even_when_user_mappin
             event_id="177:13:0xowner:2",
         )
 
-        assert outcome.applied is False
-        assert outcome.reason == "owner_unresolved"
+        assert outcome.applied is True
+        assert outcome.owner_user_id == "0x3333333333333333333333333333333333333333"
+        assert outcome.reason is None
         assert outcome.chain_owner == "0x3333333333333333333333333333333333333333"
 
         db.refresh(machine)
-        assert machine.owner_user_id == "owner-1"
+        assert machine.owner_user_id == "0x3333333333333333333333333333333333333333"
         assert machine.owner_chain_address == "0x3333333333333333333333333333333333333333"
         assert machine.owner_projection_last_event_id == "177:13:0xowner:2"
         assert machine.owner_projected_at is not None

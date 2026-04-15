@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from datetime import datetime, timezone
@@ -23,6 +23,7 @@ from app.indexer.events import (
     RevenueClaimedEvent,
     SettlementSplitEvent,
 )
+from app.indexer.recovery import PAYMENT_SOURCE_HSP_CONFIRMED
 from app.indexer.sql_projection import SqlProjectionStore
 
 PWR_ANCHOR_PRICE_CENTS = 25
@@ -150,6 +151,187 @@ def test_sql_projection_tracks_marketplace_listing_lifecycle() -> None:
         assert listing.state == "filled"
         assert listing.buyer_chain_address == "0xbuyer000000000000000000000000000000000000"
         assert listing.filled_at is not None
+
+
+def test_sql_projection_reconstructs_machine_and_listing_from_chain_only() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+    store = SqlProjectionStore(
+        session_factory=session_factory,
+        owner_resolver=lambda wallet: {
+            "0x1111111111111111111111111111111111111111": "owner-1",
+        }.get(wallet),
+    )
+    store.apply(
+        _event(
+            event_name="Transfer",
+            contract_name="MachineAssetNFT",
+            transaction_hash="0xmachine-transfer",
+            payload=MachineAssetEvent(
+                machine_id="7",
+                owner="0x1111111111111111111111111111111111111111",
+                metadata_uri="ipfs://outcomex-machine/7",
+                pwr_quota=None,
+            ),
+        )
+    )
+    store.apply(
+        _event(
+            event_name="ListingCreated",
+            contract_name="MachineMarketplace",
+            contract_address="0x3000000000000000000000000000000000000099",
+            transaction_hash="0xlisting-created-rebuild",
+            block_number=11,
+            payload=MarketplaceListingEvent(
+                listing_id="11",
+                machine_id="7",
+                seller="0x1111111111111111111111111111111111111111",
+                buyer=None,
+                payment_token="0x372325443233fEbaC1F6998aC750276468c83CC6".lower(),
+                price_wei=1_250_000,
+                expiry_timestamp=int(datetime.now(timezone.utc).timestamp()) + 3600,
+                status="ACTIVE",
+            ),
+        )
+    )
+
+    with session_factory() as db:
+        machine = db.scalar(select(Machine).where(Machine.onchain_machine_id == "7"))
+        listing = db.scalar(select(MachineListing).where(MachineListing.onchain_listing_id == "11"))
+        assert machine is not None
+        assert machine.owner_user_id == "owner-1"
+        assert machine.display_name == "OutcomeX Machine #7"
+        assert listing is not None
+        assert listing.machine_id == machine.id
+        assert listing.payment_token_symbol == "USDT"
+
+
+def test_sql_projection_reconstructs_order_payment_and_settlement_from_chain_only() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+    store = SqlProjectionStore(
+        session_factory=session_factory,
+        owner_resolver=lambda wallet: {
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "buyer-1",
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "owner-1",
+        }.get(wallet),
+    )
+    store.apply(
+        _event(
+            event_name="OrderCreated",
+            transaction_hash="0xcreate-order",
+            block_number=20,
+            payload=OrderLifecycleEvent(
+                order_id="42",
+                machine_id="7",
+                buyer="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                status="CREATED",
+                amount_wei=125,
+                settlement_beneficiary="0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                dividend_eligible=True,
+            ),
+        )
+    )
+    store.apply(
+        _event(
+            event_name="PaymentFinalized",
+            transaction_hash="0xpay-order",
+            block_number=21,
+            contract_name="OrderPaymentRouter",
+            payload=OrderLifecycleEvent(
+                order_id="42",
+                machine_id="7",
+                buyer="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                status="PAID",
+                amount_wei=1_250_000,
+                payer="0xadapter0000000000000000000000000000000000",
+                payment_token="0x372325443233febaC1F6998aC750276468c83CC6".lower(),
+                payment_source=PAYMENT_SOURCE_HSP_CONFIRMED,
+                settlement_beneficiary="0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                dividend_eligible=True,
+                refund_authorized=True,
+            ),
+        )
+    )
+    store.apply(
+        _event(
+            event_name="OrderSettled",
+            transaction_hash="0xsettled-order",
+            block_number=22,
+            payload=OrderLifecycleEvent(
+                order_id="42",
+                machine_id="7",
+                buyer="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                status="CONFIRMED",
+                amount_wei=125,
+            ),
+        )
+    )
+    store.apply(
+        _event(
+            event_name="RevenueAccrued",
+            transaction_hash="0xrevenue-order",
+            block_number=23,
+            contract_name="RevenueVault",
+            payload=SettlementSplitEvent(
+                order_id="42",
+                machine_id="7",
+                recipient="0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                role="MACHINE_OWNER_DIVIDEND",
+                amount_wei=_pwr_wei_for_cents(113),
+                bps=None,
+            ),
+        )
+    )
+    store.apply(
+        _event(
+            event_name="MachineRevenueClaimedDetailed",
+            transaction_hash="0xclaim-order",
+            block_number=24,
+            contract_name="RevenueVault",
+            payload=RevenueClaimedEvent(
+                machine_id="7",
+                account="0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                amount_wei=_pwr_wei_for_cents(113),
+                claim_nonce=None,
+                claim_kind="machine_revenue",
+                remaining_claimable_wei=0,
+                remaining_unsettled_wei=0,
+            ),
+        )
+    )
+
+    with session_factory() as db:
+        machine = db.scalar(select(Machine).where(Machine.onchain_machine_id == "7"))
+        order = db.scalar(select(Order).where(Order.onchain_order_id == "42"))
+        payment = db.scalar(select(Payment).where(Payment.order_id == order.id))
+        settlement = db.scalar(select(SettlementRecord).where(SettlementRecord.order_id == order.id))
+        entry = db.scalar(select(RevenueEntry).where(RevenueEntry.order_id == order.id))
+        claim = db.scalar(select(SettlementClaimRecord).where(SettlementClaimRecord.tx_hash == "0xclaim-order"))
+
+        assert machine is not None
+        assert order is not None
+        assert payment is not None
+        assert settlement is not None
+        assert entry is not None
+        assert claim is not None
+
+        assert order.user_id == "buyer-1"
+        assert order.machine_id == machine.id
+        assert order.quoted_amount_cents == 125
+        assert order.state == OrderState.RESULT_CONFIRMED
+        assert order.preview_state == PreviewState.DRAFT
+        assert payment.provider == "hsp"
+        assert payment.currency == "USDT"
+        assert payment.amount_cents == 125
+        assert payment.state == PaymentState.SUCCEEDED
+        assert settlement.state == SettlementState.DISTRIBUTED
+        assert entry.machine_share_pwr_wei == str(_pwr_wei_for_cents(113))
+        assert claim.claim_kind == "machine_revenue"
 
 
 def test_sql_projection_releases_active_task_when_order_confirmed_onchain() -> None:

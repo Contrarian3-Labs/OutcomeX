@@ -252,6 +252,7 @@ def client(tmp_path) -> tuple[TestClient, _ExecutionServiceStub]:
     os.environ["OUTCOMEX_HSP_PAY_TO_ADDRESS"] = ""
     os.environ["OUTCOMEX_HSP_MERCHANT_PRIVATE_KEY_PEM"] = ""
     os.environ["OUTCOMEX_HSP_REDIRECT_URL"] = ""
+    os.environ["OUTCOMEX_HSP_SUPPORTED_CURRENCIES"] = "USDC,USDT"
     reset_settings_cache()
     reset_container_cache()
     app = create_app()

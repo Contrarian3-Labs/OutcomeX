@@ -30,6 +30,6 @@ def test_settings_load_env_file_from_backend_root_even_when_cwd_differs(
 
     reset_settings_cache()
     assert settings.database_url == (
-        "sqlite+pysqlite:////mnt/c/users/72988/desktop/OutcomeX/code/backend/outcomex-local.db"
+        "sqlite+pysqlite:////mnt/c/users/72988/desktop/OutcomeX/code/backend/outcomex-hashkey-testnet.db"
     )
 
