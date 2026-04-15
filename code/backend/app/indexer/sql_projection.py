@@ -578,6 +578,10 @@ class SqlProjectionStore:
                 order.execution_metadata = metadata
             elif order_status == "PREVIEW_READY":
                 order.preview_state = PreviewState.READY
+                order.execution_state = ExecutionState.SUCCEEDED
+                if machine is not None:
+                    machine.has_active_tasks = False
+                    db.add(machine)
                 if order.state in {OrderState.PLAN_RECOMMENDED, OrderState.USER_CONFIRMED, OrderState.EXECUTING}:
                     order.state = OrderState.RESULT_PENDING_CONFIRMATION
             elif order_status in {"CONFIRMED", "REJECTED", "REFUNDED"}:
@@ -585,6 +589,8 @@ class SqlProjectionStore:
                     machine.has_active_tasks = False
                     db.add(machine)
                 if order_status == "CONFIRMED":
+                    order.execution_state = ExecutionState.SUCCEEDED
+                    order.preview_state = PreviewState.READY
                     order.state = OrderState.RESULT_CONFIRMED
                     order.result_confirmed_at = order.result_confirmed_at or datetime.now(timezone.utc)
                     paid_cents = db.scalar(
@@ -606,6 +612,8 @@ class SqlProjectionStore:
                         db.add(settlement)
                         db.add(entry)
                 elif order_status == "REJECTED":
+                    order.execution_state = ExecutionState.SUCCEEDED
+                    order.preview_state = PreviewState.READY
                     order.state = OrderState.CANCELLED
                     paid_cents = db.scalar(
                         select(func.coalesce(func.sum(Payment.amount_cents), 0)).where(

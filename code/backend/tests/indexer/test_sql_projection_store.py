@@ -3,7 +3,7 @@ from sqlalchemy.orm import sessionmaker
 
 from datetime import datetime, timezone
 
-from app.domain.enums import OrderState, PaymentState, PreviewState, SettlementState
+from app.domain.enums import ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
 from app.domain.models import (
     Base,
     Machine,
@@ -413,7 +413,8 @@ def test_sql_projection_reconstructs_order_payment_and_settlement_from_chain_onl
         assert order.machine_id == machine.id
         assert order.quoted_amount_cents == 125
         assert order.state == OrderState.RESULT_CONFIRMED
-        assert order.preview_state == PreviewState.DRAFT
+        assert order.preview_state == PreviewState.READY
+        assert order.execution_state == ExecutionState.SUCCEEDED
         assert payment.provider == "hsp"
         assert payment.currency == "USDT"
         assert payment.amount_cents == 125
@@ -705,6 +706,156 @@ def test_sql_projection_does_not_downgrade_paid_truth_when_order_classified_arri
         assert metadata["authoritative_order_status"] == "PAID"
         assert metadata["authoritative_paid_projection"] is True
         assert machine.has_active_tasks is True
+
+
+def test_sql_projection_reconstructed_preview_ready_releases_machine_and_marks_execution_succeeded() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+    store = SqlProjectionStore(
+        session_factory=session_factory,
+        owner_resolver=lambda wallet: {
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "buyer-1",
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "owner-1",
+        }.get(wallet),
+    )
+    store.apply(
+        _event(
+            event_name="OrderCreated",
+            transaction_hash="0xcreate-order-preview",
+            block_number=20,
+            payload=OrderLifecycleEvent(
+                order_id="42",
+                machine_id="7",
+                buyer="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                status="CREATED",
+                amount_wei=125,
+                settlement_beneficiary="0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                dividend_eligible=True,
+            ),
+        )
+    )
+    store.apply(
+        _event(
+            event_name="PaymentFinalized",
+            transaction_hash="0xpay-order-preview",
+            block_number=21,
+            contract_name="OrderPaymentRouter",
+            payload=OrderLifecycleEvent(
+                order_id="42",
+                machine_id="7",
+                buyer="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                status="PAID",
+                amount_wei=1_250_000,
+                payer="0xadapter0000000000000000000000000000000000",
+                payment_token="0x372325443233febaC1F6998aC750276468c83CC6".lower(),
+                payment_source=PAYMENT_SOURCE_HSP_CONFIRMED,
+                settlement_beneficiary="0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                dividend_eligible=True,
+                refund_authorized=True,
+            ),
+        )
+    )
+    store.apply(
+        _event(
+            event_name="PreviewReady",
+            transaction_hash="0xpreview-order",
+            block_number=22,
+            payload=OrderLifecycleEvent(
+                order_id="42",
+                machine_id="7",
+                buyer="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                status="PREVIEW_READY",
+                amount_wei=125,
+            ),
+        )
+    )
+
+    with session_factory() as db:
+        machine = db.scalar(select(Machine).where(Machine.onchain_machine_id == "7"))
+        order = db.scalar(select(Order).where(Order.onchain_order_id == "42"))
+        assert machine is not None
+        assert order is not None
+        assert machine.has_active_tasks is False
+        assert order.state == OrderState.RESULT_PENDING_CONFIRMATION
+        assert order.preview_state == PreviewState.READY
+        assert order.execution_state == ExecutionState.SUCCEEDED
+
+
+def test_sql_projection_reconstructed_confirmed_marks_execution_succeeded() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+    store = SqlProjectionStore(
+        session_factory=session_factory,
+        owner_resolver=lambda wallet: {
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "buyer-1",
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": "owner-1",
+        }.get(wallet),
+    )
+    store.apply(
+        _event(
+            event_name="OrderCreated",
+            transaction_hash="0xcreate-order-confirmed",
+            block_number=20,
+            payload=OrderLifecycleEvent(
+                order_id="42",
+                machine_id="7",
+                buyer="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                status="CREATED",
+                amount_wei=125,
+                settlement_beneficiary="0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                dividend_eligible=True,
+            ),
+        )
+    )
+    store.apply(
+        _event(
+            event_name="PaymentFinalized",
+            transaction_hash="0xpay-order-confirmed",
+            block_number=21,
+            contract_name="OrderPaymentRouter",
+            payload=OrderLifecycleEvent(
+                order_id="42",
+                machine_id="7",
+                buyer="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                status="PAID",
+                amount_wei=1_250_000,
+                payer="0xadapter0000000000000000000000000000000000",
+                payment_token="0x372325443233febaC1F6998aC750276468c83CC6".lower(),
+                payment_source=PAYMENT_SOURCE_HSP_CONFIRMED,
+                settlement_beneficiary="0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                dividend_eligible=True,
+                refund_authorized=True,
+            ),
+        )
+    )
+    store.apply(
+        _event(
+            event_name="OrderSettled",
+            transaction_hash="0xsettled-order-confirmed",
+            block_number=22,
+            payload=OrderLifecycleEvent(
+                order_id="42",
+                machine_id="7",
+                buyer="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                status="CONFIRMED",
+                amount_wei=125,
+            ),
+        )
+    )
+
+    with session_factory() as db:
+        machine = db.scalar(select(Machine).where(Machine.onchain_machine_id == "7"))
+        order = db.scalar(select(Order).where(Order.onchain_order_id == "42"))
+        assert machine is not None
+        assert order is not None
+        assert machine.has_active_tasks is False
+        assert order.state == OrderState.RESULT_CONFIRMED
+        assert order.preview_state == PreviewState.READY
+        assert order.execution_state == ExecutionState.SUCCEEDED
 
 
 def test_sql_projection_marks_order_cancelled_and_expired_from_onchain_event() -> None:
