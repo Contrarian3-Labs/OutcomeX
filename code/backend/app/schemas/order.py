@@ -132,3 +132,19 @@ class OrderSettlementActionResponse(BaseModel):
     method_name: str | None
     submit_payload: dict | None = None
     calldata: str | None = None
+
+
+class OrderActionSyncRequest(BaseModel):
+    tx_hash: str = Field(min_length=3)
+
+
+class OrderActionSyncResponse(BaseModel):
+    order_id: str
+    tx_hash: str
+    receipt_found: bool
+    applied_events: int
+    event_names: list[str]
+    state: OrderState
+    settlement_state: SettlementState
+    execution_state: ExecutionState
+    preview_state: PreviewState

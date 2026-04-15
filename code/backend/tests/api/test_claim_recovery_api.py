@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.routes import orders as order_routes
 from app.core.config import reset_settings_cache
 from app.core.container import get_container, reset_container_cache
 from app.domain.enums import ExecutionState, OrderState, PaymentState, PreviewState, SettlementState
@@ -11,6 +12,7 @@ from app.domain.models import Machine, Order, Payment, RevenueEntry, SettlementR
 from app.main import create_app
 from app.onchain.claim_state_reader import get_settlement_claim_state_reader
 from app.onchain.lifecycle_service import get_onchain_lifecycle_service
+from app.onchain.manual_projection_sync import ManualProjectionSyncResult
 from app.onchain.order_writer import OrderWriteResult, get_order_writer
 
 
@@ -307,6 +309,57 @@ def test_confirm_result_server_broadcast_projects_local_confirmed_state(client) 
         assert settlement.state == SettlementState.DISTRIBUTED
         assert entry.beneficiary_user_id == "owner-1"
         assert entry.machine_share_cents == 900
+
+
+def test_order_sync_onchain_uses_tx_hash_projection_and_returns_refreshed_order_state(client, monkeypatch) -> None:
+    test_client, _, _ = client
+    order_id = _seed_refundable_order(user_id="buyer", payment_currency="USDT")
+
+    container = get_container()
+    with container.session_factory() as db:
+        order = db.get(Order, order_id)
+        order.state = OrderState.RESULT_PENDING_CONFIRMATION
+        order.execution_state = ExecutionState.SUCCEEDED
+        order.preview_state = PreviewState.READY
+        order.settlement_state = SettlementState.READY
+        db.add(order)
+        db.commit()
+
+    def stub_sync_projection_from_tx_hash(*, tx_hash: str, **_kwargs) -> ManualProjectionSyncResult:
+        assert tx_hash == "0xconfirmsync"
+        with container.session_factory() as db:
+            order = db.get(Order, order_id)
+            order.state = OrderState.RESULT_CONFIRMED
+            order.execution_state = ExecutionState.SUCCEEDED
+            order.preview_state = PreviewState.READY
+            order.settlement_state = SettlementState.DISTRIBUTED
+            db.add(order)
+            db.commit()
+        return ManualProjectionSyncResult(
+            tx_hash=tx_hash,
+            receipt_found=True,
+            applied_events=1,
+            event_names=("OrderStatusChanged",),
+            listing_ids=(),
+            machine_ids=("88",),
+        )
+
+    monkeypatch.setattr(order_routes, "sync_projection_from_tx_hash", stub_sync_projection_from_tx_hash)
+
+    response = test_client.post(f"/api/v1/orders/{order_id}/sync-onchain", json={"tx_hash": "0xconfirmsync"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "order_id": order_id,
+        "tx_hash": "0xconfirmsync",
+        "receipt_found": True,
+        "applied_events": 1,
+        "event_names": ["OrderStatusChanged"],
+        "state": "result_confirmed",
+        "settlement_state": "distributed",
+        "execution_state": "succeeded",
+        "preview_state": "ready",
+    }
 
 
 def test_mock_result_ready_projects_authoritative_preview_state(client) -> None:

@@ -32,12 +32,15 @@ from app.execution.service import ExecutionEngineService
 from app.integrations.agentskillos_execution_service import get_agentskillos_execution_service
 from app.onchain.claim_state_reader import SettlementClaimStateReader, get_settlement_claim_state_reader
 from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
+from app.onchain.manual_projection_sync import sync_projection_from_tx_hash
 from app.onchain.order_writer import OrderWriter, get_order_writer
 from app.onchain.tx_sender import encode_contract_call
 from app.runtime.cost_service import get_runtime_cost_service
 from app.runtime.hardware_simulator import get_shared_hardware_simulator
 from app.schemas.execution_run import ExecutionRunResponse
 from app.schemas.order import (
+    OrderActionSyncRequest,
+    OrderActionSyncResponse,
     OrderAvailableActionsResponse,
     OrderCreateRequest,
     OrderListResponse,
@@ -809,6 +812,42 @@ def claim_order_refund(
         tx_hash=broadcast.tx_hash,
         contract_name=write_result.contract_name,
         method_name=write_result.method_name,
+    )
+
+
+@router.post("/{order_id}/sync-onchain", response_model=OrderActionSyncResponse)
+def sync_order_projection_from_tx_hash(
+    order_id: str,
+    payload: OrderActionSyncRequest,
+    db: Session = Depends(get_db),
+) -> OrderActionSyncResponse:
+    order = db.get(Order, order_id)
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+    container = get_container()
+    result = sync_projection_from_tx_hash(
+        tx_hash=payload.tx_hash,
+        session_factory=container.session_factory,
+        owner_resolver=container.buyer_address_resolver.resolve_user_id,
+        settings=container.settings,
+    )
+
+    db.expire_all()
+    refreshed_order = db.get(Order, order_id)
+    if refreshed_order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found after sync")
+
+    return OrderActionSyncResponse(
+        order_id=refreshed_order.id,
+        tx_hash=result.tx_hash,
+        receipt_found=result.receipt_found,
+        applied_events=result.applied_events,
+        event_names=list(result.event_names),
+        state=refreshed_order.state,
+        settlement_state=refreshed_order.settlement_state,
+        execution_state=refreshed_order.execution_state,
+        preview_state=refreshed_order.preview_state,
     )
 
 
