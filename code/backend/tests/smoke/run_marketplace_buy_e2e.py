@@ -35,6 +35,10 @@ DEFAULT_OUTPUT_ROOT = Path(
 DEFAULT_REPORT_PATH = Path(
     os.getenv("OUTCOMEX_MARKETPLACE_E2E_REPORT_PATH", "/tmp/outcomex-marketplace-e2e-report.json")
 )
+DEFAULT_ADMIN_INDEX = int(os.getenv("OUTCOMEX_MARKETPLACE_E2E_ADMIN_INDEX", "0"))
+DEFAULT_TREASURY_INDEX = int(os.getenv("OUTCOMEX_MARKETPLACE_E2E_TREASURY_INDEX", "3"))
+DEFAULT_SELLER_INDEX = int(os.getenv("OUTCOMEX_MARKETPLACE_E2E_SELLER_INDEX", "5"))
+DEFAULT_BUYER_INDEX = int(os.getenv("OUTCOMEX_MARKETPLACE_E2E_BUYER_INDEX", "4"))
 
 ERC20_ABI = [
     {
@@ -412,10 +416,10 @@ def main() -> None:
     try:
         _ensure_fresh_paths()
         anvil_process = _start_anvil_if_needed(DEFAULT_RPC_URL)
-        admin = _derive_account(0, user_id="admin")
-        treasury = _derive_account(1, user_id="treasury")
-        seller = _derive_account(2, user_id="seller-1")
-        buyer = _derive_account(3, user_id="buyer-1")
+        admin = _derive_account(DEFAULT_ADMIN_INDEX, user_id="admin")
+        treasury = _derive_account(DEFAULT_TREASURY_INDEX, user_id="treasury")
+        seller = _derive_account(DEFAULT_SELLER_INDEX, user_id="seller-1")
+        buyer = _derive_account(DEFAULT_BUYER_INDEX, user_id="buyer-1")
 
         deployment = _deploy_contracts(rpc_url=DEFAULT_RPC_URL, admin=admin, treasury=treasury, machine_owner=seller)
         _configure_backend_env(

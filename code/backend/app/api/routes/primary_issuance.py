@@ -13,6 +13,7 @@ from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_l
 from app.schemas.primary_issuance import (
     PrimaryIssuancePurchaseIntentRequest,
     PrimaryIssuancePurchaseIntentResponse,
+    PrimaryIssuancePurchaseSyncResponse,
     PrimaryIssuanceSkuResponse,
 )
 
@@ -26,6 +27,9 @@ PRIMARY_ISSUANCE_MODEL_FAMILY = "Qwen Family"
 PRIMARY_ISSUANCE_PRICE_CENTS = 390
 PRIMARY_ISSUANCE_CURRENCY = "USDT"
 PRIMARY_ISSUANCE_DEFAULT_STOCK = 10
+SUCCESS_STATUSES = {"completed", "confirmed", "succeeded", "payment-successful"}
+FAILED_STATUSES = {"cancelled", "failed", "rejected", "payment-failed"}
+PENDING_STATUSES = {"created", "pending", "processing", "payment-included", "payment-required"}
 
 
 def _ensure_fixed_primary_sku(db: Session) -> PrimaryIssuanceSku:
@@ -74,6 +78,45 @@ def _normalize_hsp_tx_hash(raw_tx_hash: str | None) -> str | None:
         return None
     normalized = raw_tx_hash.strip().lower()
     return normalized or None
+
+
+def _map_hsp_status(status_value: str) -> PaymentState:
+    normalized = status_value.lower()
+    if normalized in SUCCESS_STATUSES:
+        return PaymentState.SUCCEEDED
+    if normalized in FAILED_STATUSES:
+        return PaymentState.FAILED
+    if normalized in PENDING_STATUSES:
+        return PaymentState.PENDING
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported HSP status")
+
+
+def _query_primary_purchase_hsp_event(
+    purchase: PrimaryIssuancePurchase,
+    *,
+    container: Container,
+) -> HSPWebhookEvent | None:
+    if purchase.provider != "hsp" or not container.hsp_adapter.is_live_configured:
+        return None
+    if purchase.provider_reference:
+        return container.hsp_adapter.query_payment_status(
+            payment_request_id=purchase.provider_reference,
+            fallback_amount_cents=purchase.amount_cents,
+            fallback_currency=purchase.currency,
+        )
+    if purchase.flow_id:
+        return container.hsp_adapter.query_payment_status(
+            flow_id=purchase.flow_id,
+            fallback_amount_cents=purchase.amount_cents,
+            fallback_currency=purchase.currency,
+        )
+    if purchase.merchant_order_id:
+        return container.hsp_adapter.query_payment_status(
+            cart_mandate_id=purchase.merchant_order_id,
+            fallback_amount_cents=purchase.amount_cents,
+            fallback_currency=purchase.currency,
+        )
+    return None
 
 
 def _mark_primary_purchase_callback(*, purchase: PrimaryIssuancePurchase, event: HSPWebhookEvent) -> None:
@@ -450,4 +493,55 @@ def create_primary_issuance_purchase_intent(
         currency=purchase.currency,
         state=purchase.state,
         created_at=purchase.created_at,
+    )
+
+
+@router.post(
+    "/purchases/{purchase_id}/sync-hsp",
+    response_model=PrimaryIssuancePurchaseSyncResponse,
+)
+def sync_primary_issuance_purchase_hsp(
+    purchase_id: str,
+    db: Session = Depends(get_db),
+    container: Container = Depends(get_dependency_container),
+    onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
+) -> PrimaryIssuancePurchaseSyncResponse:
+    purchase = db.get(PrimaryIssuancePurchase, purchase_id)
+    if purchase is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Primary issuance purchase not found")
+
+    event = _query_primary_purchase_hsp_event(purchase, container=container)
+    if event is None:
+        return PrimaryIssuancePurchaseSyncResponse(
+            purchase_id=purchase.id,
+            state=purchase.state,
+            remote_status=None,
+            callback_event_id=purchase.callback_event_id,
+            callback_tx_hash=purchase.callback_tx_hash,
+            minted_machine_id=purchase.minted_machine_id,
+            minted_onchain_machine_id=purchase.minted_onchain_machine_id,
+            polled=False,
+        )
+
+    result = apply_primary_purchase_hsp_webhook(
+        purchase=purchase,
+        mapped_state=_map_hsp_status(event.status),
+        event=event,
+        container=container,
+        onchain_lifecycle=onchain_lifecycle,
+        db=db,
+    )
+    db.commit()
+    db.refresh(purchase)
+    return PrimaryIssuancePurchaseSyncResponse(
+        purchase_id=purchase.id,
+        state=purchase.state,
+        remote_status=event.status,
+        callback_event_id=purchase.callback_event_id,
+        callback_tx_hash=purchase.callback_tx_hash,
+        minted_machine_id=result.get("minted_machine_id") if isinstance(result, dict) else purchase.minted_machine_id,
+        minted_onchain_machine_id=(
+            result.get("minted_onchain_machine_id") if isinstance(result, dict) else purchase.minted_onchain_machine_id
+        ),
+        polled=True,
     )

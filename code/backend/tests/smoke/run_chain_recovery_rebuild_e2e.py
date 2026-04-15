@@ -13,6 +13,11 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+DEFAULT_ADMIN_INDEX = int(os.getenv("OUTCOMEX_RECOVERY_E2E_ADMIN_INDEX", "0"))
+DEFAULT_TREASURY_INDEX = int(os.getenv("OUTCOMEX_RECOVERY_E2E_TREASURY_INDEX", "3"))
+DEFAULT_OWNER_INDEX = int(os.getenv("OUTCOMEX_RECOVERY_E2E_OWNER_INDEX", "5"))
+DEFAULT_BUYER_INDEX = int(os.getenv("OUTCOMEX_RECOVERY_E2E_BUYER_INDEX", "4"))
+
 from tests.smoke.run_marketplace_buy_e2e import (
     DEFAULT_DB_PATH,
     DEFAULT_OUTPUT_ROOT,
@@ -126,10 +131,10 @@ def main() -> None:
         _ensure_fresh_paths()
         anvil_process = _start_anvil_if_needed(os.getenv("OUTCOMEX_MARKETPLACE_E2E_RPC_URL", "http://127.0.0.1:8545"))
 
-        admin = _derive_account(0, user_id="admin")
-        treasury = _derive_account(1, user_id="treasury")
-        owner = _derive_account(2, user_id="owner-1")
-        buyer = _derive_account(3, user_id="buyer-1")
+        admin = _derive_account(DEFAULT_ADMIN_INDEX, user_id="admin")
+        treasury = _derive_account(DEFAULT_TREASURY_INDEX, user_id="treasury")
+        owner = _derive_account(DEFAULT_OWNER_INDEX, user_id="owner-1")
+        buyer = _derive_account(DEFAULT_BUYER_INDEX, user_id="buyer-1")
 
         deployment = _deploy_contracts(rpc_url=os.getenv("OUTCOMEX_MARKETPLACE_E2E_RPC_URL", "http://127.0.0.1:8545"), admin=admin, treasury=treasury, machine_owner=owner)
         _configure_backend_env(

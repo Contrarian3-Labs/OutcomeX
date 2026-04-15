@@ -4,10 +4,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
+from app.api.routes import marketplace as marketplace_routes
 from app.core.config import reset_settings_cache
 from app.onchain.lifecycle_service import reset_onchain_lifecycle_service_cache
 from app.core.container import get_container, reset_container_cache
 from app.domain.models import Machine, MachineListing
+from app.onchain.manual_projection_sync import ManualProjectionSyncResult
 from app.main import create_app
 
 
@@ -111,3 +113,31 @@ def test_marketplace_listings_returns_only_active_non_expired_projection_rows(cl
     assert listing["machine"]["onchain_machine_id"] == "7"
     assert listing["machine"]["display_name"] == "OutcomeX Hosted Machine"
     assert listing["machine"]["active_listing"]["onchain_listing_id"] == "11"
+
+
+def test_marketplace_sync_onchain_uses_tx_hash_projection(client: TestClient, monkeypatch) -> None:
+    def stub_sync_projection_from_tx_hash(*, tx_hash: str, **_kwargs) -> ManualProjectionSyncResult:
+        assert tx_hash == "0x932ed1"
+        return ManualProjectionSyncResult(
+            tx_hash=tx_hash,
+            receipt_found=True,
+            applied_events=2,
+            event_names=("ListingPurchased", "Transfer"),
+            listing_ids=("11",),
+            machine_ids=("7",),
+        )
+
+    monkeypatch.setattr(marketplace_routes, "sync_projection_from_tx_hash", stub_sync_projection_from_tx_hash)
+
+    response = client.post("/api/v1/marketplace/sync-onchain", json={"tx_hash": "0x932ed1"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "tx_hash": "0x932ed1",
+        "receipt_found": True,
+        "applied_events": 2,
+        "event_names": ["ListingPurchased", "Transfer"],
+        "listing_ids": ["11"],
+        "machine_ids": ["7"],
+    }

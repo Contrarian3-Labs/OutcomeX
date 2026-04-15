@@ -4,7 +4,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db
+from app.api.deps import get_db, get_dependency_container
+from app.core.container import Container
 from app.api.routes.machines import (
     _active_listings_by_machine,
     _locked_beneficiaries_by_machine,
@@ -12,7 +13,8 @@ from app.api.routes.machines import (
     _to_machine_response,
 )
 from app.domain.models import Machine, MachineListing
-from app.schemas.marketplace import MarketplaceListingResponse
+from app.onchain.manual_projection_sync import sync_projection_from_tx_hash
+from app.schemas.marketplace import MarketplaceListingResponse, MarketplaceSyncRequest, MarketplaceSyncResponse
 
 router = APIRouter()
 
@@ -79,3 +81,24 @@ def list_marketplace_listings(db: Session = Depends(get_db)) -> list[Marketplace
             )
         )
     return response
+
+
+@router.post("/sync-onchain", response_model=MarketplaceSyncResponse)
+def sync_marketplace_projection_from_tx_hash(
+    payload: MarketplaceSyncRequest,
+    container: Container = Depends(get_dependency_container),
+) -> MarketplaceSyncResponse:
+    result = sync_projection_from_tx_hash(
+        tx_hash=payload.tx_hash,
+        session_factory=container.session_factory,
+        owner_resolver=container.buyer_address_resolver.resolve_user_id,
+        settings=container.settings,
+    )
+    return MarketplaceSyncResponse(
+        tx_hash=result.tx_hash,
+        receipt_found=result.receipt_found,
+        applied_events=result.applied_events,
+        event_names=list(result.event_names),
+        listing_ids=list(result.listing_ids),
+        machine_ids=list(result.machine_ids),
+    )

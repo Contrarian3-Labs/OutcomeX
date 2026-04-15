@@ -5,6 +5,19 @@ from pydantic import BaseModel
 from app.schemas.machine import MachineResponse
 
 
+class MarketplaceSyncRequest(BaseModel):
+    tx_hash: str
+
+
+class MarketplaceSyncResponse(BaseModel):
+    tx_hash: str
+    receipt_found: bool
+    applied_events: int
+    event_names: list[str]
+    listing_ids: list[str]
+    machine_ids: list[str]
+
+
 class MarketplaceListingResponse(BaseModel):
     onchain_listing_id: str
     machine_id: str | None

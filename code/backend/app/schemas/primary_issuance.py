@@ -33,3 +33,14 @@ class PrimaryIssuancePurchaseIntentResponse(BaseModel):
     currency: str
     state: PaymentState
     created_at: datetime
+
+
+class PrimaryIssuancePurchaseSyncResponse(BaseModel):
+    purchase_id: str
+    state: PaymentState
+    remote_status: str | None
+    callback_event_id: str | None
+    callback_tx_hash: str | None
+    minted_machine_id: str | None
+    minted_onchain_machine_id: str | None
+    polled: bool

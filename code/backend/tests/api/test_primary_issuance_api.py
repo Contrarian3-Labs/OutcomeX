@@ -20,6 +20,7 @@ from app.core.container import get_container, reset_container_cache
 from app.domain.enums import PaymentState
 from app.api.routes.primary_issuance import _reserve_primary_stock_atomically
 from app.domain.models import Machine, PrimaryIssuancePurchase, PrimaryIssuanceSku
+from app.integrations.hsp_adapter import HSPWebhookEvent
 from app.main import create_app
 from app.onchain.lifecycle_service import MintedMachineReceipt, get_onchain_lifecycle_service
 
@@ -479,3 +480,38 @@ def test_primary_reconciliation_uncertainty_fails_closed_without_remint(
         assert persisted is not None
         assert persisted.minted_machine_id is None
         assert persisted.stock_reserved is True
+
+
+def test_primary_purchase_sync_hsp_manually_finalizes_pending_purchase(
+    client: tuple[TestClient, SpyOnchainLifecycleService],
+) -> None:
+    test_client, spy_lifecycle = client
+    purchase = _create_purchase_intent(test_client)
+    container = get_container()
+    container.hsp_adapter.app_key = "live-app"
+    container.hsp_adapter.app_secret = "live-secret"
+    container.hsp_adapter.merchant_private_key_pem = "pem"
+    container.hsp_adapter.pay_to_address = "0xd9180752dfdc003fa5bd2a4bb9b0ead2e2149cdb"
+    container.hsp_adapter.usdc_address = "0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e"
+    container.hsp_adapter.usdt_address = "0x372325443233fEbaC1F6998aC750276468c83CC6"
+    container.hsp_adapter.query_payment_status = lambda **_kwargs: HSPWebhookEvent(
+        event_id="evt-primary-sync-1",
+        payment_request_id=purchase["provider_reference"],
+        cart_mandate_id=purchase["merchant_order_id"],
+        flow_id=purchase["flow_id"],
+        status="payment-successful",
+        amount_cents=purchase["amount_cents"],
+        currency=purchase["currency"],
+        tx_hash="0xprimarysync",
+    )
+
+    response = test_client.post(f"/api/v1/primary-issuance/purchases/{purchase['purchase_id']}/sync-hsp")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["purchase_id"] == purchase["purchase_id"]
+    assert payload["polled"] is True
+    assert payload["remote_status"] == "payment-successful"
+    assert payload["state"] == PaymentState.SUCCEEDED.value
+    assert payload["minted_onchain_machine_id"] == "9001"
+    assert len(spy_lifecycle.mint_calls) == 1

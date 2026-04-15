@@ -31,6 +31,11 @@ DEFAULT_MNEMONIC = os.getenv(
 DEFAULT_DB_PATH = Path(os.getenv("OUTCOMEX_E2E_DB_PATH", "/tmp/outcomex-business-e2e.sqlite"))
 DEFAULT_OUTPUT_ROOT = Path(os.getenv("OUTCOMEX_E2E_OUTPUT_ROOT", "/tmp/outcomex-business-e2e-output"))
 DEFAULT_REPORT_PATH = Path(os.getenv("OUTCOMEX_E2E_REPORT_PATH", "/tmp/outcomex-business-e2e-report.json"))
+DEFAULT_ADMIN_INDEX = int(os.getenv("OUTCOMEX_E2E_ADMIN_INDEX", "0"))
+DEFAULT_OWNER_INDEX = int(os.getenv("OUTCOMEX_E2E_OWNER_INDEX", "5"))
+DEFAULT_BUYER_INDEX = int(os.getenv("OUTCOMEX_E2E_BUYER_INDEX", "4"))
+DEFAULT_TREASURY_INDEX = int(os.getenv("OUTCOMEX_E2E_TREASURY_INDEX", "3"))
+DEFAULT_TRANSFEREE_INDEX = int(os.getenv("OUTCOMEX_E2E_TRANSFEREE_INDEX", "6"))
 
 ERC20_ABI = [
     {
@@ -499,11 +504,11 @@ def _build_hsp_webhook(*, client: TestClient, payment_intent: dict[str, Any], am
 
 def main() -> None:
     _ensure_fresh_paths()
-    admin = _derive_account(0, user_id="admin-1")
-    owner = _derive_account(1, user_id="owner-1")
-    buyer = _derive_account(2, user_id="buyer-1")
-    treasury = _derive_account(3, user_id="treasury-1")
-    transferee = _derive_account(4, user_id="transferee-1")
+    admin = _derive_account(DEFAULT_ADMIN_INDEX, user_id="admin-1")
+    owner = _derive_account(DEFAULT_OWNER_INDEX, user_id="owner-1")
+    buyer = _derive_account(DEFAULT_BUYER_INDEX, user_id="buyer-1")
+    treasury = _derive_account(DEFAULT_TREASURY_INDEX, user_id="treasury-1")
+    transferee = _derive_account(DEFAULT_TRANSFEREE_INDEX, user_id="transferee-1")
 
     anvil_process = _start_anvil_if_needed(DEFAULT_RPC_URL)
     web3 = _web3()
