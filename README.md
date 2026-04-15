@@ -132,17 +132,17 @@ What should be stated carefully:
 
 ## Start reading here
 
-- Product and control-plane overview: `code/backend/README.md`
-- Protocol and settlement model: `code/contracts/README.md`
-- Execution-kernel integration: `code/agentskillos/README.md`
-- Monorepo engineering guide: `code/README.md`
+- Product and control-plane overview: [code/backend/README.md](code/backend/README.md)
+- Protocol and settlement model: [code/contracts/README.md](code/contracts/README.md)
+- Execution-kernel integration: [code/agentskillos/README.md](code/agentskillos/README.md)
+- Monorepo engineering guide: [code/README.md](code/README.md)
 
 ## Markdown index
 
 Current top-level markdown navigation for the documentation set created in this repo:
 
-- `README.md` - product overview, DeFi/RWA positioning, and architecture
-- `code/README.md` - monorepo structure and subsystem boundaries
-- `code/backend/README.md` - backend control-plane responsibilities and runtime model
-- `code/contracts/README.md` - onchain protocol, settlement, and machine-asset logic
-- `code/agentskillos/README.md` - vendored AgentSkillOS role and OutcomeX integration boundary
+- [README.md](README.md) - product overview, DeFi/RWA positioning, and architecture
+- [code/README.md](code/README.md) - monorepo structure and subsystem boundaries
+- [code/backend/README.md](code/backend/README.md) - backend control-plane responsibilities and runtime model
+- [code/contracts/README.md](code/contracts/README.md) - onchain protocol, settlement, and machine-asset logic
+- [code/agentskillos/README.md](code/agentskillos/README.md) - vendored AgentSkillOS role and OutcomeX integration boundary
