@@ -185,6 +185,7 @@ def _finalize_primary_purchase_success(
     container: Container,
     onchain_lifecycle: OnchainLifecycleService,
     db: Session,
+    reconcile_existing_mint: bool,
 ) -> None:
     if purchase.minted_machine_id is not None:
         return
@@ -200,27 +201,28 @@ def _finalize_primary_purchase_success(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Buyer wallet address unresolved")
 
     token_uri = _primary_purchase_token_uri(purchase)
-    try:
-        existing_onchain_machine_id = onchain_lifecycle.find_minted_machine_by_token_uri(token_uri=token_uri)
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Primary issuance reconciliation unavailable: {exc}",
-        ) from exc
-    if existing_onchain_machine_id is not None:
-        machine = _ensure_primary_machine_projection(
-            purchase=purchase,
-            sku=sku,
-            onchain_machine_id=existing_onchain_machine_id,
-            owner_wallet=owner_wallet,
-            db=db,
-        )
-        purchase.minted_machine_id = machine.id
-        purchase.minted_onchain_machine_id = machine.onchain_machine_id
-        purchase.stock_reserved = False
-        purchase.finalized_at = utc_now()
-        db.add(purchase)
-        return
+    if reconcile_existing_mint:
+        try:
+            existing_onchain_machine_id = onchain_lifecycle.find_minted_machine_by_token_uri(token_uri=token_uri)
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Primary issuance reconciliation unavailable: {exc}",
+            ) from exc
+        if existing_onchain_machine_id is not None:
+            machine = _ensure_primary_machine_projection(
+                purchase=purchase,
+                sku=sku,
+                onchain_machine_id=existing_onchain_machine_id,
+                owner_wallet=owner_wallet,
+                db=db,
+            )
+            purchase.minted_machine_id = machine.id
+            purchase.minted_onchain_machine_id = machine.onchain_machine_id
+            purchase.stock_reserved = False
+            purchase.finalized_at = utc_now()
+            db.add(purchase)
+            return
 
     minted = onchain_lifecycle.mint_machine_for_owner(
         owner_user_id=purchase.buyer_user_id,
@@ -297,6 +299,7 @@ def apply_primary_purchase_hsp_webhook(
                 container=container,
                 onchain_lifecycle=onchain_lifecycle,
                 db=db,
+                reconcile_existing_mint=True,
             )
             return {
                 "purchase_id": purchase.id,
@@ -327,6 +330,7 @@ def apply_primary_purchase_hsp_webhook(
             container=container,
             onchain_lifecycle=onchain_lifecycle,
             db=db,
+            reconcile_existing_mint=False,
         )
         return {
             "purchase_id": purchase.id,

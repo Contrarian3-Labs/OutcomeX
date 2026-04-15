@@ -153,6 +153,95 @@ def test_sql_projection_tracks_marketplace_listing_lifecycle() -> None:
         assert listing.filled_at is not None
 
 
+def test_sql_projection_does_not_restore_seller_owner_on_filled_listing_event() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+
+    store = SqlProjectionStore(
+        session_factory=session_factory,
+        owner_resolver=lambda wallet: {
+            "0xseller0000000000000000000000000000000000": "owner-1",
+            "0xbuyer000000000000000000000000000000000000": "buyer-1",
+        }.get(wallet),
+    )
+
+    store.apply(
+        _event(
+            event_name="Transfer",
+            contract_name="MachineAssetNFT",
+            transaction_hash="0xmachine-created",
+            payload=MachineAssetEvent(
+                machine_id="7",
+                owner="0xseller0000000000000000000000000000000000",
+                metadata_uri=None,
+                pwr_quota=None,
+            ),
+        )
+    )
+    store.apply(
+        _event(
+            event_name="ListingCreated",
+            contract_name="MachineMarketplace",
+            contract_address="0x3000000000000000000000000000000000000099",
+            transaction_hash="0xlisting-created",
+            payload=MarketplaceListingEvent(
+                listing_id="11",
+                machine_id="7",
+                seller="0xseller0000000000000000000000000000000000",
+                buyer=None,
+                payment_token="0x372325443233fEbaC1F6998aC750276468c83CC6".lower(),
+                price_wei=1_250_000,
+                expiry_timestamp=int(datetime.now(timezone.utc).timestamp()) + 3600,
+                status="ACTIVE",
+            ),
+        )
+    )
+    store.apply(
+        _event(
+            event_name="Transfer",
+            contract_name="MachineAssetNFT",
+            transaction_hash="0xmachine-sold",
+            block_number=11,
+            payload=MachineAssetEvent(
+                machine_id="7",
+                owner="0xbuyer000000000000000000000000000000000000",
+                metadata_uri=None,
+                pwr_quota=None,
+            ),
+        )
+    )
+    store.apply(
+        _event(
+            event_name="ListingPurchased",
+            contract_name="MachineMarketplace",
+            contract_address="0x3000000000000000000000000000000000000099",
+            transaction_hash="0xlisting-filled",
+            block_number=12,
+            payload=MarketplaceListingEvent(
+                listing_id="11",
+                machine_id="7",
+                seller="0xseller0000000000000000000000000000000000",
+                buyer="0xbuyer000000000000000000000000000000000000",
+                payment_token="0x372325443233fEbaC1F6998aC750276468c83CC6".lower(),
+                price_wei=1_250_000,
+                expiry_timestamp=int(datetime.now(timezone.utc).timestamp()) + 3600,
+                status="FILLED",
+            ),
+        )
+    )
+
+    with session_factory() as db:
+        machine = db.scalar(select(Machine).where(Machine.onchain_machine_id == "7"))
+        listing = db.scalar(select(MachineListing).where(MachineListing.onchain_listing_id == "11"))
+        assert machine is not None
+        assert machine.owner_chain_address == "0xbuyer000000000000000000000000000000000000"
+        assert machine.owner_user_id == "buyer-1"
+        assert listing is not None
+        assert listing.state == "filled"
+        assert listing.buyer_chain_address == "0xbuyer000000000000000000000000000000000000"
+
+
 def test_sql_projection_reconstructs_machine_and_listing_from_chain_only() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
     Base.metadata.create_all(bind=engine)

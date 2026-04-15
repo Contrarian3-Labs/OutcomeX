@@ -8,6 +8,13 @@ from unittest.mock import ANY
 import pytest
 from fastapi.testclient import TestClient
 
+# Keep this module hermetic even when the shell has live HSP / RPC credentials set.
+os.environ["OUTCOMEX_ONCHAIN_RPC_URL"] = ""
+os.environ["OUTCOMEX_HSP_APP_KEY"] = ""
+os.environ["OUTCOMEX_HSP_APP_SECRET"] = ""
+os.environ["OUTCOMEX_HSP_MERCHANT_PRIVATE_KEY_PEM"] = ""
+os.environ["OUTCOMEX_HSP_PAY_TO_ADDRESS"] = ""
+
 from app.core.config import reset_settings_cache
 from app.core.container import get_container, reset_container_cache
 from app.domain.enums import PaymentState
@@ -405,6 +412,36 @@ def test_primary_success_retry_with_new_event_does_not_remint_after_success_mark
         assert persisted is not None
         assert persisted.minted_machine_id is not None
         assert persisted.minted_onchain_machine_id == "9901"
+        assert persisted.stock_reserved is False
+
+
+def test_primary_fresh_success_skips_reconciliation_and_mints_directly(
+    client: tuple[TestClient, SpyOnchainLifecycleService],
+) -> None:
+    test_client, spy_lifecycle = client
+    purchase = _create_purchase_intent(test_client)
+    spy_lifecycle.find_error = "machine_minted_log_fetch_failed"
+
+    payload = _webhook_payload(
+        purchase,
+        status="payment-successful",
+        request_id="evt-primary-fresh-success",
+        tx_signature="0xfreshsuccess",
+    )
+    body, headers = _sign_payload(payload)
+    response = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["duplicate"] is False
+    assert response.json()["minted_onchain_machine_id"] == "9001"
+    assert spy_lifecycle.find_calls == []
+    assert len(spy_lifecycle.mint_calls) == 1
+
+    with get_container().session_factory() as session:
+        persisted = session.get(PrimaryIssuancePurchase, purchase["purchase_id"])
+        assert persisted is not None
+        assert persisted.state == PaymentState.SUCCEEDED
+        assert persisted.minted_onchain_machine_id == "9001"
         assert persisted.stock_reserved is False
 
 

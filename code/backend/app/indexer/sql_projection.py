@@ -462,7 +462,7 @@ class SqlProjectionStore:
             machine = self._ensure_machine_projection(
                 db=db,
                 onchain_machine_id=payload.machine_id,
-                owner_chain_address=payload.seller,
+                owner_chain_address=(payload.seller if payload.status == "ACTIVE" else None),
                 event_id=event.event_id,
             )
 
