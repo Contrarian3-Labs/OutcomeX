@@ -21,6 +21,10 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("OUTCOMEX_AGENTSKILLOS_ROOT", "")
     monkeypatch.setenv("OUTCOMEX_ONCHAIN_INDEXER_ENABLED", "false")
     monkeypatch.setenv("OUTCOMEX_ONCHAIN_RPC_URL", "")
+    monkeypatch.setenv(
+        "OUTCOMEX_BUYER_WALLET_MAP_JSON",
+        '{"buyer-1":"0x1111111111111111111111111111111111111111"}',
+    )
     reset_settings_cache()
     reset_container_cache()
 
@@ -130,6 +134,20 @@ def test_chat_plans_returns_three_productsized_recommendations(client: TestClien
     assert all(plan["native_plan_name"] for plan in payload["recommended_plans"])
     assert all(plan["native_plan_description"] for plan in payload["recommended_plans"])
     assert payload["recommended_plan_summary"] == payload["recommended_plans"][0]["summary"]
+
+
+def test_chat_plans_canonicalizes_wallet_address_user_id(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/chat/plans",
+        json={
+            "user_id": "0x1111111111111111111111111111111111111111",
+            "chat_session_id": "chat-wallet-user",
+            "user_message": "Create a launch-ready teaser campaign with visual assets",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["user_id"] == "buyer-1"
 
 
 def test_order_creation_binds_selected_plan_id_to_execution_request(client: TestClient) -> None:

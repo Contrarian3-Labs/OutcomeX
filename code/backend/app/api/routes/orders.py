@@ -10,6 +10,7 @@ from app.api.execution_contract import (
     build_selected_plan_payload,
     is_order_execution_contract_consistent,
 )
+from app.core.container import get_container
 from app.core.config import get_settings
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.benchmark_solutions import BenchmarkSolution, get_benchmark_solution
@@ -552,6 +553,9 @@ def create_order(
     payload: OrderCreateRequest,
     db: Session = Depends(get_db),
 ) -> OrderResponse:
+    payload = payload.model_copy(
+        update={"user_id": get_container().buyer_address_resolver.canonicalize_user_id(payload.user_id)},
+    )
     execution_prompt, execution_input_files, benchmark_solution = _resolve_order_execution_inputs(payload)
 
     derived_planning_context_id = build_planning_context_id(
@@ -689,7 +693,8 @@ def list_orders(
     state: OrderState | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> OrderListResponse:
-    statement = select(Order).where(Order.user_id == user_id)
+    canonical_user_id = get_container().buyer_address_resolver.canonicalize_user_id(user_id)
+    statement = select(Order).where(Order.user_id == canonical_user_id)
 
     if state is not None:
         statement = statement.where(Order.state == state)

@@ -23,9 +23,11 @@ from app.main import create_app
 def client(tmp_path) -> TestClient:
     previous_database_url = os.environ.get("OUTCOMEX_DATABASE_URL")
     previous_auto_create_tables = os.environ.get("OUTCOMEX_AUTO_CREATE_TABLES")
+    previous_buyer_wallet_map_json = os.environ.get("OUTCOMEX_BUYER_WALLET_MAP_JSON")
     db_path = tmp_path / "revenue-overview-api.db"
     os.environ["OUTCOMEX_DATABASE_URL"] = f"sqlite+pysqlite:///{db_path.as_posix()}"
     os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
+    os.environ["OUTCOMEX_BUYER_WALLET_MAP_JSON"] = '{"owner-1":"0x1111111111111111111111111111111111111111"}'
     reset_settings_cache()
     reset_container_cache()
 
@@ -42,6 +44,10 @@ def client(tmp_path) -> TestClient:
         os.environ.pop("OUTCOMEX_AUTO_CREATE_TABLES", None)
     else:
         os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = previous_auto_create_tables
+    if previous_buyer_wallet_map_json is None:
+        os.environ.pop("OUTCOMEX_BUYER_WALLET_MAP_JSON", None)
+    else:
+        os.environ["OUTCOMEX_BUYER_WALLET_MAP_JSON"] = previous_buyer_wallet_map_json
 
     reset_settings_cache()
     reset_container_cache()
@@ -493,3 +499,13 @@ def test_platform_overview_reports_projected_claimed_and_claimable_by_currency(c
     assert payload["claim_history"][0]["claim_kind"] == "platform_revenue"
     assert payload["claim_history"][0]["amount_cents"] == 40
 
+
+def test_revenue_account_overview_canonicalizes_wallet_address_owner_id(client: TestClient) -> None:
+    _seed_machine_with_revenue(owner_user_id="owner-1", machine_share_cents=500, payment_currency="USDT")
+
+    response = client.get("/api/v1/revenue/accounts/0x1111111111111111111111111111111111111111/overview")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["owner_user_id"] == "owner-1"
+    assert payload["projected_cents"] == 500

@@ -212,12 +212,13 @@ def _to_machine_response(
     projected_pwr = pwr_wei_to_float(summary["projected_pwr_wei"])
     claimed_pwr = pwr_wei_to_float(summary["claimed_pwr_wei"])
     claimable_pwr = pwr_wei_to_float(summary["claimable_pwr_wei"])
+    owner_chain_address = machine.owner_chain_address or get_container().buyer_address_resolver.resolve_wallet(machine.owner_user_id)
     return MachineResponse(
         id=machine.id,
         onchain_machine_id=machine.onchain_machine_id,
         display_name=machine.display_name,
         owner_user_id=machine.owner_user_id,
-        owner_chain_address=machine.owner_chain_address,
+        owner_chain_address=owner_chain_address,
         ownership_source=machine.ownership_source,
         owner_projection_last_event_id=machine.owner_projection_last_event_id,
         owner_projected_at=machine.owner_projected_at,
@@ -255,9 +256,12 @@ def create_machine(
     db: Session = Depends(get_db),
     onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
 ) -> MachineResponse:
+    payload = payload.model_copy(
+        update={"owner_user_id": get_container().buyer_address_resolver.canonicalize_user_id(payload.owner_user_id)},
+    )
     onchain_machine_id = payload.onchain_machine_id
     ownership_source = "bootstrap"
-    owner_chain_address = None
+    owner_chain_address = get_container().buyer_address_resolver.resolve_wallet(payload.owner_user_id)
     if onchain_machine_id is None and onchain_lifecycle.enabled():
         token_uri = f"ipfs://outcomex-machine/{payload.owner_user_id}/{payload.display_name.replace(' ', '-').lower()}"
         minted = onchain_lifecycle.mint_machine_for_owner(
@@ -271,7 +275,6 @@ def create_machine(
             )
         onchain_machine_id = minted.onchain_machine_id
         ownership_source = "chain"
-        owner_chain_address = get_container().buyer_address_resolver.resolve_wallet(payload.owner_user_id)
 
     machine = Machine(
         display_name=payload.display_name,

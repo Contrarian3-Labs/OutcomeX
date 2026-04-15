@@ -17,6 +17,10 @@ def client(tmp_path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("OUTCOMEX_AGENTSKILLOS_ROOT", "")
     monkeypatch.setenv("OUTCOMEX_ONCHAIN_INDEXER_ENABLED", "false")
     monkeypatch.setenv("OUTCOMEX_ONCHAIN_RPC_URL", "")
+    monkeypatch.setenv(
+        "OUTCOMEX_BUYER_WALLET_MAP_JSON",
+        '{"buyer-1":"0x1111111111111111111111111111111111111111","owner-locked":"0x2222222222222222222222222222222222222222","owner-available":"0x3333333333333333333333333333333333333333"}',
+    )
     reset_settings_cache()
     reset_container_cache()
     with TestClient(create_app()) as test_client:
@@ -82,6 +86,19 @@ def test_create_order_rejects_targeting_own_machine(client: TestClient) -> None:
 
     assert response.status_code == 409
     assert response.json()["detail"] == "Create order cannot target your own machine. Use the self-use workspace instead."
+
+
+def test_create_order_canonicalizes_wallet_user_id_before_routing(client: TestClient) -> None:
+    own_machine = _create_machine(client, owner_user_id="buyer-1", display_name="Own machine")
+    shared_machine = _create_machine(client, owner_user_id="owner-available", display_name="Shared machine")
+
+    response = _create_order(client, user_id="0x1111111111111111111111111111111111111111")
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["user_id"] == "buyer-1"
+    assert payload["machine_id"] == shared_machine["id"]
+    assert payload["machine_id"] != own_machine["id"]
 
 
 def test_create_order_errors_when_no_available_non_owner_machine_exists(client: TestClient) -> None:

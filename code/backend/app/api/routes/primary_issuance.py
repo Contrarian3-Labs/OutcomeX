@@ -537,13 +537,35 @@ def create_primary_issuance_purchase_intent(
     if not _reserve_primary_stock_atomically(sku_id=sku.sku_id, db=db):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Primary issuance stock exhausted")
 
-    buyer_wallet = container.buyer_address_resolver.resolve_wallet(payload.buyer_user_id)
-    if buyer_wallet is None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Buyer wallet address unresolved")
+    buyer_user_id = (
+        container.buyer_address_resolver.canonicalize_user_id(payload.buyer_user_id)
+        if payload.buyer_user_id
+        else None
+    )
+    buyer_wallet = None
+    if buyer_user_id:
+        buyer_wallet = container.buyer_address_resolver.resolve_wallet(buyer_user_id)
+        if buyer_wallet is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Buyer wallet address unresolved")
+    else:
+        if not payload.buyer_wallet_address:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="buyer_wallet_address is required when buyer_user_id is omitted",
+            )
+        buyer_user_id = container.buyer_address_resolver.resolve_user_id(payload.buyer_wallet_address)
+        if buyer_user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Buyer user id unresolved for wallet address",
+            )
+        buyer_wallet = container.buyer_address_resolver.resolve_wallet(buyer_user_id)
+        if buyer_wallet is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Buyer wallet address unresolved")
 
     purchase = PrimaryIssuancePurchase(
         sku_id=sku.sku_id,
-        buyer_user_id=payload.buyer_user_id,
+        buyer_user_id=buyer_user_id,
         amount_cents=sku.price_cents,
         currency=sku.currency,
         state=PaymentState.PENDING,

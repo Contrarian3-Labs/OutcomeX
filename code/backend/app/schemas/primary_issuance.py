@@ -17,7 +17,8 @@ class PrimaryIssuanceSkuResponse(BaseModel):
 
 
 class PrimaryIssuancePurchaseIntentRequest(BaseModel):
-    buyer_user_id: str = Field(min_length=1, max_length=64)
+    buyer_user_id: str | None = Field(default=None, min_length=1, max_length=64)
+    buyer_wallet_address: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class PrimaryIssuancePurchaseIntentResponse(BaseModel):

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.core.config import get_settings
+from app.core.container import get_container
 from app.domain.accounting import effective_paid_amount_cents
 from app.domain.claim_projection import project_machine_entry_claims, project_platform_revenue_overview
 from app.domain.enums import PaymentState
@@ -449,6 +450,7 @@ def claim_machine_revenue(
     claim_state_reader: SettlementClaimStateReader = Depends(get_settlement_claim_state_reader),
     onchain_lifecycle: OnchainLifecycleService = Depends(get_onchain_lifecycle_service),
 ) -> MachineRevenueClaimResponse:
+    owner_user_id = get_container().buyer_address_resolver.canonicalize_user_id(owner_user_id)
     machine = db.get(Machine, machine_id)
     if machine is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Machine not found")
@@ -514,6 +516,7 @@ def claim_machine_revenue(
 
 @router.get("/accounts/{owner_user_id}/overview", response_model=RevenueAccountOverviewResponse)
 def revenue_account_overview(owner_user_id: str, db: Session = Depends(get_db)) -> RevenueAccountOverviewResponse:
+    owner_user_id = get_container().buyer_address_resolver.canonicalize_user_id(owner_user_id)
     projected_cents = _sum_projected_cents_for_beneficiary(beneficiary_user_id=owner_user_id, db=db)
     claimed_cents = _sum_machine_claims_cents_for_claimant(claimant_user_id=owner_user_id, db=db)
     claimable_cents = max(0, projected_cents - claimed_cents)
@@ -564,6 +567,7 @@ def revenue_account_overview(owner_user_id: str, db: Session = Depends(get_db)) 
 
 @router.get("/accounts/{owner_user_id}/analytics", response_model=RevenueAccountAnalyticsResponse)
 def revenue_account_analytics(owner_user_id: str, db: Session = Depends(get_db)) -> RevenueAccountAnalyticsResponse:
+    owner_user_id = get_container().buyer_address_resolver.canonicalize_user_id(owner_user_id)
     projected_cents = _sum_projected_cents_for_beneficiary(beneficiary_user_id=owner_user_id, db=db)
     claimed_cents = _sum_machine_claims_cents_for_claimant(claimant_user_id=owner_user_id, db=db)
     claimable_cents = max(0, projected_cents - claimed_cents)
@@ -609,6 +613,7 @@ def revenue_account_analytics(owner_user_id: str, db: Session = Depends(get_db))
 
 @router.get("/accounts/{user_id}/claims", response_model=list[RevenueClaimHistoryItem])
 def list_revenue_claims(user_id: str, db: Session = Depends(get_db)) -> list[RevenueClaimHistoryItem]:
+    user_id = get_container().buyer_address_resolver.canonicalize_user_id(user_id)
     records = list(
         db.scalars(
             select(SettlementClaimRecord)
@@ -640,6 +645,7 @@ def list_revenue_claims(user_id: str, db: Session = Depends(get_db)) -> list[Rev
 
 @router.get("/accounts/{user_id}/payment-ledger", response_model=list[PaymentLedgerItem])
 def list_payment_ledger(user_id: str, db: Session = Depends(get_db)) -> list[PaymentLedgerItem]:
+    user_id = get_container().buyer_address_resolver.canonicalize_user_id(user_id)
     rows = db.execute(
         select(Payment, Order.user_prompt)
         .join(Order, Order.id == Payment.order_id)

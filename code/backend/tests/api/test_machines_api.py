@@ -14,10 +14,12 @@ from app.main import create_app
 @pytest.fixture
 def client(tmp_path) -> TestClient:
     previous_onchain_rpc_url = os.environ.get("OUTCOMEX_ONCHAIN_RPC_URL")
+    previous_buyer_wallet_map_json = os.environ.get("OUTCOMEX_BUYER_WALLET_MAP_JSON")
     db_path = tmp_path / "machines-api.db"
     os.environ["OUTCOMEX_DATABASE_URL"] = f"sqlite+pysqlite:///{db_path.as_posix()}"
     os.environ["OUTCOMEX_AUTO_CREATE_TABLES"] = "true"
     os.environ["OUTCOMEX_ONCHAIN_RPC_URL"] = ""
+    os.environ["OUTCOMEX_BUYER_WALLET_MAP_JSON"] = '{"owner-1":"0x1111111111111111111111111111111111111111"}'
     reset_settings_cache()
     reset_container_cache()
     reset_onchain_lifecycle_service_cache()
@@ -29,6 +31,10 @@ def client(tmp_path) -> TestClient:
         os.environ["OUTCOMEX_ONCHAIN_RPC_URL"] = ""
     else:
         os.environ["OUTCOMEX_ONCHAIN_RPC_URL"] = previous_onchain_rpc_url
+    if previous_buyer_wallet_map_json is None:
+        os.environ.pop("OUTCOMEX_BUYER_WALLET_MAP_JSON", None)
+    else:
+        os.environ["OUTCOMEX_BUYER_WALLET_MAP_JSON"] = previous_buyer_wallet_map_json
     reset_settings_cache()
     reset_container_cache()
     reset_onchain_lifecycle_service_cache()
@@ -56,7 +62,7 @@ def test_create_machine_exposes_bootstrap_ownership_state(client: TestClient) ->
     machine = _create_machine(client)
 
     assert machine["owner_user_id"] == "owner-1"
-    assert machine["owner_chain_address"] is None
+    assert machine["owner_chain_address"] == "0x1111111111111111111111111111111111111111"
     assert machine["ownership_source"] == "bootstrap"
     assert machine["owner_projection_last_event_id"] is None
     assert machine["owner_projected_at"] is None
@@ -69,6 +75,12 @@ def test_create_machine_exposes_bootstrap_ownership_state(client: TestClient) ->
     assert machine["locked_unsettled_revenue_cents"] == 0
     assert machine["locked_unsettled_revenue_pwr"] == 0.0
     assert machine["locked_beneficiary_user_ids"] == []
+
+
+def test_create_machine_canonicalizes_wallet_address_owner_id(client: TestClient) -> None:
+    machine = _create_machine(client, owner_user_id="0x1111111111111111111111111111111111111111")
+
+    assert machine["owner_user_id"] == "owner-1"
 
 
 class StubOnchainLifecycle:

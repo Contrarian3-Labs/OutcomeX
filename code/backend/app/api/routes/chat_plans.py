@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.container import get_container
 from app.domain.benchmark_solutions import get_benchmark_solution
 from app.domain.models import ChatPlan
 from app.domain.planning import build_fast_recommended_plans
@@ -62,6 +63,7 @@ def create_chat_plan(
     db: Session = Depends(get_db),
     cost_service: RuntimeCostService = Depends(get_runtime_cost_service),
 ) -> ChatPlanResponse:
+    canonical_user_id = get_container().buyer_address_resolver.canonicalize_user_id(payload.user_id)
     solution = get_benchmark_solution(payload.benchmark_task_id) if payload.benchmark_task_id else None
     planning_prompt, planning_files = _resolve_planning_prompt(payload)
     planning_context_id = build_planning_context_id(
@@ -78,7 +80,7 @@ def create_chat_plan(
             attachment_ids=tuple(payload.attachment_ids),
         ) as resolved_input_files:
             recommended_plans = build_recommended_plans(
-                user_id=payload.user_id,
+                user_id=canonical_user_id,
                 chat_session_id=payload.chat_session_id,
                 user_message=planning_prompt,
                 preferred_strategy=solution.preferred_execution_strategy if solution else payload.mode,
@@ -93,7 +95,7 @@ def create_chat_plan(
     )
     top_plan = recommended_plans[0]
     plan = ChatPlan(
-        user_id=payload.user_id,
+        user_id=canonical_user_id,
         chat_session_id=payload.chat_session_id,
         user_message=payload.user_message,
         recommended_plan_summary=top_plan.summary,
@@ -106,6 +108,7 @@ def create_chat_plan(
         update={
             "benchmark_task_id": payload.benchmark_task_id,
             "mode": payload.mode,
+            "user_id": canonical_user_id,
             "input_files": list(planning_files),
             "planning_context_id": planning_context_id,
             "attachment_session_id": payload.attachment_session_id,

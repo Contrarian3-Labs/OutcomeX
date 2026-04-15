@@ -124,10 +124,20 @@ def _webhook_payload(
     return payload
 
 
-def _create_purchase_intent(client: TestClient, *, buyer_user_id: str = "buyer-1") -> dict:
+def _create_purchase_intent(
+    client: TestClient,
+    *,
+    buyer_user_id: str | None = "buyer-1",
+    buyer_wallet_address: str | None = None,
+) -> dict:
+    payload: dict[str, str] = {}
+    if buyer_user_id is not None:
+        payload["buyer_user_id"] = buyer_user_id
+    if buyer_wallet_address is not None:
+        payload["buyer_wallet_address"] = buyer_wallet_address
     response = client.post(
         "/api/v1/primary-issuance/skus/apple-silicon-96gb-qwen-family/purchase-intent",
-        json={"buyer_user_id": buyer_user_id},
+        json=payload,
     )
     assert response.status_code == 201
     return response.json()
@@ -176,6 +186,20 @@ def test_create_primary_purchase_intent_persists_purchase_and_hsp_intent(
         assert sku.stock_available == 9
 
 
+def test_create_primary_purchase_intent_resolves_buyer_from_wallet_when_user_id_omitted(
+    client: tuple[TestClient, SpyOnchainLifecycleService],
+) -> None:
+    test_client, _spy_lifecycle = client
+
+    payload = _create_purchase_intent(
+        test_client,
+        buyer_user_id=None,
+        buyer_wallet_address="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+    )
+
+    assert payload["buyer_user_id"] == "buyer-1"
+
+
 def test_primary_purchase_intent_rejects_out_of_stock_after_reservations(
     client: tuple[TestClient, SpyOnchainLifecycleService],
 ) -> None:
@@ -191,6 +215,20 @@ def test_primary_purchase_intent_rejects_out_of_stock_after_reservations(
 
     assert exhausted.status_code == 409
     assert exhausted.json()["detail"] == "Primary issuance stock exhausted"
+
+
+def test_primary_purchase_intent_accepts_unmapped_wallet_when_user_id_omitted(
+    client: tuple[TestClient, SpyOnchainLifecycleService],
+) -> None:
+    test_client, _spy_lifecycle = client
+
+    response = test_client.post(
+        "/api/v1/primary-issuance/skus/apple-silicon-96gb-qwen-family/purchase-intent",
+        json={"buyer_wallet_address": "0x0000000000000000000000000000000000000abc"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["buyer_user_id"] == "0x0000000000000000000000000000000000000abc"
 
 
 def test_atomic_stock_reservation_only_consumes_last_unit_once(
