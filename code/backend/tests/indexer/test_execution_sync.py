@@ -281,3 +281,79 @@ def test_sync_execution_runs_preserves_concurrent_projection_metadata() -> None:
 
     assert writer.calls == ["order-1"]
     assert lifecycle.calls == ["markPreviewReady"]
+
+
+def test_sync_execution_runs_does_not_rebroadcast_preview_ready_after_confirmation() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(bind=engine, future=True)
+
+    with session_factory() as db:
+        machine = Machine(
+            id="machine-1",
+            display_name="node-1",
+            owner_user_id="owner-1",
+            onchain_machine_id="7",
+            has_active_tasks=True,
+        )
+        order = Order(
+            id="order-1",
+            machine_id=machine.id,
+            onchain_machine_id="7",
+            onchain_order_id="42",
+            user_id="user-1",
+            chat_session_id="chat-1",
+            user_prompt="make image",
+            recommended_plan_summary="plan",
+            quoted_amount_cents=100,
+            state=OrderState.RESULT_CONFIRMED,
+            execution_state=ExecutionState.SUCCEEDED,
+            preview_state=PreviewState.READY,
+            execution_metadata={
+                "authoritative_order_status": "CONFIRMED",
+                "onchain_preview_ready_tx_hash": "0xexisting-preview",
+            },
+        )
+        run = ExecutionRun(
+            id="run-1",
+            order_id=order.id,
+            external_order_id=order.id,
+            status=ExecutionRunStatus.RUNNING,
+        )
+        db.add(machine)
+        db.add(order)
+        db.add(run)
+        db.commit()
+
+    writer = _WriterSpy()
+
+    class _NoRebroadcastLifecycle:
+        def enabled(self) -> bool:
+            return True
+
+        def send_as_user(self, *, user_id: str, write_result: OrderWriteResult) -> BroadcastReceipt:
+            raise AssertionError("markPreviewReady should not be rebroadcast once already recorded")
+
+    sync_execution_runs_once(
+        session_factory=session_factory,
+        execution_service=_ExecutionServiceStub(),
+        onchain_lifecycle=_NoRebroadcastLifecycle(),
+        order_writer=writer,
+    )
+
+    with session_factory() as db:
+        order = db.get(Order, "order-1")
+        run = db.get(ExecutionRun, "run-1")
+        machine = db.get(Machine, "machine-1")
+        assert order is not None
+        assert run is not None
+        assert machine is not None
+        assert order.state == OrderState.RESULT_CONFIRMED
+        assert order.execution_state == ExecutionState.SUCCEEDED
+        assert order.execution_metadata["onchain_preview_ready_tx_hash"] == "0xexisting-preview"
+        assert order.execution_metadata["run_status"] == "succeeded"
+        assert run.status == ExecutionRunStatus.SUCCEEDED
+        assert run.finished_at is not None
+        assert machine.has_active_tasks is False
+
+    assert writer.calls == []

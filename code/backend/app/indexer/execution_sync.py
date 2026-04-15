@@ -128,6 +128,8 @@ def _sync_order_from_snapshot(
         "run_id": run.id,
         "run_status": run.status.value,
     }
+    metadata = dict(order.execution_metadata or {})
+    metadata.update(metadata_updates)
     next_execution_state = order.execution_state
     next_preview_state = order.preview_state
     next_order_state = order.state
@@ -137,7 +139,7 @@ def _sync_order_from_snapshot(
             db=db,
             order=order,
             valid_preview=True,
-            metadata=metadata_updates,
+            metadata=metadata,
             onchain_lifecycle=onchain_lifecycle,
             order_writer=order_writer,
         )
@@ -150,7 +152,7 @@ def _sync_order_from_snapshot(
         _broadcast_failed_preview_refund_if_needed(
             db=db,
             order=order,
-            metadata=metadata_updates,
+            metadata=metadata,
             onchain_lifecycle=onchain_lifecycle,
             order_writer=order_writer,
         )
@@ -164,7 +166,7 @@ def _sync_order_from_snapshot(
 
     db.refresh(order)
     merged_metadata = dict(order.execution_metadata or {})
-    merged_metadata.update(metadata_updates)
+    merged_metadata.update(metadata)
     order.execution_state = next_execution_state
     order.preview_state = next_preview_state
     order.state = next_order_state
