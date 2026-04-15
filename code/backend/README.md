@@ -1,105 +1,103 @@
 # OutcomeX Backend
 
-This backend is the OutcomeX control plane.
-It is no longer responsible for AI capability routing, model selection, or solution orchestration.
+`code/backend` is the OutcomeX control plane. It is responsible for turning product intent into orders, payment flows, execution dispatch, and read models while keeping economic truth anchored to contracts.
 
-## Current boundary
+## What this service owns
 
-OutcomeX backend owns:
+- chat-facing plan and quote APIs
+- order creation and lifecycle coordination
+- payment intent generation for direct pay and HSP checkout
+- HSP webhook ingestion, polling, and receipt verification
+- execution dispatch into AgentSkillOS
+- onchain event indexing and SQL projections
+- machine, revenue, settlement, and claim read APIs
+- owner-only self-use flows that do not enter buyer settlement
 
-- chat-native product APIs
-- order, payment, settlement, and revenue state
-- machine transfer guards and chain-projected ownership semantics
-- the thin submission boundary into AgentSkillOS
-- deterministic write-chain payload generation
-- payment rail intent generation and verifier-backed onchain sync
+## What this service does not own
 
-AgentSkillOS owns:
+The backend is not the final source of truth for:
 
-- capability understanding
-- skill retrieval
-- orchestration and planning
-- model/script/tool invocation
-- delivery artifacts
+- payment settlement
+- machine ownership
+- refunds and claims
+- transfer eligibility
+- AI orchestration internals
 
-The thin execution contract persisted by OutcomeX is:
+Those live in `code/contracts` and `code/agentskillos`. The backend exists to coordinate them and project their state into a product-facing API.
 
-```json
-{
-  "intent": "user outcome request",
-  "files": ["input files"],
-  "execution_strategy": "quality | efficiency | simplicity"
-}
-```
-
-## Stack
-
-- FastAPI for API surface
-- SQLAlchemy 2.0 for ORM models/session
-- Alembic-ready migration scaffolding
-- Pytest for backend verification
-
-## Structure
+## Architecture boundary
 
 ```text
-code/backend
-├── alembic/
-├── app/
-│   ├── api/
-│   ├── core/
-│   ├── db/
-│   ├── domain/
-│   ├── execution/      # Thin execution boundary types/services
-│   ├── integrations/   # AgentSkillOS bridge + HSP adapter boundary
-│   ├── onchain/        # Deterministic write-chain payload layer
-│   └── runtime/
-├── tests/
-├── alembic.ini
-└── pyproject.toml
+client -> backend API -> contracts / AgentSkillOS
+                     -> SQL projections
 ```
 
-## Product truths captured here
+The key design idea is thin execution plus event-driven finance:
 
-- Users buy outcomes, not workflow internals
-- Settlement starts only after result confirmation
-- Revenue split is fixed at 10% platform / 90% machine side
-- Owner self-use is not dividend-eligible
-- Machine transfer is blocked by active tasks or unsettled revenue
+- contracts own economic state
+- AgentSkillOS owns delivery execution
+- backend owns composition, policy checks, and read models
 
-## Payment rails
+## Main API areas
 
-This backend now supports two parallel payment rails:
+- `chat_plans.py` - product-facing plan and quote responses
+- `orders.py` - order creation, available actions, confirmation, rejection, refund-trigger flows
+- `payments.py` - HSP intents/webhooks/polling plus direct-payment payload generation and sync
+- `execution_runs.py` - run status, logs, previews, and artifact access
+- `machines.py`, `marketplace.py`, `primary_issuance.py` - machine asset and listing views
+- `revenue.py`, `settlement.py` - machine claims, refunds, and treasury-facing revenue views
+- `self_use.py` - owner-only execution path outside buyer order settlement
 
-- `HSP rail`: backend creates checkout intent and later syncs merchant status by webhook and/or backend polling
-- `Direct onchain rail`: backend creates a wallet-signable `OrderPaymentRouter` call spec for `USDC` / `USDT` / `PWR`, and later syncs the confirmed tx back into control-plane state
+## Payment rails in the current repo
 
-Current direct onchain behavior:
+### Official product-facing story
 
-- `USDC` uses `payWithUSDCByAuthorization` (`eip3009`)
-- `USDT` uses `payWithUSDT` (`erc20_approve`)
-- `PWR` uses `payWithPWR` (`erc20_approve`)
+The current product docs treat these as the primary rails:
 
-Current PWR anchor behavior:
+- `PWR` direct from the user wallet
+- `USDC/USDT via HSP`
 
-- quote math is deterministic and versioned in backend `RuntimeCostService`
-- `pwr_quote` and `pwr_anchor_price_cents` are returned together
-- the current anchor is a minimal backend-priced anchor, not a market oracle
+That is the right README framing for hackathon presentation.
 
-Direct onchain payment sync is now correlation-only:
+### Compatibility still present in code
 
-- backend verifies the receipt / wallet / router target
-- backend stores tx correlation and callback evidence
-- final paid state and settlement policy are projected from indexed onchain lifecycle events
+The backend also still exposes direct-intent payload generation for `USDC`, `USDT`, and `PWR` through `/payments/orders/{order_id}/direct-intent`.
 
-Additional hardening now in place:
+Treat direct stablecoin support as compatibility and test coverage rather than the main user experience the project should be pitched around.
 
-- direct onchain sync uses a verifier boundary instead of trusting caller-reported success
-- direct-pay success requires a real decodable `OrderCreated` event
-- machine ownership is projected from chain events; transfer intent is no longer a product API boundary
-- runtime admission occupancy is shared across service instances via a container-managed simulator
-- when `OUTCOMEX_ENV=prod`, app startup now fails fast if the onchain runtime/indexer is unavailable or unhealthy
+## Planning and execution boundary
 
-## Local run
+The backend references AgentSkillOS in two distinct ways:
+
+- a fast product-facing plan layer used by the public chat-plan route today
+- a deeper bridge and execution service used to call the vendored AgentSkillOS runtime through subprocess isolation
+
+That means the repo already contains the architecture for true downstream planning and execution, while still preserving a simpler product-facing fast path where needed.
+
+## Runtime services
+
+The app starts a small set of background workers around the API server:
+
+- projection repair at startup
+- execution sync worker
+- HSP payment sync worker
+- onchain indexer worker
+
+In `prod`, startup fails fast if the onchain runtime and health checks are unavailable. That is important because the backend is only honest if projections can converge.
+
+## Self-use split
+
+One of the strongest product decisions in this service is the self-use path:
+
+- owner-only
+- no buyer order
+- no payment
+- no settlement or dividend accounting
+- execution is still real, but isolated from the market-facing financial model
+
+This prevents internal machine usage from contaminating buyer economics.
+
+## Local development
 
 ```bash
 cd code/backend
@@ -109,40 +107,32 @@ pip install -e ".[dev]"
 uvicorn app.main:app --reload
 ```
 
-AgentSkillOS runtime defaults:
-
-- backend prefers vendored `code/agentskillos` automatically when `OUTCOMEX_AGENTSKILLOS_ROOT` is unset
-- optionally set `OUTCOMEX_AGENTSKILLOS_PYTHON_EXECUTABLE=/absolute/path/to/python` when the AgentSkillOS runtime should use a dedicated interpreter instead of the backend venv
-
-Local browser demo entrypoint:
-
-- from repo root, use `scripts/start_local_browser_demo.sh`
-- the script now forces backend startup to use vendored `code/agentskillos` even if a local `.env` still points at the legacy external checkout
-- if vendored `code/agentskillos/.venv` exists, the script also exports `OUTCOMEX_AGENTSKILLOS_PYTHON_EXECUTABLE` automatically
-- detailed current status / non-fully-live notes: `LOCAL_BROWSER_DEMO_CN.md`
-- local backend template env: `code/backend/.env.local-demo.example`
-- local browser demo backend port: `127.0.0.1:8787`
-
-Health endpoint:
+Useful endpoint:
 
 ```text
 GET /api/v1/health
 ```
 
-Production note:
+## Test commands
 
-- `prod` no longer silently degrades to `NullOnchainIndexer`
-- deploy with a reachable RPC + valid indexer subscriptions + healthy onchain config, or startup will fail fast
-
-HashKey testnet runtime note:
-
-- `code/backend/.env.hashkey-testnet.example` now includes the live HashKey testnet contract addresses plus the HSP polling/env knobs needed for a real `USDT via HSP` rollout
-- current recommended merchant rollout remains `USDT`-only on HashKey testnet; `OUTCOMEX_HSP_SUPPORTED_CURRENCIES=USDT`
-- if webhook stays disabled, keep `OUTCOMEX_HSP_POLL_ENABLED=true` and rely on `POST /api/v1/payments/{payment_id}/sync-hsp` plus background polling
-
-## Test
+Backend tests:
 
 ```bash
 cd code/backend
 PYTHONDONTWRITEBYTECODE=1 pytest -p no:cacheprovider tests -q
 ```
+
+Representative smoke path:
+
+```bash
+cd code/backend
+PYTHONDONTWRITEBYTECODE=1 TMPDIR=/tmp python3 tests/smoke/run_real_business_logic_e2e.py
+```
+
+## Related docs
+
+- `../contracts/README.md`
+- `../agentskillos/README.md`
+- `../../docs/backend-convergence-status-cn.md`
+- `../../docs/business-logic-target-decisions-2026-04-07-cn.md`
+- `../../docs/e2e-validation-2026-04-09-cn.md`
