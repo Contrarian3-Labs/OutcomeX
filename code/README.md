@@ -89,6 +89,28 @@ The monorepo is interesting because the financial parts are not bolted on after 
 - `backend` keeps a projection layer so the financial model can still drive a usable product UI.
 - `agentskillos` gives the system real delivery capacity, which is what makes the machine asset economically meaningful.
 
+## Active HashKey testnet contracts
+
+Current deployment target:
+
+- network: `HashKey testnet`
+- chain id: `133`
+- deployment date: `2026-04-14`
+
+| Contract | Address |
+| --- | --- |
+| `PWRToken` | `0xF58D0F697867Bc8959FA587B702B34Bb6ed2af3F` |
+| `MachineAssetNFT` | `0x8f96943B69ecA576D6C321E4D917DB360F0D9ca9` |
+| `MachineMarketplace` | `0xb2D41b606b77CFDcBD105aa16E23df7650c0D64a` |
+| `RevenueVault` | `0xBc2DF793B699b87a2B0Af0027F99efC91b9A7e70` |
+| `SettlementController` | `0xB793ff87105Df29Ad98097D4538Ea302f18f36e1` |
+| `OrderBook` | `0x48715c1C4Ea5214bd82875eB8C9932068dCb0528` |
+| `OrderPaymentRouter` | `0x9452f428425496f97B055f8B35dC8Ba98E1233B7` |
+
+Reference source:
+
+- `../../hashkey/docs/hashkey-testnet-outcomex-deployment-2026-04-14.md`
+
 ## Where to start
 
 - Start with `backend/README.md` if you want the product and API boundary.
