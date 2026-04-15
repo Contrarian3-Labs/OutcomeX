@@ -63,27 +63,19 @@ In other words, the machine NFT is not a decorative shell. It is a productive as
 
 ## Architecture
 
-```text
-                        +----------------------+
-                        |      Frontend        |
-                        | plans, order, claim  |
-                        +----------+-----------+
-                                   |
-                                   v
-+--------------------+   +----------------------+   +----------------------+
-|  code/agentskillos |<--|   code/backend       |-->|   code/contracts     |
-| execution kernel   |   | control plane        |   | payment + settlement |
-| skill retrieval    |   | APIs, HSP, indexer   |   | ownership + claims   |
-| orchestration      |   | dispatch, projection |   | transfer guards      |
-+--------------------+   +----------------------+   +----------------------+
-                                   |
-                                   v
-                        +----------------------+
-                        |   SQL read models    |
-                        | orders, payments,    |
-                        | revenue, machines    |
-                        +----------------------+
-```
+| Layer | Main responsibility | Key contents |
+| --- | --- | --- |
+| Frontend | User-facing product flow | plan selection, order detail, payment status, claims |
+| `code/backend` | Control plane | APIs, HSP integration, execution dispatch, indexer, projections |
+| `code/contracts` | Onchain financial truth | payment routing, settlement, ownership, claims, transfer guards |
+| `code/agentskillos` | Execution kernel | skill retrieval, orchestration, task execution, artifact generation |
+| SQL read models | Application-facing state | orders, payments, revenue, machine views |
+
+The main flow is:
+
+- frontend talks to `code/backend`
+- `code/backend` coordinates with `code/contracts` and `code/agentskillos`
+- chain and runtime results are projected back into SQL read models for product UX
 
 ## AgentSkillOS relationship
 
