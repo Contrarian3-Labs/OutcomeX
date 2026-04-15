@@ -358,7 +358,14 @@ def apply_primary_purchase_hsp_webhook(
     onchain_lifecycle: OnchainLifecycleService,
     db: Session,
 ) -> dict[str, object]:
-    if purchase.callback_event_id == event.event_id:
+    same_callback_event = purchase.callback_event_id == event.event_id
+    same_callback_status = (purchase.callback_state or "").lower() == event.status.lower()
+    same_callback_tx_hash = _normalize_hsp_tx_hash(purchase.callback_tx_hash) == _normalize_hsp_tx_hash(event.tx_hash)
+    needs_success_reprocessing = mapped_state == PaymentState.SUCCEEDED and (
+        purchase.state != PaymentState.SUCCEEDED or purchase.minted_machine_id is None
+    )
+
+    if same_callback_event and same_callback_status and same_callback_tx_hash and not needs_success_reprocessing:
         return {
             "purchase_id": purchase.id,
             "state": purchase.state.value,
