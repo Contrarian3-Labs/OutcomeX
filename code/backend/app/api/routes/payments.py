@@ -73,6 +73,15 @@ def _stablecoin_smallest_units_from_cents(amount_cents: int) -> int:
     return amount_cents * 10_000
 
 
+def _topic_address(topic: str | None) -> str | None:
+    if topic is None:
+        return None
+    normalized = str(topic).strip().lower()
+    if not normalized.startswith("0x") or len(normalized) < 42:
+        return None
+    return "0x" + normalized[-40:]
+
+
 def _hsp_receipt_confirms_payment(*, payment: Payment, event: HSPWebhookEvent, container: Container) -> bool:
     tx_hash = _normalize_hsp_tx_hash(event.tx_hash)
     if tx_hash is None or not tx_hash.startswith("0x"):
@@ -84,12 +93,17 @@ def _hsp_receipt_confirms_payment(*, payment: Payment, event: HSPWebhookEvent, c
 
     token_address = container.contracts_registry.payment_token(payment.currency.upper()).lower()
     expected_amount = _stablecoin_smallest_units_from_cents(payment.amount_cents)
+    expected_recipient = str(container.hsp_adapter.pay_to_address or "").lower()
+    if not expected_recipient:
+        return False
 
     for raw_log in receipt.metadata.get("logs", []):
         topics = [str(topic).lower() for topic in raw_log.get("topics", [])]
         if not topics or topics[0] != ERC20_TRANSFER_TOPIC:
             continue
         if str(raw_log.get("address", "")).lower() != token_address:
+            continue
+        if _topic_address(topics[2] if len(topics) > 2 else None) != expected_recipient:
             continue
         try:
             amount = int(str(raw_log.get("data", "0x0")), 16)
@@ -98,6 +112,15 @@ def _hsp_receipt_confirms_payment(*, payment: Payment, event: HSPWebhookEvent, c
         if amount == expected_amount:
             return True
     return False
+
+
+def _require_hsp_receipt_confirmation(*, payment: Payment, event: HSPWebhookEvent, container: Container) -> None:
+    if _hsp_receipt_confirms_payment(payment=payment, event=event, container=container):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="HSP receipt verification failed",
+    )
 
 
 def _effective_hsp_mapped_state(*, payment: Payment, event: HSPWebhookEvent, container: Container) -> PaymentState:
@@ -155,6 +178,7 @@ def _apply_hsp_payment_event(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Successful HSP payment must include tx signature",
             )
+        _require_hsp_receipt_confirmation(payment=payment, event=event, container=container)
         reused_tx = db.scalar(
             select(Payment.id).where(
                 Payment.id != payment.id,

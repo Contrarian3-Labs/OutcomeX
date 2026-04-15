@@ -7,6 +7,7 @@ from app.api.routes.payments import (
     _apply_payment_state,
     _ensure_onchain_order_anchor,
     _backfill_order_chain_anchor_from_receipt,
+    _require_hsp_receipt_confirmation,
     _mark_authoritative_paid_projection,
 )
 from app.api.routes.primary_issuance import (
@@ -111,6 +112,7 @@ async def ingest_hsp_webhook(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Successful HSP webhook must include tx signature",
             )
+        _require_hsp_receipt_confirmation(payment=payment, event=event, container=container)
         reused_tx = db.scalar(
             select(Payment.id).where(
                 Payment.id != payment.id,

@@ -12,9 +12,48 @@ from app.core.config import reset_settings_cache
 from app.core.container import get_container, reset_container_cache
 from app.integrations.onchain_broadcaster import OnchainCreateOrderReceipt, get_onchain_broadcaster
 from app.domain.models import Order, Payment
+from app.integrations.hsp_adapter import HSPMerchantOrder
 from app.main import create_app
 from app.onchain.order_writer import OrderWriteResult, get_order_writer
 from app.onchain.tx_sender import get_onchain_transaction_sender
+from app.api.routes import payments as payments_module
+from app.onchain.receipts import ChainReceipt
+
+
+def _install_hsp_receipt_stub(monkeypatch, *, tx_hash: str, token_address: str, pay_to_address: str, amount_cents: int) -> None:
+    monkeypatch.setattr(
+        payments_module,
+        "get_receipt_reader",
+        lambda: type(
+            "ReceiptReaderStub",
+            (),
+            {
+                "get_receipt": staticmethod(
+                    lambda _: ChainReceipt(
+                        tx_hash=tx_hash,
+                        status=1,
+                        from_address="0x1111111111111111111111111111111111111111",
+                        to_address=token_address,
+                        block_number=12345,
+                        event_id=f"receipt:{tx_hash}:12345",
+                        metadata={
+                            "logs": [
+                                {
+                                    "address": token_address,
+                                    "topics": [
+                                        payments_module.ERC20_TRANSFER_TOPIC,
+                                        "0x" + "0" * 24 + "1111111111111111111111111111111111111111",
+                                        "0x" + "0" * 24 + pay_to_address.removeprefix("0x"),
+                                    ],
+                                    "data": hex(amount_cents * 10_000),
+                                }
+                            ]
+                        },
+                    )
+                )
+            },
+        )(),
+    )
 
 
 class SpyOrderWriter:
@@ -155,6 +194,8 @@ def client(tmp_path) -> tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster,
     os.environ["OUTCOMEX_HSP_MERCHANT_PRIVATE_KEY_PEM"] = ""
     os.environ["OUTCOMEX_HSP_REDIRECT_URL"] = ""
     os.environ["OUTCOMEX_HSP_SUPPORTED_CURRENCIES"] = "USDC,USDT"
+    os.environ["OUTCOMEX_ONCHAIN_USDC_ADDRESS"] = "0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e"
+    os.environ["OUTCOMEX_ONCHAIN_USDT_ADDRESS"] = "0x372325443233fEbaC1F6998aC750276468c83CC6"
     reset_settings_cache()
     reset_container_cache()
     spy_writer = SpyOrderWriter()
@@ -164,6 +205,18 @@ def client(tmp_path) -> tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster,
     app.dependency_overrides[get_order_writer] = lambda: spy_writer
     app.dependency_overrides[get_onchain_broadcaster] = lambda: spy_broadcaster
     app.dependency_overrides[get_onchain_transaction_sender] = lambda: spy_sender
+    container = get_container()
+    container.hsp_adapter.pay_to_address = "0x9999999999999999999999999999999999999999"
+    container.hsp_adapter.create_payment_intent = lambda order_id, amount_cents, currency, **_: HSPMerchantOrder(
+        provider="hsp",
+        merchant_order_id=order_id,
+        flow_id=f"flow-{order_id}",
+        provider_reference=f"PAY-REQ-{order_id}",
+        payment_url=f"https://pay.hashkey.com/flow/flow-{order_id}",
+        amount_cents=amount_cents,
+        currency=currency.upper(),
+        provider_payload={"mode": "mock"},
+    )
     with TestClient(app) as test_client:
         yield test_client, spy_writer, spy_broadcaster, spy_sender
     reset_settings_cache()
@@ -278,6 +331,7 @@ def _anchor_order(
 
 def test_hsp_webhook_is_idempotent_and_freezes_settlement_policy(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
+    monkeypatch,
 ) -> None:
     test_client, spy_writer, spy_broadcaster, spy_sender = client
     machine = _create_machine(test_client)
@@ -285,6 +339,13 @@ def test_hsp_webhook_is_idempotent_and_freezes_settlement_policy(
     payment = _create_payment_intent(test_client, order_id=order["id"])
     payload = _webhook_payload(payment, status="payment-successful", currency="USDC", tx_signature="0xabc123", request_id="evt_1")
     body, headers = _sign_payload(payload)
+    _install_hsp_receipt_stub(
+        monkeypatch,
+        tx_hash="0xabc123",
+        token_address="0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
+        pay_to_address="0x9999999999999999999999999999999999999999",
+        amount_cents=500,
+    )
 
     first_response = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
     assert first_response.status_code == 200
@@ -358,6 +419,7 @@ def test_hsp_webhook_is_idempotent_and_freezes_settlement_policy(
 
 def test_hsp_webhook_marks_authoritative_paid_projection_when_order_is_already_anchored(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
+    monkeypatch,
 ) -> None:
     test_client, spy_writer, spy_broadcaster, spy_sender = client
     machine = _create_machine(test_client)
@@ -378,6 +440,13 @@ def test_hsp_webhook_marks_authoritative_paid_projection_when_order_is_already_a
         request_id="evt_existing_paid",
     )
     body, headers = _sign_payload(payload)
+    _install_hsp_receipt_stub(
+        monkeypatch,
+        tx_hash="0xexistingpaid",
+        token_address="0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
+        pay_to_address="0x9999999999999999999999999999999999999999",
+        amount_cents=500,
+    )
 
     response = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
 
@@ -416,6 +485,7 @@ def test_hsp_webhook_marks_authoritative_paid_projection_when_order_is_already_a
 
 def test_hsp_webhook_preserves_concurrent_projection_metadata(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
+    monkeypatch,
 ) -> None:
     test_client, spy_writer, _spy_broadcaster, spy_sender = client
     machine = _create_machine(test_client)
@@ -438,6 +508,13 @@ def test_hsp_webhook_preserves_concurrent_projection_metadata(
     broadcaster = ConcurrentProjectionBroadcaster()
     app = test_client.app
     app.dependency_overrides[get_onchain_broadcaster] = lambda: broadcaster
+    _install_hsp_receipt_stub(
+        monkeypatch,
+        tx_hash="0xpreservemeta",
+        token_address="0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
+        pay_to_address="0x9999999999999999999999999999999999999999",
+        amount_cents=500,
+    )
     try:
         payload = _webhook_payload(
             payment,
@@ -474,6 +551,39 @@ def test_hsp_webhook_preserves_concurrent_projection_metadata(
         {"method_name": "createOrderByAdapter", "tx_hash": "0xcreateorder"},
         {"method_name": "payOrderByAdapter", "tx_hash": "0xpaybyadapter"},
     ]
+
+
+def test_hsp_webhook_rejects_success_without_matching_pay_to_transfer(
+    client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
+    monkeypatch,
+) -> None:
+    test_client, spy_writer, spy_broadcaster, spy_sender = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine_id=machine["id"])
+    payment = _create_payment_intent(test_client, order_id=order["id"])
+    payload = _webhook_payload(
+        payment,
+        status="payment-successful",
+        currency="USDC",
+        tx_signature="0xwrongpayto",
+        request_id="evt_wrong_payto",
+    )
+    body, headers = _sign_payload(payload)
+    _install_hsp_receipt_stub(
+        monkeypatch,
+        tx_hash="0xwrongpayto",
+        token_address="0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
+        pay_to_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        amount_cents=500,
+    )
+
+    response = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "HSP receipt verification failed"
+    assert spy_writer.pay_order_by_adapter_calls == []
+    assert spy_broadcaster.create_paid_calls == []
+    assert spy_sender.calls == [{"method_name": "createOrderByAdapter", "tx_hash": "0xcreateorder"}]
 
 
 def test_hsp_webhook_rejects_invalid_signatures(
@@ -545,6 +655,7 @@ def test_hsp_payment_intent_requires_exact_quote_and_single_active_intent(
 
 def test_hsp_payment_intent_supports_usdt_checkout_and_success_webhook(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
+    monkeypatch,
 ) -> None:
     test_client, _spy_writer, _spy_broadcaster, _spy_sender = client
     machine = _create_machine(test_client)
@@ -561,6 +672,13 @@ def test_hsp_payment_intent_supports_usdt_checkout_and_success_webhook(
         request_id="evt_usdt_success",
     )
     body, headers = _sign_payload(payload)
+    _install_hsp_receipt_stub(
+        monkeypatch,
+        tx_hash="0xusdtok",
+        token_address="0x372325443233fEbaC1F6998aC750276468c83CC6",
+        pay_to_address="0x9999999999999999999999999999999999999999",
+        amount_cents=500,
+    )
 
     response = test_client.post("/api/v1/payments/hsp/webhooks", content=body, headers=headers)
 
@@ -654,6 +772,7 @@ def test_payment_openapi_marks_hsp_checkout_as_formal_stablecoin_route(client) -
 
 def test_hsp_webhook_rejects_terminal_state_downgrade_after_success(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
+    monkeypatch,
 ) -> None:
     test_client, _spy_writer, _spy_broadcaster, _spy_sender = client
     machine = _create_machine(test_client)
@@ -668,6 +787,13 @@ def test_hsp_webhook_rejects_terminal_state_downgrade_after_success(
         request_id="evt_success",
     )
     success_body, success_headers = _sign_payload(success_payload)
+    _install_hsp_receipt_stub(
+        monkeypatch,
+        tx_hash="0xok",
+        token_address="0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
+        pay_to_address="0x9999999999999999999999999999999999999999",
+        amount_cents=500,
+    )
     success_response = test_client.post("/api/v1/payments/hsp/webhooks", content=success_body, headers=success_headers)
     assert success_response.status_code == 200
 
@@ -707,6 +833,7 @@ def test_hsp_webhook_rejects_success_without_tx_signature(
 
 def test_hsp_webhook_rejects_success_with_reused_tx_signature_across_payments(
     client: tuple[TestClient, SpyOrderWriter, SpyOnchainBroadcaster, SpyTransactionSender],
+    monkeypatch,
 ) -> None:
     test_client, _spy_writer, _spy_broadcaster, _spy_sender = client
     machine = _create_machine(test_client)
@@ -724,6 +851,13 @@ def test_hsp_webhook_rejects_success_with_reused_tx_signature_across_payments(
         request_id="evt_first_tx",
     )
     first_body, first_headers = _sign_payload(first_payload)
+    _install_hsp_receipt_stub(
+        monkeypatch,
+        tx_hash=shared_tx_hash,
+        token_address="0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
+        pay_to_address="0x9999999999999999999999999999999999999999",
+        amount_cents=500,
+    )
     first_response = test_client.post("/api/v1/payments/hsp/webhooks", content=first_body, headers=first_headers)
     assert first_response.status_code == 200
 

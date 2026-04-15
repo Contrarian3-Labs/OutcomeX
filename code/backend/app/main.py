@@ -9,6 +9,7 @@ from app.api.routes.payments import sync_pending_hsp_payments_once
 from app.core.container import get_container
 from app.core.config import Settings
 from app.db.base import Base
+from app.indexer.projection_repair import repair_historical_projections_once
 from app.indexer.execution_sync import sync_execution_runs_once
 from app.integrations.onchain_indexer import get_onchain_indexer_poll_seconds
 
@@ -19,6 +20,7 @@ async def lifespan(_: FastAPI):
     tasks: list[asyncio.Task] = []
     if container.settings.auto_create_tables:
         Base.metadata.create_all(bind=container.engine)
+    repair_historical_projections_once(session_factory=container.session_factory)
 
     onchain_indexer = container.onchain_indexer
     _ensure_onchain_runtime_ready(container=container, onchain_indexer=onchain_indexer)
@@ -140,4 +142,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-

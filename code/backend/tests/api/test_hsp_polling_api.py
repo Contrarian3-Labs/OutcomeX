@@ -17,6 +17,30 @@ from app.onchain.receipts import ChainReceipt
 from app.onchain.tx_sender import get_onchain_transaction_sender
 
 
+def _receipt_for_transfer(*, tx_hash: str, token_address: str, pay_to_address: str, amount_cents: int) -> ChainReceipt:
+    return ChainReceipt(
+        tx_hash=tx_hash,
+        status=1,
+        from_address="0x1111111111111111111111111111111111111111",
+        to_address=token_address,
+        block_number=12345,
+        event_id=f"receipt:{tx_hash}:12345",
+        metadata={
+            "logs": [
+                {
+                    "address": token_address,
+                    "topics": [
+                        payments_module.ERC20_TRANSFER_TOPIC,
+                        "0x" + "0" * 24 + "1111111111111111111111111111111111111111",
+                        "0x" + "0" * 24 + pay_to_address.removeprefix("0x"),
+                    ],
+                    "data": hex(amount_cents * 10_000),
+                }
+            ]
+        },
+    )
+
+
 class SpyOrderWriter:
     def __init__(self) -> None:
         self.create_order_calls = []
@@ -184,7 +208,7 @@ def test_order_detail_includes_latest_hsp_payment_summary(client) -> None:
     }
 
 
-def test_sync_hsp_payment_endpoint_marks_payment_succeeded(client) -> None:
+def test_sync_hsp_payment_endpoint_marks_payment_succeeded(client, monkeypatch) -> None:
     test_client, spy_writer = client
     machine = _create_machine(test_client)
     order = _create_order(test_client, machine_id=machine["id"])
@@ -194,6 +218,25 @@ def test_sync_hsp_payment_endpoint_marks_payment_succeeded(client) -> None:
     )
     assert payment_response.status_code == 201, payment_response.text
     payment = payment_response.json()
+
+    monkeypatch.setattr(
+        payments_module,
+        "get_receipt_reader",
+        lambda: type(
+            "ReceiptReaderStub",
+            (),
+            {
+                "get_receipt": staticmethod(
+                    lambda tx_hash: _receipt_for_transfer(
+                        tx_hash=tx_hash,
+                        token_address="0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
+                        pay_to_address="0x9999999999999999999999999999999999999999",
+                        amount_cents=500,
+                    )
+                )
+            },
+        )(),
+    )
 
     sync_response = test_client.post(f"/api/v1/payments/{payment['payment_id']}/sync-hsp")
 
@@ -260,14 +303,18 @@ def test_sync_hsp_payment_promotes_included_status_when_receipt_confirms_transfe
                 tx_hash=tx_hash,
                 status=1,
                 from_address="0x1111111111111111111111111111111111111111",
-                to_address="0x2222222222222222222222222222222222222222",
+                to_address="0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
                 block_number=12345,
                 event_id=f"receipt:{tx_hash}:12345",
                 metadata={
                     "logs": [
                         {
                             "address": "0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
-                            "topics": [payments_module.ERC20_TRANSFER_TOPIC],
+                            "topics": [
+                                payments_module.ERC20_TRANSFER_TOPIC,
+                                "0x" + "0" * 24 + "1111111111111111111111111111111111111111",
+                                "0x" + "0" * 24 + "9999999999999999999999999999999999999999",
+                            ],
                             "data": hex(500 * 10_000),
                         }
                     ]
@@ -284,3 +331,40 @@ def test_sync_hsp_payment_promotes_included_status_when_receipt_confirms_transfe
     assert payload["remote_status"] == "payment-included"
     assert payload["polled"] is True
     assert len(spy_writer.pay_order_by_adapter_calls) == 1
+
+
+def test_sync_hsp_payment_rejects_success_without_pay_to_transfer(client, monkeypatch) -> None:
+    test_client, spy_writer = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine_id=machine["id"])
+    payment_response = test_client.post(
+        f"/api/v1/payments/orders/{order['id']}/intent",
+        json={"amount_cents": 500, "currency": "USDC"},
+    )
+    assert payment_response.status_code == 201, payment_response.text
+    payment = payment_response.json()
+
+    monkeypatch.setattr(
+        payments_module,
+        "get_receipt_reader",
+        lambda: type(
+            "ReceiptReaderStub",
+            (),
+            {
+                "get_receipt": staticmethod(
+                    lambda tx_hash: _receipt_for_transfer(
+                        tx_hash=tx_hash,
+                        token_address="0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
+                        pay_to_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        amount_cents=500,
+                    )
+                )
+            },
+        )(),
+    )
+
+    sync_response = test_client.post(f"/api/v1/payments/{payment['payment_id']}/sync-hsp")
+
+    assert sync_response.status_code == 409
+    assert sync_response.json()["detail"] == "HSP receipt verification failed"
+    assert spy_writer.pay_order_by_adapter_calls == []

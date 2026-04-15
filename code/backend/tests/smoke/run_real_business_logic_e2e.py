@@ -437,6 +437,8 @@ def _platform_claim_call(modules: dict[str, Any], *, currency: str) -> tuple[str
 
 def _build_hsp_webhook(*, client: TestClient, payment_intent: dict[str, Any], amount_cents: int, tx_signature: str) -> dict[str, Any]:
     from app.core.container import get_container
+    from app.api.routes import payments as payments_module
+    from app.onchain.receipts import ChainReceipt
 
     body = {
         "request_id": f"evt-{payment_intent['payment_id']}",
@@ -448,9 +450,41 @@ def _build_hsp_webhook(*, client: TestClient, payment_intent: dict[str, Any], am
         "token": "USDC",
         "tx_signature": tx_signature,
     }
+    container = get_container()
+    pay_to_address = str(container.hsp_adapter.pay_to_address).lower()
+    token_address = container.contracts_registry.payment_token("USDC")
+
+    class _ReceiptReaderStub:
+        @staticmethod
+        def get_receipt(tx_hash: str):
+            if tx_hash.lower() != tx_signature.lower():
+                return None
+            return ChainReceipt(
+                tx_hash=tx_hash.lower(),
+                status=1,
+                from_address="0x1111111111111111111111111111111111111111",
+                to_address=token_address,
+                block_number=12345,
+                event_id=f"receipt:{tx_hash.lower()}:12345",
+                metadata={
+                    "logs": [
+                        {
+                            "address": token_address,
+                            "topics": [
+                                payments_module.ERC20_TRANSFER_TOPIC,
+                                "0x" + "0" * 24 + "1111111111111111111111111111111111111111",
+                                "0x" + "0" * 24 + pay_to_address.removeprefix("0x"),
+                            ],
+                            "data": hex(amount_cents * 10_000),
+                        }
+                    ]
+                },
+            )
+
+    payments_module.get_receipt_reader = lambda: _ReceiptReaderStub()
     raw = json.dumps(body, separators=(",", ":")).encode("utf-8")
     timestamp = str(int(time.time()))
-    signature = get_container().hsp_adapter.build_webhook_signature(body=raw, timestamp=timestamp)
+    signature = container.hsp_adapter.build_webhook_signature(body=raw, timestamp=timestamp)
     response = client.post(
         "/api/v1/payments/hsp/webhooks",
         content=raw,
