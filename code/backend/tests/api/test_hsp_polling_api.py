@@ -333,6 +333,57 @@ def test_sync_hsp_payment_promotes_included_status_when_receipt_confirms_transfe
     assert len(spy_writer.pay_order_by_adapter_calls) == 1
 
 
+def test_sync_hsp_payment_accepts_payment_finalized_status(client, monkeypatch) -> None:
+    test_client, spy_writer = client
+    machine = _create_machine(test_client)
+    order = _create_order(test_client, machine_id=machine["id"])
+    payment_response = test_client.post(
+        f"/api/v1/payments/orders/{order['id']}/intent",
+        json={"amount_cents": 500, "currency": "USDC"},
+    )
+    assert payment_response.status_code == 201, payment_response.text
+    payment = payment_response.json()
+
+    container = get_container()
+    container.hsp_adapter.query_payment_status = lambda **_: HSPWebhookEvent(
+        event_id="req_finalized",
+        payment_request_id="PAY-REQ-FINALIZED",
+        cart_mandate_id="order-merchant-finalized",
+        flow_id="flow-finalized",
+        status="payment-finalized",
+        amount_cents=500,
+        currency="USDC",
+        tx_hash="0x" + "3" * 64,
+    )
+    monkeypatch.setattr(
+        payments_module,
+        "get_receipt_reader",
+        lambda: type(
+            "ReceiptReaderStub",
+            (),
+            {
+                "get_receipt": staticmethod(
+                    lambda tx_hash: _receipt_for_transfer(
+                        tx_hash=tx_hash,
+                        token_address="0x79AEc4EeA31D50792F61D1Ca0733C18c89524C9e",
+                        pay_to_address="0x9999999999999999999999999999999999999999",
+                        amount_cents=500,
+                    )
+                )
+            },
+        )(),
+    )
+
+    sync_response = test_client.post(f"/api/v1/payments/{payment['payment_id']}/sync-hsp")
+
+    assert sync_response.status_code == 200
+    payload = sync_response.json()
+    assert payload["state"] == "succeeded"
+    assert payload["remote_status"] == "payment-finalized"
+    assert payload["polled"] is True
+    assert len(spy_writer.pay_order_by_adapter_calls) == 1
+
+
 def test_sync_hsp_payment_rejects_success_without_pay_to_transfer(client, monkeypatch) -> None:
     test_client, spy_writer = client
     machine = _create_machine(test_client)

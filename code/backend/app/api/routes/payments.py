@@ -45,7 +45,7 @@ PWR_WEI_MULTIPLIER = Decimal("1000000000000000000")
 
 TERMINAL_PAYMENT_STATES = {PaymentState.SUCCEEDED, PaymentState.FAILED, PaymentState.REFUNDED}
 HSP_STABLECOIN_CURRENCIES = {"USDC", "USDT"}
-SUCCESS_STATUSES = {"completed", "confirmed", "succeeded", "payment-successful", "payment-safe"}
+SUCCESS_STATUSES = {"completed", "confirmed", "succeeded", "payment-successful", "payment-safe", "payment-finalized"}
 FAILED_STATUSES = {"cancelled", "failed", "rejected", "payment-failed"}
 PENDING_STATUSES = {"created", "pending", "processing", "payment-included", "payment-required"}
 ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
