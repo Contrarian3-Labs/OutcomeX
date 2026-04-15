@@ -10,6 +10,7 @@ from app.domain.enums import PaymentState
 from app.domain.models import Machine, PrimaryIssuancePurchase, PrimaryIssuanceSku, utc_now
 from app.integrations.hsp_adapter import HSPWebhookEvent
 from app.onchain.lifecycle_service import OnchainLifecycleService, get_onchain_lifecycle_service
+from app.onchain.receipts import get_receipt_reader
 from app.schemas.primary_issuance import (
     PrimaryIssuancePurchaseIntentRequest,
     PrimaryIssuancePurchaseIntentResponse,
@@ -27,9 +28,10 @@ PRIMARY_ISSUANCE_MODEL_FAMILY = "Qwen Family"
 PRIMARY_ISSUANCE_PRICE_CENTS = 390
 PRIMARY_ISSUANCE_CURRENCY = "USDT"
 PRIMARY_ISSUANCE_DEFAULT_STOCK = 10
-SUCCESS_STATUSES = {"completed", "confirmed", "succeeded", "payment-successful"}
+SUCCESS_STATUSES = {"completed", "confirmed", "succeeded", "payment-successful", "payment-safe"}
 FAILED_STATUSES = {"cancelled", "failed", "rejected", "payment-failed"}
 PENDING_STATUSES = {"created", "pending", "processing", "payment-included", "payment-required"}
+ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 
 
 def _ensure_fixed_primary_sku(db: Session) -> PrimaryIssuanceSku:
@@ -89,6 +91,64 @@ def _map_hsp_status(status_value: str) -> PaymentState:
     if normalized in PENDING_STATUSES:
         return PaymentState.PENDING
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported HSP status")
+
+
+def _stablecoin_smallest_units_from_cents(amount_cents: int) -> int:
+    return amount_cents * 10_000
+
+
+def _topic_address(topic: str | None) -> str | None:
+    if topic is None:
+        return None
+    normalized = str(topic).strip().lower()
+    if not normalized.startswith("0x") or len(normalized) < 42:
+        return None
+    return "0x" + normalized[-40:]
+
+
+def _primary_hsp_receipt_confirms_payment(*, purchase: PrimaryIssuancePurchase, event: HSPWebhookEvent, container: Container) -> bool:
+    tx_hash = _normalize_hsp_tx_hash(event.tx_hash)
+    if tx_hash is None or not tx_hash.startswith("0x"):
+        return False
+
+    receipt = get_receipt_reader().get_receipt(tx_hash)
+    if receipt is None or receipt.status != 1:
+        return False
+
+    token_address = container.contracts_registry.payment_token(purchase.currency.upper()).lower()
+    expected_amount = _stablecoin_smallest_units_from_cents(purchase.amount_cents)
+    expected_recipient = str(container.hsp_adapter.pay_to_address or "").lower()
+    if not expected_recipient:
+        return False
+
+    for raw_log in receipt.metadata.get("logs", []):
+        topics = [str(topic).lower() for topic in raw_log.get("topics", [])]
+        if not topics or topics[0] != ERC20_TRANSFER_TOPIC:
+            continue
+        if str(raw_log.get("address", "")).lower() != token_address:
+            continue
+        if _topic_address(topics[2] if len(topics) > 2 else None) != expected_recipient:
+            continue
+        try:
+            amount = int(str(raw_log.get("data", "0x0")), 16)
+        except ValueError:
+            continue
+        if amount == expected_amount:
+            return True
+    return False
+
+
+def _effective_primary_hsp_mapped_state(
+    *,
+    purchase: PrimaryIssuancePurchase,
+    event: HSPWebhookEvent,
+    container: Container,
+) -> PaymentState:
+    mapped_state = _map_hsp_status(event.status)
+    if mapped_state == PaymentState.PENDING and event.status.lower() in {"payment-included", "payment-safe"}:
+        if _primary_hsp_receipt_confirms_payment(purchase=purchase, event=event, container=container):
+            return PaymentState.SUCCEEDED
+    return mapped_state
 
 
 def _query_primary_purchase_hsp_event(
@@ -525,7 +585,11 @@ def sync_primary_issuance_purchase_hsp(
 
     result = apply_primary_purchase_hsp_webhook(
         purchase=purchase,
-        mapped_state=_map_hsp_status(event.status),
+        mapped_state=_effective_primary_hsp_mapped_state(
+            purchase=purchase,
+            event=event,
+            container=container,
+        ),
         event=event,
         container=container,
         onchain_lifecycle=onchain_lifecycle,

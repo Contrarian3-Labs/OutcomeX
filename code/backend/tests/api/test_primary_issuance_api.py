@@ -499,7 +499,7 @@ def test_primary_purchase_sync_hsp_manually_finalizes_pending_purchase(
         payment_request_id=purchase["provider_reference"],
         cart_mandate_id=purchase["merchant_order_id"],
         flow_id=purchase["flow_id"],
-        status="payment-successful",
+        status="payment-safe",
         amount_cents=purchase["amount_cents"],
         currency=purchase["currency"],
         tx_hash="0xprimarysync",
@@ -511,7 +511,7 @@ def test_primary_purchase_sync_hsp_manually_finalizes_pending_purchase(
     payload = response.json()
     assert payload["purchase_id"] == purchase["purchase_id"]
     assert payload["polled"] is True
-    assert payload["remote_status"] == "payment-successful"
+    assert payload["remote_status"] == "payment-safe"
     assert payload["state"] == PaymentState.SUCCEEDED.value
     assert payload["minted_onchain_machine_id"] == "9001"
     assert len(spy_lifecycle.mint_calls) == 1

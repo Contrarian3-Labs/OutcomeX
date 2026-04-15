@@ -24,7 +24,7 @@ from app.onchain.tx_sender import TransactionSender, get_onchain_transaction_sen
 
 router = APIRouter()
 
-SUCCESS_STATUSES = {"completed", "confirmed", "succeeded", "payment-successful"}
+SUCCESS_STATUSES = {"completed", "confirmed", "succeeded", "payment-successful", "payment-safe"}
 FAILED_STATUSES = {"cancelled", "failed", "rejected", "payment-failed"}
 PENDING_STATUSES = {"created", "pending", "processing", "payment-included"}
 

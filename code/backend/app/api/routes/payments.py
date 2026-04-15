@@ -45,7 +45,7 @@ PWR_WEI_MULTIPLIER = Decimal("1000000000000000000")
 
 TERMINAL_PAYMENT_STATES = {PaymentState.SUCCEEDED, PaymentState.FAILED, PaymentState.REFUNDED}
 HSP_STABLECOIN_CURRENCIES = {"USDC", "USDT"}
-SUCCESS_STATUSES = {"completed", "confirmed", "succeeded", "payment-successful"}
+SUCCESS_STATUSES = {"completed", "confirmed", "succeeded", "payment-successful", "payment-safe"}
 FAILED_STATUSES = {"cancelled", "failed", "rejected", "payment-failed"}
 PENDING_STATUSES = {"created", "pending", "processing", "payment-included", "payment-required"}
 ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
@@ -125,7 +125,7 @@ def _require_hsp_receipt_confirmation(*, payment: Payment, event: HSPWebhookEven
 
 def _effective_hsp_mapped_state(*, payment: Payment, event: HSPWebhookEvent, container: Container) -> PaymentState:
     mapped_state = _map_hsp_status(event.status)
-    if mapped_state == PaymentState.PENDING and event.status.lower() == "payment-included":
+    if mapped_state == PaymentState.PENDING and event.status.lower() in {"payment-included", "payment-safe"}:
         if _hsp_receipt_confirms_payment(payment=payment, event=event, container=container):
             return PaymentState.SUCCEEDED
     return mapped_state
