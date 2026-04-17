@@ -21,6 +21,10 @@ class StubChainAdapter(ChainAdapter):
     def __init__(self, events: list[DecodedChainEvent]) -> None:
         self._events = events
         self.last_from_block: int | None = None
+        self.head_block: int = 0
+
+    def latest_block(self) -> int:
+        return self.head_block
 
     def iter_events(self, *, from_block: int, to_block: int | None = None) -> Iterable[DecodedChainEvent]:
         self.last_from_block = from_block
@@ -90,7 +94,7 @@ def test_replay_indexer_applies_duplicate_log_once_and_advances_cursor() -> None
         "177:12:0xabc:1",
     ]
     assert projection.get_order("1").status == "CREATED"
-    assert cursor_store.get(chain_id=177).last_indexed_block == 12
+    assert cursor_store.get(chain_id=177).last_indexed_block == 20
 
 
 def test_replay_indexer_applies_events_in_chain_log_order() -> None:
@@ -188,3 +192,41 @@ def test_replay_indexer_skips_unsupported_events_without_failing() -> None:
 
     assert projection.applied_event_ids == ["177:11:0x111:1"]
     assert outcome.applied_events == 1
+    assert cursor_store.get(chain_id=177).last_indexed_block == 20
+
+
+def test_replay_indexer_advances_cursor_across_empty_ranges() -> None:
+    adapter = StubChainAdapter([])
+    cursor_store = InMemoryCursorStore()
+    projection = InMemoryProjectionStore()
+    indexer = ReplayIndexer(
+        adapter=adapter,
+        projection_store=projection,
+        cursor_store=cursor_store,
+        config=IndexerConfig(confirmation_depth=0),
+    )
+
+    outcome = indexer.replay_once(chain_id=177, to_block=42)
+
+    assert outcome.scanned_events == 0
+    assert outcome.cursor_advanced_to == 42
+    assert cursor_store.get(chain_id=177).last_indexed_block == 42
+
+
+def test_replay_indexer_uses_adapter_head_with_confirmation_depth_when_to_block_is_omitted() -> None:
+    adapter = StubChainAdapter([])
+    adapter.head_block = 50
+    cursor_store = InMemoryCursorStore()
+    projection = InMemoryProjectionStore()
+    indexer = ReplayIndexer(
+        adapter=adapter,
+        projection_store=projection,
+        cursor_store=cursor_store,
+        config=IndexerConfig(confirmation_depth=2),
+    )
+
+    outcome = indexer.replay_once(chain_id=177)
+
+    assert outcome.to_block == 48
+    assert outcome.cursor_advanced_to == 48
+    assert cursor_store.get(chain_id=177).last_indexed_block == 48

@@ -67,6 +67,9 @@ class EventDecoder(Protocol):
 class ChainAdapter(Protocol):
     """Boundary that emits decoded chain events for the indexer."""
 
+    def latest_block(self) -> int:
+        ...
+
     def iter_events(self, *, from_block: int, to_block: int | None = None) -> Iterable[DecodedChainEvent]:
         ...
 
@@ -99,6 +102,13 @@ class Web3ChainAdapter:
         self._web3 = web3_client
         self._decoder = decoder or PassthroughDecoder()
         self._max_block_span = max(1, max_block_span)
+        self._subscription_by_key = {
+            (subscription.contract_address.lower(), subscription.topic0.lower()): subscription
+            for subscription in self._subscriptions
+            if subscription.topic0
+        }
+        self._batched_subscriptions = tuple(subscription for subscription in self._subscriptions if subscription.topic0)
+        self._unbatched_subscriptions = tuple(subscription for subscription in self._subscriptions if not subscription.topic0)
 
     @classmethod
     def from_rpc_url(
@@ -141,18 +151,61 @@ class Web3ChainAdapter:
         )
 
     def iter_events(self, *, from_block: int, to_block: int | None = None) -> Iterable[DecodedChainEvent]:
-        latest_block = int(to_block if to_block is not None else self._web3.eth.block_number)
+        latest_block = int(to_block if to_block is not None else self.latest_block())
         block_cursor = max(0, from_block)
 
         while block_cursor <= latest_block:
             batch_to_block = min(block_cursor + self._max_block_span - 1, latest_block)
-            for subscription in self._subscriptions:
+            yield from self._load_batched_subscription_batch(
+                from_block=block_cursor,
+                to_block=batch_to_block,
+            )
+            for subscription in self._unbatched_subscriptions:
                 yield from self._load_subscription_batch(
                     subscription=subscription,
                     from_block=block_cursor,
                     to_block=batch_to_block,
                 )
             block_cursor = batch_to_block + 1
+
+    def latest_block(self) -> int:
+        return int(self._web3.eth.block_number)
+
+    def _load_batched_subscription_batch(
+        self,
+        *,
+        from_block: int,
+        to_block: int,
+    ) -> Iterator[DecodedChainEvent]:
+        if not self._batched_subscriptions:
+            return
+
+        filter_params: dict[str, Any] = {
+            "fromBlock": from_block,
+            "toBlock": to_block,
+            "address": sorted({subscription.contract_address for subscription in self._batched_subscriptions}),
+            "topics": [[subscription.topic0 for subscription in self._batched_subscriptions]],
+        }
+
+        logs = self._web3.eth.get_logs(filter_params)
+        for web3_log in logs:
+            subscription = self._resolve_subscription(web3_log)
+            if subscription is None:
+                continue
+            raw_log = self._normalize_raw_log(subscription=subscription, web3_log=web3_log)
+            decoded_args = self._decoder.decode(subscription=subscription, raw_log=raw_log)
+            yield DecodedChainEvent(
+                chain_id=raw_log.chain_id,
+                contract_name=raw_log.contract_name,
+                contract_address=raw_log.contract_address,
+                event_name=raw_log.event_name,
+                block_number=raw_log.block_number,
+                block_hash=raw_log.block_hash,
+                transaction_hash=raw_log.transaction_hash,
+                log_index=raw_log.log_index,
+                args=decoded_args,
+                removed=raw_log.removed,
+            )
 
     def _load_subscription_batch(
         self,
@@ -185,6 +238,14 @@ class Web3ChainAdapter:
                 args=decoded_args,
                 removed=raw_log.removed,
             )
+
+    def _resolve_subscription(self, web3_log: Mapping[str, Any]) -> EventSubscription | None:
+        address = _hex_string(web3_log.get("address")).lower()
+        topics = web3_log.get("topics", ())
+        if not topics:
+            return None
+        topic0 = _hex_string(topics[0]).lower()
+        return self._subscription_by_key.get((address, topic0))
 
     def _normalize_raw_log(self, *, subscription: EventSubscription, web3_log: Mapping[str, Any]) -> RawLog:
         return RawLog(

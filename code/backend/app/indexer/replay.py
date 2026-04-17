@@ -56,7 +56,8 @@ class ReplayIndexer:
             if cursor is None
             else cursor.last_indexed_block + 1
         )
-        bounded_to_block = self._apply_confirmation_depth(from_block=from_block, to_block=to_block)
+        requested_to_block = to_block if to_block is not None else self._adapter.latest_block()
+        bounded_to_block = self._apply_confirmation_depth(from_block=from_block, to_block=requested_to_block)
         if bounded_to_block is not None and bounded_to_block < from_block:
             return ReplayOutcome(
                 from_block=from_block,
@@ -119,9 +120,9 @@ class ReplayIndexer:
             self._processed_event_store.mark(normalized_event.event_id)
             applied_events += 1
 
-        next_cursor_block = highest_seen_block
-        if safe_upper_block is not None and next_cursor_block is not None:
-            next_cursor_block = min(next_cursor_block, safe_upper_block)
+        next_cursor_block = safe_upper_block if safe_upper_block is not None else bounded_to_block
+        if next_cursor_block is None:
+            next_cursor_block = highest_seen_block
         if cursor is not None and next_cursor_block is not None:
             next_cursor_block = max(next_cursor_block, cursor.last_indexed_block)
         if next_cursor_block is not None:
