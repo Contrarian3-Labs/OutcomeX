@@ -186,6 +186,25 @@ def test_revenue_overview_reports_projected_and_claimed_history(client: TestClie
     assert payload["withdraw_history"][1]["tx_hash"] == "0xold"
 
 
+def test_revenue_overview_tolerates_historical_claims_without_machine_id(client: TestClient) -> None:
+    owner_user_id = "owner-history-gap"
+    _seed_machine_with_revenue(owner_user_id=owner_user_id, machine_share_cents=500)
+    _insert_claim(
+        claimant_user_id=owner_user_id,
+        machine_id=None,
+        amount_cents=125,
+        claimed_at=datetime(2026, 4, 2, tzinfo=timezone.utc),
+        tx_hash="0xhistgap",
+    )
+
+    response = client.get(f"/api/v1/revenue/accounts/{owner_user_id}/overview")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["withdraw_history"][0]["machine_id"] is None
+    assert payload["withdraw_history"][0]["tx_hash"] == "0xhistgap"
+
+
 def test_revenue_analytics_reports_windows_breakdown_and_apr(client: TestClient) -> None:
     owner_user_id = "owner-analytics"
     machine = _seed_machine_with_revenue(owner_user_id=owner_user_id, machine_share_cents=900)

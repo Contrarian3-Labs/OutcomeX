@@ -92,7 +92,7 @@ class MachineRevenueClaimResponse(BaseModel):
 
 class WithdrawHistoryItem(BaseModel):
     id: str
-    machine_id: str
+    machine_id: str | None
     amount_cents: int
     amount_pwr: float | None = None
     tx_hash: str | None
